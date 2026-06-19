@@ -1,0 +1,26 @@
+{
+  "name": "feishu-md-repo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local desktop app to sync Git repositories with Feishu Wiki/Drive",
+  "scripts": {
+    "dev": "turbo dev",
+    "dev:ui": "pnpm --filter @feishu-md/ui dev",
+    "dev:service": "pnpm --filter @feishu-md/core-service dev",
+    "dev:desktop": "pnpm --filter @feishu-md/desktop dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "db:generate": "pnpm --filter @feishu-md/db generate",
+    "db:migrate": "pnpm --filter @feishu-md/db migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@feishu-md/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@feishu-md/converter": "workspace:*",
+    "@feishu-md/db": "workspace:*",
+    "@feishu-md/feishu": "workspace:*",
+    "@feishu-md/git": "workspace:*",
+    "@feishu-md/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}

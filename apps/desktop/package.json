@@ -1,0 +1,15 @@
+{
+  "name": "@feishu-md/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "typecheck": "node -e \"process.exit(0)\"",
+    "lint": "echo \"No lint configured for desktop shell\""
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "typescript": "^5.8.3"
+  }
+}

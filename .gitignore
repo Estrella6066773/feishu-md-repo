@@ -1,0 +1,61 @@
+# Dependencies & build
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment & secrets（仅保留 *.example）
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+**/secrets/
+
+# Local app data（SQLite 含飞书凭证、绑定、映射，切勿提交）
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+feishu-md-repo/
+.local-data/
+
+# Tauri / Rust
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/WixTools/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE（团队共享扩展列表可提交，见 .vscode/extensions.json）
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Drizzle Kit 本地 meta（迁移 SQL 需提交，meta 为生成物）
+packages/db/drizzle/meta/
+
+# Cursor 本地规则（不纳入版本库）
+.cursor/
+
+# 编辑器 / 工具临时文件
+*.swp
+*.swo
+*~
+.cache/

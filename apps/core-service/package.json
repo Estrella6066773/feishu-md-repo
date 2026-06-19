@@ -1,0 +1,28 @@
+{
+  "name": "@feishu-md/core-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@feishu-md/core": "workspace:*",
+    "@feishu-md/db": "workspace:*",
+    "@feishu-md/feishu": "workspace:*",
+    "@feishu-md/git": "workspace:*",
+    "@feishu-md/shared": "workspace:*",
+    "@hono/node-server": "^1.14.4",
+    "@larksuiteoapi/node-sdk": "^1.67.0",
+    "hono": "^4.7.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

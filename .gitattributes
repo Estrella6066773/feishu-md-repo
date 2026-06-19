@@ -1,0 +1,17 @@
+# 统一换行，避免 Windows / macOS 混用导致 diff 噪声
+* text=auto eol=lf
+
+# 明确二进制，禁止 CRLF 转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.db binary
+
+# 锁文件与生成物：减少无意义 merge 冲突标记
+pnpm-lock.yaml linguist-generated=true
+packages/db/drizzle/meta/** linguist-generated=true
