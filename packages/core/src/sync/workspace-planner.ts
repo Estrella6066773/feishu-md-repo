@@ -58,6 +58,7 @@ export class WorkspacePlanner implements SyncPlanner {
       operations.push({
         type: 'update_doc' as const,
         gitPath: path,
+        sourcePath: path,
         title: basename(path, '.md'),
         parentGitPath: dirname(path) === '.' ? '' : dirname(path),
         contentMarkdown: content,

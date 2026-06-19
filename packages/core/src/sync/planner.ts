@@ -5,6 +5,8 @@ export type SyncOperationType = 'ensure_folder' | 'ensure_doc' | 'update_doc' | 
 export interface SyncOperation {
   type: SyncOperationType;
   gitPath: string;
+  /** 原始 Markdown 源路径（用于相对链接解析） */
+  sourcePath?: string;
   title?: string;
   parentGitPath?: string;
   contentMarkdown?: string;

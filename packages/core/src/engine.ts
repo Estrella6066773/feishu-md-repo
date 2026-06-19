@@ -1,10 +1,12 @@
 import { randomUUID, createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
   getFeishuCredentials,
   getNodeMappingByGitPath,
   insertSyncLog,
+  listNodeMappings,
   updateBinding,
   updateSyncLog,
   upsertNodeMapping,
@@ -195,6 +197,13 @@ async function executePlan(options: {
     : undefined;
 
   let count = 0;
+  const pendingDocUpdates: Array<{
+    gitPath: string;
+    sourcePath: string;
+    docToken: string;
+    markdown: string;
+    previousContentSha?: string;
+  }> = [];
 
   for (const operation of plan.operations) {
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
@@ -236,10 +245,14 @@ async function executePlan(options: {
 
         const docToken = doc.docToken ?? doc.token;
         const contentMarkdown = operation.contentMarkdown ?? '';
-        const contentSha = hashContent(contentMarkdown);
-
-        if (existing?.contentSha !== contentSha && contentMarkdown) {
-          await adapter.updateDocumentContent(docToken, contentMarkdown);
+        if (contentMarkdown) {
+          pendingDocUpdates.push({
+            gitPath: operation.gitPath,
+            sourcePath: operation.sourcePath ?? operation.gitPath,
+            docToken,
+            markdown: contentMarkdown,
+            previousContentSha: existing?.contentSha,
+          });
         }
 
         await upsertNodeMapping(db, {
@@ -251,13 +264,37 @@ async function executePlan(options: {
           feishuDocToken: docToken,
           feishuNodeType: 'docx',
           feishuParentToken: parentToken,
-          contentSha,
         });
         count += 1;
         break;
       }
       default:
         break;
+    }
+  }
+
+  if (pendingDocUpdates.length > 0) {
+    const mappings = await listNodeMappings(db, binding.id);
+    const mappingByGitPath = new Map(mappings.map((item) => [item.gitPath, item]));
+
+    for (const pending of pendingDocUpdates) {
+      const rewritten = rewriteInternalMarkdownLinks(
+        pending.markdown,
+        pending.sourcePath,
+        mappingByGitPath,
+      );
+      const rewrittenSha = hashContent(rewritten);
+      if (pending.previousContentSha !== rewrittenSha) {
+        await adapter.updateDocumentContent(pending.docToken, rewritten);
+      }
+
+      const latest = await getNodeMappingByGitPath(db, binding.id, pending.gitPath);
+      if (latest) {
+        await upsertNodeMapping(db, {
+          ...latest,
+          contentSha: rewrittenSha,
+        });
+      }
     }
   }
 
@@ -293,6 +330,89 @@ function mappingToNodeRef(mapping: Awaited<ReturnType<typeof getNodeMappingByGit
 
 function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+function rewriteInternalMarkdownLinks(
+  markdown: string,
+  sourcePath: string,
+  mappingByGitPath: Map<string, Awaited<ReturnType<typeof listNodeMappings>>[number]>,
+): string {
+  return markdown.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (full, text: string, href: string) => {
+    const resolved = resolveInternalLinkTarget(sourcePath, href, mappingByGitPath);
+    if (!resolved) return full;
+    return `[${text}](${resolved})`;
+  });
+}
+
+function resolveInternalLinkTarget(
+  sourcePath: string,
+  href: string,
+  mappingByGitPath: Map<string, Awaited<ReturnType<typeof listNodeMappings>>[number]>,
+): string | null {
+  const raw = href.trim();
+  if (!raw) return null;
+  if (
+    raw.startsWith('#') ||
+    raw.startsWith('http://') ||
+    raw.startsWith('https://') ||
+    raw.startsWith('mailto:') ||
+    raw.startsWith('tel:')
+  ) {
+    return null;
+  }
+
+  const hashIndex = raw.indexOf('#');
+  const pathPart = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+  const anchor = hashIndex >= 0 ? raw.slice(hashIndex) : '';
+  if (!pathPart) return null;
+
+  const normalizedSource = normalizePath(sourcePath);
+  const baseDir = posix.dirname(normalizedSource) === '.' ? '' : posix.dirname(normalizedSource);
+  const resolved = normalizePath(posix.normalize(posix.join(baseDir, pathPart)));
+  const mapping = findLinkTargetMapping(resolved, mappingByGitPath);
+  if (!mapping) return null;
+
+  return `${toFeishuDocumentUrl(mapping)}${anchor}`;
+}
+
+function findLinkTargetMapping(
+  resolvedPath: string,
+  mappingByGitPath: Map<string, Awaited<ReturnType<typeof listNodeMappings>>[number]>,
+) {
+  const candidates = new Set<string>([resolvedPath.replace(/\/+$/, '')]);
+  if (!candidates.has(resolvedPath)) candidates.add(resolvedPath);
+
+  if (!posix.extname(resolvedPath)) {
+    candidates.add(`${resolvedPath}.md`);
+    candidates.add(`${resolvedPath}/README.md`);
+    candidates.add(`${resolvedPath}/readme.md`);
+    candidates.add(`${resolvedPath}/Readme.md`);
+  }
+
+  for (const candidate of [...candidates]) {
+    if (candidate.toLowerCase().endsWith('/readme.md')) {
+      const dir = posix.dirname(candidate);
+      candidates.add(dir === '.' ? '' : dir);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const mapping = mappingByGitPath.get(normalizePath(candidate));
+    if (mapping) return mapping;
+  }
+  return null;
+}
+
+function toFeishuDocumentUrl(mapping: Awaited<ReturnType<typeof listNodeMappings>>[number]): string {
+  if (mapping.feishuTargetType === 'wiki') {
+    return `https://feishu.cn/wiki/${mapping.feishuNodeToken}`;
+  }
+  const token = mapping.feishuDocToken ?? mapping.feishuNodeToken;
+  return `https://feishu.cn/docx/${token}`;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
 export { createPlanner } from './sync/factory.js';

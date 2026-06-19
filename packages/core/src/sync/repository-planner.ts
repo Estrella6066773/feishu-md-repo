@@ -37,6 +37,7 @@ export class RepositoryPlanner implements SyncPlanner {
       operations.push({
         type: 'update_doc' as const,
         gitPath: container.logicalPath,
+        sourcePath: container.sourcePath,
         title: repositoryContainerTitle(container.logicalPath, rootTitle),
         parentGitPath: resolveRepositoryParentLogicalPath(container.logicalPath, containerPaths),
         contentMarkdown: content,
@@ -56,6 +57,7 @@ export class RepositoryPlanner implements SyncPlanner {
       operations.push({
         type: 'update_doc' as const,
         gitPath: filePath,
+        sourcePath: filePath,
         title: standaloneMarkdownTitle(filePath),
         parentGitPath: resolveParentForStandaloneFile(filePath, containerPaths),
         contentMarkdown: content,
