@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card, CardHeader, StatCard } from '@/components/ui/Card';
 import { IconLink, IconLogs, IconSettings, IconSync } from '@/components/icons';
 import { LoadingBlock } from '@/components/ui/Spinner';
-import { fetchBindings, fetchHealth, fetchSettings, fetchSyncLogs } from '@/lib/queries';
+import { fetchBindings, fetchHealth, fetchSettings, fetchSyncLogs, isCoreServiceCompatible } from '@/lib/queries';
 
 const triggerLabel = {
   git: 'Git',
@@ -45,6 +45,10 @@ export function DashboardPage() {
       {!serviceOnline ? (
         <Alert tone="danger" title="核心服务未连接">
           请先运行 <code>pnpm dev:service</code>，或通过 Tauri 桌面应用启动 Sidecar。UI 无法在未连接时执行同步。
+        </Alert>
+      ) : health.data && !isCoreServiceCompatible(health.data) ? (
+        <Alert tone="danger" title="核心服务版本过旧">
+          8787 端口上的进程缺少新版 API。请结束旧进程后重新运行 <code>pnpm dev:service</code> 并刷新页面。
         </Alert>
       ) : null}
 
@@ -99,6 +103,7 @@ export function DashboardPage() {
                     <th>触发</th>
                     <th>状态</th>
                     <th>Commit</th>
+                    <th>说明</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -111,6 +116,9 @@ export function DashboardPage() {
                         <Badge tone={statusTone[log.status]}>{statusText[log.status]}</Badge>
                       </td>
                       <td className="font-mono text-xs">{log.toSha?.slice(0, 7) ?? '—'}</td>
+                      <td className="max-w-xs truncate text-muted" title={log.message ?? undefined}>
+                        {log.message ?? '—'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

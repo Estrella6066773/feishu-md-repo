@@ -858,6 +858,26 @@ code {
   flex: 1 1 16rem;
 }
 
+.permission-row-main .font-medium {
+  font-weight: 600;
+}
+
+.permission-row-main .font-mono {
+  font-family: var(--font-mono);
+}
+
+.permission-row-main .text-xs {
+  font-size: 0.75rem;
+}
+
+.permission-row-main .text-muted {
+  color: var(--color-muted);
+}
+
+.permission-row-main .mt-1 {
+  margin-top: 0.25rem;
+}
+
 .binding-card-title-row {
   display: flex;
   flex-wrap: wrap;
@@ -1032,6 +1052,43 @@ code {
 .quick-link-label {
   color: var(--color-muted);
   font-size: 0.75rem;
+}
+
+.permission-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-elevated);
+  padding: 1rem 1.125rem;
+}
+
+.permission-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.manager-binding-picks {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.binding-checkbox-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem 1rem;
+}
+
+.binding-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
 }
 
 .quick-link-main {

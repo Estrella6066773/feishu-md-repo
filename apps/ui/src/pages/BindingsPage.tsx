@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { Binding, FeishuTarget, RepoSourceType, SyncMode } from '@feishu-md/shared';
-import { defaultOptionsForMode, DEFAULT_TRIGGERS } from '@feishu-md/shared';
+import type { Binding, FeishuTarget, RepoSourceType, SyncLogEntry, SyncMode } from '@feishu-md/shared';
+import { defaultOptionsForMode, defaultTriggersForSourceType } from '@feishu-md/shared';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -11,14 +11,36 @@ import { Field } from '@/components/ui/Field';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { IconEdit, IconLink, IconPlus, IconSync, IconTrash } from '@/components/icons';
 import { LoadingBlock } from '@/components/ui/Spinner';
-import { createBinding, deleteBinding, fetchBindings, triggerSync, updateBinding } from '@/lib/queries';
+import {
+  createBinding,
+  deleteBinding,
+  fetchBindings,
+  fetchSyncLogs,
+  triggerSyncAndWait,
+  updateBinding,
+} from '@/lib/queries';
 
 export function BindingsPage() {
   const queryClient = useQueryClient();
   const bindings = useQuery({ queryKey: ['bindings'], queryFn: fetchBindings });
+  const syncLogs = useQuery({
+    queryKey: ['sync-logs'],
+    queryFn: () => fetchSyncLogs(),
+    refetchInterval: 10_000,
+  });
+  const latestLogByBinding = new Map<string, SyncLogEntry>();
+  for (const log of syncLogs.data ?? []) {
+    if (!latestLogByBinding.has(log.bindingId)) {
+      latestLogByBinding.set(log.bindingId, log);
+    }
+  }
   const [formMode, setFormMode] = useState<'hidden' | 'create' | 'edit'>('hidden');
   const [editingBinding, setEditingBinding] = useState<Binding | null>(null);
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<{
+    tone: 'success' | 'danger' | 'warning';
+    title: string;
+    message: string;
+  } | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -46,15 +68,39 @@ export function BindingsPage() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: ({ id, fullResync }: { id: string; fullResync?: boolean }) => triggerSync(id, fullResync),
+    mutationFn: ({ id, fullResync }: { id: string; fullResync?: boolean }) =>
+      triggerSyncAndWait(id, fullResync ?? false),
     onMutate: ({ id }) => setSyncingId(id),
     onSettled: () => setSyncingId(null),
-    onSuccess: (_, { fullResync }) => {
-      setSyncNotice(fullResync ? '全量重建任务已加入队列' : '同步任务已加入队列');
+    onSuccess: (log, { fullResync }) => {
+      if (log.status === 'failed') {
+        setSyncNotice({
+          tone: 'danger',
+          title: '同步失败',
+          message: log.message ?? '未知错误，请查看同步日志',
+        });
+      } else if (log.message?.includes('无内容变更')) {
+        setSyncNotice({
+          tone: 'warning',
+          title: '同步完成',
+          message: log.message,
+        });
+      } else {
+        setSyncNotice({
+          tone: 'success',
+          title: fullResync ? '全量重建成功' : '同步成功',
+          message: log.message ?? '已完成',
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: ['sync-logs'] });
+      void queryClient.invalidateQueries({ queryKey: ['bindings'] });
     },
     onError: (error) => {
-      setSyncNotice(error instanceof Error ? error.message : '触发同步失败');
+      setSyncNotice({
+        tone: 'danger',
+        title: '同步失败',
+        message: error instanceof Error ? error.message : '触发同步失败',
+      });
     },
   });
 
@@ -95,8 +141,8 @@ export function BindingsPage() {
       />
 
       {syncNotice ? (
-        <Alert tone="success" title="已提交">
-          {syncNotice}
+        <Alert tone={syncNotice.tone} title={syncNotice.title}>
+          {syncNotice.message}
           <button type="button" className="ml-3 text-xs underline opacity-80" onClick={() => setSyncNotice(null)}>
             关闭
           </button>
@@ -135,7 +181,18 @@ export function BindingsPage() {
         />
       ) : (
         <div className="binding-list">
-          {(bindings.data ?? []).map((binding) => (
+          {(bindings.data ?? []).map((binding) => {
+            const latestLog = latestLogByBinding.get(binding.id);
+            const syncStatusTone =
+              latestLog?.status === 'failed'
+                ? 'red'
+                : latestLog?.status === 'success'
+                  ? 'green'
+                  : latestLog?.status === 'running' || latestLog?.status === 'pending'
+                    ? 'amber'
+                    : undefined;
+
+            return (
             <article key={binding.id} className="binding-card">
               <div className="binding-card-layout">
                 <div className="binding-card-main">
@@ -146,18 +203,30 @@ export function BindingsPage() {
                       {binding.syncMode === 'workspace' ? '工作区模式' : '仓库模式'}
                     </Badge>
                     <Badge>{binding.feishuTarget.type === 'wiki' ? 'Wiki' : 'Drive'}</Badge>
+                    {latestLog && syncStatusTone ? (
+                      <Badge tone={syncStatusTone}>
+                        {latestLog.status === 'failed'
+                          ? '最近失败'
+                          : latestLog.status === 'success'
+                            ? '最近成功'
+                            : '同步中'}
+                      </Badge>
+                    ) : null}
                   </div>
                   <div className="binding-path">{binding.repoPath}</div>
                   <div className="binding-meta">
                     分支 {binding.branch}
                     {binding.feishuTarget.type === 'wiki'
-                      ? ` · Wiki space_id ${binding.feishuTarget.wikiSpaceId || '（未填）'}`
-                      : ` · Drive folder ${binding.feishuTarget.driveRootFolderToken?.slice(0, 12) || '（未填）'}…`}
+                      ? ` · Wiki ${binding.feishuTarget.wikiSpaceId?.slice(0, 8) || '（自动解析）'}…${binding.feishuTarget.wikiRootNodeToken ? ` · 父 ${binding.feishuTarget.wikiRootNodeToken.slice(0, 8)}…` : ''}`
+                      : ` · 云空间 ${binding.feishuTarget.driveRootFolderToken?.slice(0, 12) || '（未填）'}…`}
                     {binding.lastSyncedSha
                       ? ` · 最近同步 ${binding.lastSyncedSha.slice(0, 7)}`
                       : ' · 尚未同步'}
                     {binding.lastSyncedAt ? ` · ${new Date(binding.lastSyncedAt).toLocaleString()}` : ''}
                   </div>
+                  {latestLog?.status === 'failed' && latestLog.message ? (
+                    <div className="mt-2 text-sm text-[var(--color-danger)]">{latestLog.message}</div>
+                  ) : null}
                 </div>
 
                 <div className="action-bar">
@@ -176,7 +245,7 @@ export function BindingsPage() {
                     disabled={syncMutation.isPending && syncingId === binding.id}
                     onClick={() => syncMutation.mutate({ id: binding.id })}
                   >
-                    {syncingId === binding.id ? '提交中…' : '立即同步'}
+                    {syncingId === binding.id ? '同步中…' : '立即同步'}
                   </Button>
                   <Button
                     variant="secondary"
@@ -184,7 +253,7 @@ export function BindingsPage() {
                     disabled={syncMutation.isPending && syncingId === binding.id}
                     onClick={() => syncMutation.mutate({ id: binding.id, fullResync: true })}
                   >
-                    全量重建
+                    {syncingId === binding.id ? '重建中…' : '全量重建'}
                   </Button>
                   <Button
                     variant="danger"
@@ -203,7 +272,8 @@ export function BindingsPage() {
                 </div>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -228,7 +298,9 @@ function BindingForm(props: {
   const [syncMode, setSyncMode] = useState<SyncMode>('workspace');
   const [targetType, setTargetType] = useState<FeishuTarget['type']>('wiki');
   const [wikiSpaceId, setWikiSpaceId] = useState('');
+  const [wikiRootNodeToken, setWikiRootNodeToken] = useState('');
   const [driveRootFolderToken, setDriveRootFolderToken] = useState('');
+  const [ignoreGlobsText, setIgnoreGlobsText] = useState('');
 
   useEffect(() => {
     const binding = props.initial;
@@ -241,7 +313,9 @@ function BindingForm(props: {
       setSyncMode(binding.syncMode);
       setTargetType(binding.feishuTarget.type);
       setWikiSpaceId(binding.feishuTarget.wikiSpaceId ?? '');
+      setWikiRootNodeToken(binding.feishuTarget.wikiRootNodeToken ?? '');
       setDriveRootFolderToken(binding.feishuTarget.driveRootFolderToken ?? '');
+      setIgnoreGlobsText(binding.options.ignoreGlobs.join('\n'));
     } else {
       setName('');
       setSourceType('local');
@@ -251,13 +325,44 @@ function BindingForm(props: {
       setSyncMode('workspace');
       setTargetType('wiki');
       setWikiSpaceId('');
+      setWikiRootNodeToken('');
       setDriveRootFolderToken('');
+      setIgnoreGlobsText(defaultOptionsForMode('workspace').ignoreGlobs.join('\n'));
     }
   }, [props.initial, props.mode]);
 
+  useEffect(() => {
+    if (props.initial && props.initial.syncMode !== syncMode) {
+      setIgnoreGlobsText(defaultOptionsForMode(syncMode).ignoreGlobs.join('\n'));
+    }
+  }, [syncMode, props.initial]);
+
+  function buildBindingOptions() {
+    const customGlobs = ignoreGlobsText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const base =
+      isEdit && props.initial && props.initial.syncMode === syncMode
+        ? props.initial.options
+        : defaultOptionsForMode(syncMode);
+    return { ...base, ignoreGlobs: customGlobs };
+  }
+
+  useEffect(() => {
+    if (syncMode === 'repository' && targetType === 'drive') {
+      setTargetType('wiki');
+    }
+  }, [syncMode]);
+
   function buildFeishuTarget(): FeishuTarget {
     if (targetType === 'wiki') {
-      return { type: 'wiki', wikiSpaceId: wikiSpaceId.trim() };
+      const root = wikiRootNodeToken.trim();
+      return {
+        type: 'wiki',
+        wikiSpaceId: wikiSpaceId.trim(),
+        wikiRootNodeToken: root || undefined,
+      };
     }
     return { type: 'drive', driveRootFolderToken: driveRootFolderToken.trim() };
   }
@@ -287,11 +392,11 @@ function BindingForm(props: {
             branch: branch.trim() || 'main',
             syncMode,
             feishuTarget,
-            triggers: isEdit && props.initial ? props.initial.triggers : { ...DEFAULT_TRIGGERS },
-            options:
-              isEdit && props.initial && !syncModeChanged
-                ? props.initial.options
-                : defaultOptionsForMode(syncMode),
+            triggers:
+              isEdit && props.initial && props.initial.sourceType === sourceType
+                ? props.initial.triggers
+                : defaultTriggersForSourceType(sourceType),
+            options: syncModeChanged ? defaultOptionsForMode(syncMode) : buildBindingOptions(),
           });
         }}
       >
@@ -301,7 +406,14 @@ function BindingForm(props: {
           </div>
         ) : null}
 
-        <Field label="名称" hint="用于在面板与飞书指令中识别">
+        <Field
+          label="名称"
+          hint={
+            syncMode === 'repository'
+              ? '用于面板识别；仓库模式下亦作为根目录 README 对应飞书文档的标题（如「项目 A」）'
+              : '用于在面板与飞书指令中识别'
+          }
+        >
           <input
             className="field-input"
             value={name}
@@ -316,8 +428,8 @@ function BindingForm(props: {
             value={sourceType}
             onChange={(e) => setSourceType(e.target.value as RepoSourceType)}
           >
-            <option value="local">无云仓库（本地 + post-commit hook）</option>
-            <option value="cloud">有云仓库（本机 clone + fetch）</option>
+            <option value="local">无云仓库（本地提交 hook 触发）</option>
+            <option value="cloud">有云仓库（定时 fetch 远程）</option>
           </select>
         </Field>
         <Field label="本机仓库路径" className="form-grid-span-2" hint="本机 Git 仓库的绝对路径">
@@ -354,7 +466,7 @@ function BindingForm(props: {
             onChange={(e) => setSyncMode(e.target.value as SyncMode)}
           >
             <option value="workspace">工作区模式（目录树 1:1）</option>
-            <option value="repository">仓库模式（目录 = 文档，README 为正文）</option>
+            <option value="repository">仓库模式（每目录 README → 文档，标题为目录名）</option>
           </select>
         </Field>
         <Field label="飞书目标类型">
@@ -363,27 +475,55 @@ function BindingForm(props: {
             value={targetType}
             onChange={(e) => setTargetType(e.target.value as FeishuTarget['type'])}
           >
-            <option value="wiki">知识库 Wiki</option>
-            <option value="drive">云空间 Drive</option>
+            <option value="wiki">知识库 Wiki（文档可作父节点）</option>
+            <option value="drive" disabled={syncMode === 'repository'}>
+              云空间 Drive（仅工作区，须 folder_token）
+            </option>
           </select>
         </Field>
+        {syncMode === 'repository' ? (
+          <div className="form-grid-span-2">
+            <Alert tone="info">
+              仓库模式将各目录 README 同步为飞书文档，子文档挂在父文档下。父文档可填知识库 node_token，也可填云文档
+              docx 链接中的 document_id（如 Dunxd…）；后者须该文档已加入知识库，系统会自动解析 space_id。
+            </Alert>
+          </div>
+        ) : null}
         {targetType === 'wiki' ? (
-          <Field
-            label="Wiki space_id"
-            hint="知识库唯一 ID，通常为 19 位数字。打开知识库后，URL 中 /wiki/ 后面的那一段即为 space_id。"
-          >
-            <input
-              className="field-input"
-              value={wikiSpaceId}
-              onChange={(e) => setWikiSpaceId(e.target.value)}
-              placeholder="7123456789012345678"
-              required
-            />
-          </Field>
+          <>
+            <Field
+              label="Wiki space_id"
+              hint="知识库 ID。若只填下方父文档 token（含云文档 docx 链接），可留空由同步时自动解析。"
+            >
+              <input
+                className="field-input"
+                value={wikiSpaceId}
+                onChange={(e) => setWikiSpaceId(e.target.value)}
+                placeholder="7123456789012345678"
+                required={syncMode !== 'repository' || !wikiRootNodeToken.trim()}
+              />
+            </Field>
+            <Field
+              label="父文档 token（可选）"
+              hint={
+                syncMode === 'repository'
+                  ? '根 README 写入此文档；子目录文档挂在其下。支持 wiki node_token 或云空间 docx 的 document_id。'
+                  : '可选。留空则挂在知识库根层级。'
+              }
+            >
+              <input
+                className="field-input"
+                value={wikiRootNodeToken}
+                onChange={(e) => setWikiRootNodeToken(e.target.value)}
+                placeholder="DunxdXC8Io8g0VxrE5JczBdXn7d"
+              />
+            </Field>
+          </>
         ) : (
           <Field
             label="Drive 根 folder_token"
-            hint="云空间文件夹 token，一般以 fld 开头。在目标文件夹「复制链接」或调用 Drive API 获取。"
+            className="form-grid-span-2"
+            hint="须为云空间文件夹 token（一般以 fld 开头）。文档 token 不能用于 Drive 目标。"
           >
             <input
               className="field-input"
@@ -394,6 +534,20 @@ function BindingForm(props: {
             />
           </Field>
         )}
+
+        <Field
+          label="项目忽略规则"
+          className="form-grid-span-2"
+          hint="Git 规则筛选后的二重屏蔽，每行一条 glob（如 **/dist/**）。默认始终额外排除 node_modules 与 .git。"
+        >
+          <textarea
+            className="field-input"
+            rows={4}
+            value={ignoreGlobsText}
+            onChange={(e) => setIgnoreGlobsText(e.target.value)}
+            placeholder={'**/dist/**\n**/.env*'}
+          />
+        </Field>
 
         <div className="action-bar form-grid-span-2">
           <Button type="submit" variant="primary" disabled={props.submitting}>

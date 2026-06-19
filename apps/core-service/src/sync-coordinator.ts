@@ -1,6 +1,7 @@
 import type { DbClient } from '@feishu-md/db';
-import { getBinding } from '@feishu-md/db';
+import { getBinding, insertSyncLog, updateSyncLog } from '@feishu-md/db';
 import type { SyncTriggerType } from '@feishu-md/shared';
+import { randomUUID } from 'node:crypto';
 import { runSync } from '@feishu-md/core';
 import type { SyncQueue } from './scheduler.js';
 import type { BotBroadcaster } from './bot/broadcaster.js';
@@ -12,15 +13,43 @@ export class SyncCoordinator {
     private broadcaster: BotBroadcaster,
   ) {}
 
-  enqueueBindingSync(bindingId: string, trigger: SyncTriggerType, fullResync = false): void {
+  enqueueBindingSync(bindingId: string, trigger: SyncTriggerType, fullResync = false): string {
+    const logId = randomUUID();
+    const startedAt = new Date().toISOString();
+
+    void insertSyncLog(this.db, {
+      id: logId,
+      bindingId,
+      trigger,
+      status: 'pending',
+      message: fullResync ? '全量重建排队中' : '同步排队中',
+      startedAt,
+    });
+
     this.queue.enqueue(async () => {
       const binding = await getBinding(this.db, bindingId);
       if (!binding) {
-        throw new Error(`Binding not found: ${bindingId}`);
+        const message = `Binding not found: ${bindingId}`;
+        await updateSyncLog(this.db, {
+          id: logId,
+          bindingId,
+          trigger,
+          status: 'failed',
+          message,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+        });
+        throw new Error(message);
       }
 
       try {
-        const result = await runSync({ binding, db: this.db, trigger, fullResync });
+        const result = await runSync({
+          binding,
+          db: this.db,
+          trigger,
+          fullResync,
+          logId,
+        });
         await this.broadcaster.notifySyncFinished({
           binding,
           trigger,
@@ -38,5 +67,7 @@ export class SyncCoordinator {
         throw error;
       }
     });
+
+    return logId;
   }
 }

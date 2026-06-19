@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import type { FeishuClient } from './client.js';
-import { assertFeishuResponse, withRateLimit } from './api-error.js';
+import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 
 type ConvertBlock = NonNullable<
   NonNullable<
@@ -36,6 +35,28 @@ export async function replaceDocumentMarkdown(
 ): Promise<void> {
   await clearDocumentBody(client, documentId);
 
+  const trimmed = markdown.trim() || ' ';
+  const candidates = uniqueStrings([trimmed, flattenMarkdownTables(trimmed)]);
+
+  for (const content of candidates) {
+    try {
+      await insertConvertedMarkdown(client, documentId, content);
+      return;
+    } catch (error) {
+      if (!isDocxInsertRecoverableError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  await insertPlainTextBlock(client, documentId, trimmed);
+}
+
+async function insertConvertedMarkdown(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+): Promise<void> {
   const convertResponse = await withRateLimit(() =>
     client.docx.v1.document.convert({
       data: {
@@ -50,18 +71,7 @@ export async function replaceDocumentMarkdown(
   const firstLevelBlockIds = convertResponse.data?.first_level_block_ids ?? [];
 
   if (blocks.length === 0 || firstLevelBlockIds.length === 0) {
-    await insertPlainTextBlock(client, documentId, markdown.trim() || ' ');
-    return;
-  }
-
-  const descendants = assignBlockIds(blocks);
-  const childrenId = firstLevelBlockIds
-    .map((id) => descendants.find((block) => block.sourceBlockId === id)?.block_id)
-    .filter((id): id is string => Boolean(id));
-
-  if (childrenId.length === 0) {
-    await insertPlainTextBlock(client, documentId, markdown.trim() || ' ');
-    return;
+    throw new FeishuApiError('Convert markdown returned no blocks');
   }
 
   const createResponse = await withRateLimit(() =>
@@ -71,9 +81,9 @@ export async function replaceDocumentMarkdown(
         block_id: documentId,
       },
       data: {
-        children_id: childrenId,
+        children_id: firstLevelBlockIds,
         index: 0,
-        descendants: descendants.map(({ sourceBlockId: _source, ...block }) => block),
+        descendants: blocks as ConvertBlock[],
       },
     }),
   );
@@ -134,23 +144,67 @@ async function insertPlainTextBlock(
   assertFeishuResponse(response, 'Insert plain text block');
 }
 
-function assignBlockIds(blocks: ConvertBlock[]): Array<ConvertBlock & { sourceBlockId: string }> {
-  const idMap = new Map<string, string>();
+/** 将 GFM 表格转为列表，避免飞书 block 插入接口对表格块报 invalid param */
+function flattenMarkdownTables(markdown: string): string {
+  const lines = markdown.split('\n');
+  const result: string[] = [];
+  let index = 0;
 
-  blocks.forEach((block, index) => {
-    const sourceId = block.block_id ?? `generated-${index}`;
-    idMap.set(sourceId, randomUUID());
-  });
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (
+      line.trim().startsWith('|') &&
+      index + 1 < lines.length &&
+      /^\|[\s\-:|]+\|$/.test(lines[index + 1]!.trim())
+    ) {
+      const headerCells = line
+        .split('|')
+        .map((cell) => cell.trim())
+        .filter(Boolean);
+      index += 2;
 
-  return blocks.map((block, index) => {
-    const sourceBlockId = block.block_id ?? `generated-${index}`;
-    const block_id = idMap.get(sourceBlockId) ?? randomUUID();
-    const children = block.children?.map((childId) => idMap.get(childId) ?? childId);
-    return {
-      ...block,
-      sourceBlockId,
-      block_id,
-      children,
-    };
-  });
+      while (index < lines.length && lines[index]!.trim().startsWith('|')) {
+        const row = lines[index]!;
+        const cells = row
+          .split('|')
+          .map((cell) => cell.trim())
+          .filter(Boolean);
+        const parts = headerCells.map((header, cellIndex) => `${header}: ${cells[cellIndex] ?? ''}`);
+        if (parts.length > 0) {
+          result.push(`- ${parts.join(' · ')}`);
+        }
+        index += 1;
+      }
+      result.push('');
+      continue;
+    }
+
+    result.push(line);
+    index += 1;
+  }
+
+  return result.join('\n');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function isDocxInsertRecoverableError(error: unknown): boolean {
+  if (!(error instanceof FeishuApiError)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('invalid param') ||
+    message.includes('field validation failed') ||
+    message.includes('convert markdown returned no blocks') ||
+    error.code === 1770001 ||
+    error.code === 99992402
+  );
 }

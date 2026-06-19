@@ -21,10 +21,38 @@ export function assertFeishuResponse<T extends { code?: number; msg?: string }>(
 }
 
 export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
-  const result = await task();
-  // Docx / Wiki write APIs are limited to ~3 QPS per app/document.
-  await sleep(350);
-  return result;
+  try {
+    const result = await task();
+    // Docx / Wiki write APIs are limited to ~3 QPS per app/document.
+    await sleep(350);
+    return result;
+  } catch (error) {
+    throw normalizeFeishuClientError(error);
+  }
+}
+
+function normalizeFeishuClientError(error: unknown): Error {
+  if (error instanceof FeishuApiError) return error;
+
+  if (error && typeof error === 'object' && 'response' in error) {
+    const axiosLike = error as {
+      message?: string;
+      response?: { status?: number; data?: { code?: number; msg?: string } };
+    };
+    const data = axiosLike.response?.data;
+    if (data?.msg) {
+      return new FeishuApiError(
+        data.msg,
+        data.code,
+      );
+    }
+    if (axiosLike.message) {
+      return new FeishuApiError(axiosLike.message);
+    }
+  }
+
+  if (error instanceof Error) return error;
+  return new Error(String(error));
 }
 
 function sleep(ms: number): Promise<void> {

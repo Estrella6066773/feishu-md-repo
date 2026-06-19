@@ -16,6 +16,7 @@ import type {
   WorkspaceOptions,
   RepositoryOptions,
   BotSettings,
+  FeishuUserPermission,
 } from '@feishu-md/shared';
 import { DEFAULT_BOT_SETTINGS } from '@feishu-md/shared';
 import * as schema from './schema.js';
@@ -134,6 +135,24 @@ export async function listSyncLogs(db: DbClient, bindingId?: string): Promise<Sy
     startedAt: row.startedAt,
     finishedAt: row.finishedAt ?? undefined,
   }));
+}
+
+export async function getSyncLog(db: DbClient, id: string): Promise<SyncLogEntry | null> {
+  const rows = await db.select().from(schema.syncLogs).where(eq(schema.syncLogs.id, id)).limit(1);
+  const row = rows[0];
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    bindingId: row.bindingId,
+    trigger: row.trigger,
+    fromSha: row.fromSha ?? undefined,
+    toSha: row.toSha ?? undefined,
+    status: row.status,
+    message: row.message ?? undefined,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt ?? undefined,
+  };
 }
 
 export async function insertSyncLog(db: DbClient, entry: SyncLogEntry): Promise<void> {
@@ -269,10 +288,12 @@ export async function setFeishuCredentials(
 export async function getAppSettings(db: DbClient): Promise<AppSettings> {
   const feishu = await getFeishuCredentials(db);
   const bot = await getBotSettings(db);
+  const userPermissions = await getFeishuUserPermissions(db);
   const dataDir = await getAppSetting<string>(db, 'data_dir');
   return {
     feishu: feishu ?? undefined,
     bot,
+    userPermissions,
     dataDir: dataDir ?? undefined,
   };
 }
@@ -284,6 +305,18 @@ export async function getBotSettings(db: DbClient): Promise<BotSettings> {
 
 export async function setBotSettings(db: DbClient, settings: BotSettings): Promise<void> {
   await setAppSetting(db, 'bot_settings', settings);
+}
+
+export async function getFeishuUserPermissions(db: DbClient): Promise<FeishuUserPermission[]> {
+  const stored = await getAppSetting<FeishuUserPermission[]>(db, 'feishu_user_permissions');
+  return stored ?? [];
+}
+
+export async function setFeishuUserPermissions(
+  db: DbClient,
+  permissions: FeishuUserPermission[],
+): Promise<void> {
+  await setAppSetting(db, 'feishu_user_permissions', permissions);
 }
 
 export { schema };

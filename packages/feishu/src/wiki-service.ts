@@ -1,6 +1,66 @@
 import type { FeishuClient, NodeRef } from './client.js';
-import { assertFeishuResponse, withRateLimit } from './api-error.js';
+import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import { createEmptyDocument, replaceDocumentMarkdown } from './docx-content.js';
+
+export interface ResolvedWikiNode {
+  spaceId: string;
+  nodeToken: string;
+  docToken: string;
+  title?: string;
+}
+
+/** 通过 wiki node_token 或云文档 document_id 解析知识库节点 */
+export async function getWikiNodeByToken(
+  client: FeishuClient,
+  token: string,
+  preferredObjType: 'wiki' | 'docx' = 'wiki',
+): Promise<ResolvedWikiNode | null> {
+  const objTypes: Array<'wiki' | 'docx'> =
+    preferredObjType === 'docx' ? ['docx', 'wiki'] : ['wiki', 'docx'];
+
+  for (const objType of objTypes) {
+    try {
+      const response = await withRateLimit(() =>
+        client.wiki.v2.space.getNode({
+          params: { token, obj_type: objType },
+        }),
+      );
+      if (response.code !== 0) {
+        if (isWikiNodeNotFound(response.msg)) continue;
+        assertFeishuResponse(response, 'Get wiki node');
+      }
+
+      const node = response.data?.node;
+      if (!node?.space_id || !node.node_token) continue;
+
+      const docToken = node.obj_token ?? token;
+      return {
+        spaceId: node.space_id,
+        nodeToken: node.node_token,
+        docToken,
+        title: node.title,
+      };
+    } catch (error) {
+      if (error instanceof FeishuApiError && isWikiNodeNotFound(error.message)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return null;
+}
+
+function isWikiNodeNotFound(message?: string): boolean {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('not found') ||
+    lower.includes('not in wiki') ||
+    lower.includes('不存在') ||
+    lower.includes('未找到')
+  );
+}
 
 export async function createWikiDocxNode(
   client: FeishuClient,

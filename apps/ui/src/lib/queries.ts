@@ -1,9 +1,10 @@
-import type { Binding, BotSettings, FeishuCredentials, SyncLogEntry } from '@feishu-md/shared';
+import type { Binding, BotSettings, FeishuCredentials, FeishuUserPermission, SyncLogEntry } from '@feishu-md/shared';
 import { apiFetch } from './api';
 
 export interface SettingsResponse {
   feishu?: { appId: string; appSecretConfigured: boolean };
   bot?: BotSettings;
+  userPermissions?: FeishuUserPermission[];
   botConnection?: { connected: boolean; listening: boolean };
   dataDir: string;
   coreServiceUrl: string;
@@ -30,6 +31,13 @@ export function saveBotSettings(settings: BotSettings) {
   );
 }
 
+export function saveFeishuUserPermissions(permissions: FeishuUserPermission[]) {
+  return apiFetch<{ ok: boolean }>('/api/settings/user-permissions', {
+    method: 'PUT',
+    body: JSON.stringify(permissions),
+  });
+}
+
 export function fetchBindings() {
   return apiFetch<Binding[]>('/api/bindings');
 }
@@ -53,10 +61,36 @@ export function deleteBinding(id: string) {
 }
 
 export function triggerSync(id: string, fullResync = false) {
-  return apiFetch<{ ok: boolean }>(`/api/bindings/${id}/sync`, {
+  return apiFetch<{ ok: boolean; logId: string }>(`/api/bindings/${id}/sync`, {
     method: 'POST',
     body: JSON.stringify({ fullResync, trigger: 'manual' }),
   });
+}
+
+export function fetchSyncLog(id: string) {
+  return apiFetch<SyncLogEntry>(`/api/sync-logs/${id}`);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 轮询直到同步完成或超时 */
+export async function waitForSyncLog(logId: string, timeoutMs = 300_000): Promise<SyncLogEntry> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const log = await fetchSyncLog(logId);
+    if (log.status === 'success' || log.status === 'failed') {
+      return log;
+    }
+    await sleep(1000);
+  }
+  throw new Error('同步等待超时，请到「同步日志」查看详情');
+}
+
+export async function triggerSyncAndWait(id: string, fullResync = false) {
+  const { logId } = await triggerSync(id, fullResync);
+  return waitForSyncLog(logId);
 }
 
 export function fetchSyncLogs(bindingId?: string) {
@@ -65,5 +99,21 @@ export function fetchSyncLogs(bindingId?: string) {
 }
 
 export function fetchHealth() {
-  return apiFetch<{ ok: boolean; service: string; version: string }>('/api/health');
+  return apiFetch<{
+    ok: boolean;
+    service: string;
+    version: string;
+    apiVersion?: number;
+    features?: string[];
+  }>('/api/health');
+}
+
+export const REQUIRED_CORE_API_FEATURES = ['settings-bot', 'settings-user-permissions'] as const;
+
+export function isCoreServiceCompatible(health: {
+  apiVersion?: number;
+  features?: string[];
+}): boolean {
+  if (health.apiVersion != null && health.apiVersion >= 2) return true;
+  return REQUIRED_CORE_API_FEATURES.every((feature) => health.features?.includes(feature));
 }

@@ -13,15 +13,37 @@ abstract class BaseGitProvider implements GitProvider {
   abstract getHeadSha(): Promise<string>;
 
   async getChangedPaths(sinceSha: string, untilSha: string): Promise<ChangedPath[]> {
-    const diffSummary = await this.git.diffSummary([`${sinceSha}..${untilSha}`, '--name-status']);
-    return diffSummary.files.map((file) => {
-      const status = 'status' in file ? String(file.status) : 'M';
-      const changeType = mapChangeType(status);
-      return {
-        path: file.file,
-        changeType,
-      } satisfies ChangedPath;
-    });
+    const output = await this.git.raw(['diff', '--name-status', '-z', `${sinceSha}..${untilSha}`]);
+    if (!output) return [];
+
+    const parts = output.split('\0');
+    const changes: ChangedPath[] = [];
+    let i = 0;
+    while (i < parts.length) {
+      const status = parts[i++];
+      if (!status) break;
+
+      const code = status[0] ?? 'M';
+      if (code === 'R') {
+        const previousPath = parts[i++];
+        const path = parts[i++];
+        if (!previousPath || !path) break;
+        changes.push({
+          path: path.replace(/\\/g, '/'),
+          previousPath: previousPath.replace(/\\/g, '/'),
+          changeType: 'rename',
+        });
+        continue;
+      }
+
+      const path = parts[i++];
+      if (!path) break;
+      changes.push({
+        path: path.replace(/\\/g, '/'),
+        changeType: mapChangeType(code),
+      });
+    }
+    return changes;
   }
 
   async getTreeAtSha(sha: string): Promise<GitTreeEntry[]> {
@@ -51,6 +73,35 @@ abstract class BaseGitProvider implements GitProvider {
     } catch {
       return null;
     }
+  }
+
+  async listTrackedPathsAtSha(sha: string): Promise<string[]> {
+    const output = await this.git.raw(['ls-files', '-z', '--with-tree', sha]);
+    if (!output.trim()) return [];
+    return output
+      .split('\0')
+      .filter(Boolean)
+      .map((path) => path.replace(/\\/g, '/'));
+  }
+
+  async filterPathsByGitExportIgnore(sha: string, paths: string[]): Promise<string[]> {
+    if (paths.length === 0) return [];
+
+    const excluded = new Set<string>();
+    for (const path of paths) {
+      try {
+        const output = await this.git.raw(['check-attr', 'export-ignore', '--', path]);
+        const line = output.trim();
+        const match = line.match(/^(.+): export-ignore: (.+)$/);
+        if (match && match[2]?.trim() === 'set') {
+          excluded.add(path.replace(/\\/g, '/'));
+        }
+      } catch {
+        // 无法读取属性时保留路径
+      }
+    }
+
+    return paths.filter((path) => !excluded.has(path.replace(/\\/g, '/')));
   }
 
   protected async resolveBranchRef(): Promise<string> {

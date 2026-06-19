@@ -1,4 +1,4 @@
-import type { SyncTriggerType } from '@feishu-md/shared';
+import type { SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
 
 export type SyncOperationType = 'ensure_folder' | 'ensure_doc' | 'update_doc' | 'delete' | 'move';
 
@@ -20,12 +20,16 @@ export interface SyncPlan {
 
 export interface SyncPlanContext {
   bindingId: string;
+  /** 绑定名称，仓库模式根文档标题使用此字段 */
+  bindingName?: string;
   trigger: SyncTriggerType;
   fromSha?: string;
   toSha: string;
   treePaths: string[];
   changedPaths: string[];
   readMarkdown: (path: string) => Promise<string | null>;
+  workspaceOptions?: WorkspaceOptions;
+  repositoryOptions?: RepositoryOptions;
 }
 
 export interface SyncPlanner {

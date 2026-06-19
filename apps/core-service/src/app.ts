@@ -7,21 +7,58 @@ import {
   getAppSettings,
   getBinding,
   getBotSettings,
+  getFeishuUserPermissions,
   insertBinding,
   listBindings,
   listSyncLogs,
+  getSyncLog,
   setBotSettings,
   setFeishuCredentials,
+  setFeishuUserPermissions,
   updateBinding,
 } from '@feishu-md/db';
-import type { Binding, BotSettings, FeishuCredentials, SyncRequest } from '@feishu-md/shared';
-import { defaultOptionsForMode, DEFAULT_BOT_SETTINGS, DEFAULT_TRIGGERS } from '@feishu-md/shared';
-import { installLocalHook } from '@feishu-md/git';
+import type { Binding, BotSettings, FeishuCredentials, FeishuUserPermission, SyncRequest } from '@feishu-md/shared';
+import {
+  defaultOptionsForMode,
+  defaultTriggersForSourceType,
+  DEFAULT_BOT_SETTINGS,
+} from '@feishu-md/shared';
+import { installLocalHook, removeLocalHook } from '@feishu-md/git';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
 import type { BotManager } from './bot/manager.js';
 import type { ServiceConfig } from './config.js';
 import { getPublicBaseUrl } from './config.js';
+
+function applyLocalGitHook(binding: Binding, coreServiceUrl: string, previous?: Binding): void {
+  if (previous?.sourceType === 'local' && previous.repoPath !== binding.repoPath) {
+    removeLocalHook(previous.repoPath);
+  }
+
+  if (binding.sourceType === 'local' && binding.triggers.onGitCommit) {
+    installLocalHook({
+      repoPath: binding.repoPath,
+      bindingId: binding.id,
+      coreServiceUrl,
+    });
+    return;
+  }
+
+  if (binding.repoPath) {
+    removeLocalHook(binding.repoPath);
+  }
+}
+
+/** 递增此版本号以提示 UI 重启 core-service（旧进程可能缺少新路由） */
+export const CORE_API_VERSION = 2;
+
+export const CORE_API_FEATURES = [
+  'settings-feishu',
+  'settings-bot',
+  'settings-user-permissions',
+  'bindings-crud',
+  'sync-log-detail',
+] as const;
 
 export function createApp(options: {
   db: DbClient;
@@ -47,6 +84,8 @@ export function createApp(options: {
       ok: true,
       service: 'feishu-md-core',
       version: '0.1.0',
+      apiVersion: CORE_API_VERSION,
+      features: [...CORE_API_FEATURES],
     }),
   );
 
@@ -59,6 +98,7 @@ export function createApp(options: {
         ? { appId: settings.feishu.appId, appSecretConfigured: Boolean(settings.feishu.appSecret) }
         : undefined,
       bot: settings.bot ?? DEFAULT_BOT_SETTINGS,
+      userPermissions: settings.userPermissions ?? [],
       botConnection: botStatus,
       dataDir: config.dataDir,
       coreServiceUrl: getPublicBaseUrl(config),
@@ -87,6 +127,28 @@ export function createApp(options: {
     return c.json({ ok: true, connection: botManager.getStatus() });
   });
 
+  app.get('/api/settings/user-permissions', async (c) => {
+    const userPermissions = await getFeishuUserPermissions(db);
+    return c.json(userPermissions);
+  });
+
+  app.put('/api/settings/user-permissions', async (c) => {
+    const body = (await c.req.json()) as FeishuUserPermission[];
+    if (!Array.isArray(body)) {
+      return c.json({ error: 'Expected an array of user permissions' }, 400);
+    }
+    for (const item of body) {
+      if (!item.openId?.trim() || !item.role) {
+        return c.json({ error: 'Each entry requires openId and role' }, 400);
+      }
+      if (item.role === 'manager' && (!item.bindingIds || item.bindingIds.length === 0)) {
+        return c.json({ error: 'Manager role requires at least one bindingId' }, 400);
+      }
+    }
+    await setFeishuUserPermissions(db, body);
+    return c.json({ ok: true });
+  });
+
   app.get('/api/bindings', async (c) => {
     const bindings = await listBindings(db);
     return c.json(bindings);
@@ -112,7 +174,7 @@ export function createApp(options: {
       branch: body.branch ?? 'main',
       syncMode,
       feishuTarget: body.feishuTarget ?? { type: 'wiki', wikiSpaceId: '' },
-      triggers: body.triggers ?? { ...DEFAULT_TRIGGERS },
+      triggers: body.triggers ?? defaultTriggersForSourceType(body.sourceType ?? 'local'),
       options: body.options ?? defaultOptionsForMode(syncMode),
       createdAt: now,
       updatedAt: now,
@@ -123,14 +185,7 @@ export function createApp(options: {
     }
 
     await insertBinding(db, binding);
-
-    if (binding.sourceType === 'local' && binding.triggers.onGitCommit) {
-      installLocalHook({
-        repoPath: binding.repoPath,
-        bindingId: binding.id,
-        coreServiceUrl: getPublicBaseUrl(config),
-      });
-    }
+    applyLocalGitHook(binding, getPublicBaseUrl(config));
 
     await scheduler.refresh(db, syncCoordinator);
     return c.json(binding, 201);
@@ -149,20 +204,17 @@ export function createApp(options: {
     };
 
     await updateBinding(db, updated);
-
-    if (updated.sourceType === 'local' && updated.triggers.onGitCommit) {
-      installLocalHook({
-        repoPath: updated.repoPath,
-        bindingId: updated.id,
-        coreServiceUrl: getPublicBaseUrl(config),
-      });
-    }
+    applyLocalGitHook(updated, getPublicBaseUrl(config), existing);
 
     await scheduler.refresh(db, syncCoordinator);
     return c.json(updated);
   });
 
   app.delete('/api/bindings/:id', async (c) => {
+    const existing = await getBinding(db, c.req.param('id'));
+    if (existing?.sourceType === 'local') {
+      removeLocalHook(existing.repoPath);
+    }
     await deleteBinding(db, c.req.param('id'));
     await scheduler.refresh(db, syncCoordinator);
     return c.json({ ok: true });
@@ -173,8 +225,18 @@ export function createApp(options: {
     if (!binding) return c.json({ error: 'Not found' }, 404);
 
     const body = (await c.req.json().catch(() => ({}))) as SyncRequest;
-    syncCoordinator.enqueueBindingSync(binding.id, body.trigger ?? 'manual', body.fullResync ?? false);
-    return c.json({ ok: true, queued: true });
+    const logId = syncCoordinator.enqueueBindingSync(
+      binding.id,
+      body.trigger ?? 'manual',
+      body.fullResync ?? false,
+    );
+    return c.json({ ok: true, queued: true, logId });
+  });
+
+  app.get('/api/sync-logs/:id', async (c) => {
+    const log = await getSyncLog(db, c.req.param('id'));
+    if (!log) return c.json({ error: 'Not found' }, 404);
+    return c.json(log);
   });
 
   app.get('/api/sync-logs', async (c) => {
@@ -186,10 +248,16 @@ export function createApp(options: {
   app.post('/api/hooks/local', async (c) => {
     const body = (await c.req.json()) as { bindingId?: string };
     if (!body.bindingId) return c.json({ error: 'bindingId is required' }, 400);
+
+    const binding = await getBinding(db, body.bindingId);
+    if (!binding || binding.sourceType !== 'local') {
+      return c.json({ ok: true, ignored: true });
+    }
+
     syncCoordinator.enqueueBindingSync(body.bindingId, 'git');
     return c.json({ ok: true, queued: true });
   });
 
   return app;
 }
-
+

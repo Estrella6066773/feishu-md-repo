@@ -8,12 +8,15 @@ import { Card, CardHeader } from '@/components/ui/Card';
 import { Field } from '@/components/ui/Field';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Toggle } from '@/components/ui/Toggle';
-import { fetchBindings, fetchSettings, saveBotSettings, saveFeishuCredentials } from '@/lib/queries';
+import { UserPermissionsCard } from '@/components/UserPermissionsCard';
+import { fetchBindings, fetchHealth, fetchSettings, isCoreServiceCompatible, saveBotSettings, saveFeishuCredentials } from '@/lib/queries';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
+  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, retry: 1, refetchInterval: 15_000 });
   const bindings = useQuery({ queryKey: ['bindings'], queryFn: fetchBindings });
+  const serviceStale = health.data != null && !isCoreServiceCompatible(health.data);
 
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -73,6 +76,19 @@ export function SettingsPage() {
   return (
     <div className="page-stack-lg max-w-3xl">
       <PageHeader title="设置" description="配置飞书应用凭证、同步播报与指令监听。" />
+
+      {serviceStale ? (
+        <Alert tone="danger" title="核心服务版本过旧">
+          当前 8787 端口上的 core-service 缺少新版 API（保存机器人/用户权限会 404）。请结束旧进程后重新运行{' '}
+          <code>pnpm dev:service</code>，并刷新本页。Windows 查占用：<code>netstat -ano | findstr :8787</code>
+        </Alert>
+      ) : null}
+
+      {!health.isLoading && health.isError ? (
+        <Alert tone="danger" title="无法连接核心服务">
+          请先运行 <code>pnpm dev:service</code>（默认 http://127.0.0.1:8787）。
+        </Alert>
+      ) : null}
 
       <Card>
         <CardHeader title="运行环境" description="本地数据与 API 地址" />
@@ -142,6 +158,11 @@ export function SettingsPage() {
         </form>
       </Card>
 
+      <UserPermissionsCard
+        initial={settings.data?.userPermissions ?? []}
+        bindings={bindings.data ?? []}
+      />
+
       <Card>
         <form
           className="form-stack"
@@ -169,6 +190,13 @@ export function SettingsPage() {
               </span>
             }
           />
+
+          {botSettings.enabled && !botSettings.commandListenEnabled ? (
+            <Alert tone="warning" title="长连接未建立">
+              已启用机器人能力，但「启用飞书消息指令」处于关闭状态，core-service 不会连接飞书 WS。
+              若要在群里用「同步」等指令，请打开该开关并保存；仅同步播报可不开启。
+            </Alert>
+          ) : null}
 
           <Toggle
             label="启用机器人能力"
@@ -261,7 +289,7 @@ export function SettingsPage() {
               />
             </div>
 
-            <Field label="允许的群 chat_id" hint="每行一个，留空表示不限制（机器人须在群内）">
+            <Field label="允许的群 chat_id" hint="每行一个，留空表示不限制（机器人须在群内）。指令权限由上方「飞书用户权限」控制。">
               <textarea
                 className="field-input min-h-20"
                 value={botSettings.commandAllowedChatIds.join('\n')}
@@ -277,23 +305,7 @@ export function SettingsPage() {
               />
             </Field>
 
-            <Field label="允许的用户 open_id" hint="每行一个，留空表示不限制">
-              <textarea
-                className="field-input min-h-20"
-                value={botSettings.commandAllowedUserOpenIds.join('\n')}
-                onChange={(e) =>
-                  setBotSettings((prev) => ({
-                    ...prev,
-                    commandAllowedUserOpenIds: e.target.value
-                      .split('\n')
-                      .map((line) => line.trim())
-                      .filter(Boolean),
-                  }))
-                }
-              />
-            </Field>
-
-            <Field label="「同步」指令默认绑定" hint="留空则同步全部绑定">
+            <Field label="「同步」指令默认绑定" hint="仅管理员生效；留空则同步全部绑定">
               <select
                 className="field-input"
                 value={botSettings.defaultBindingId ?? ''}

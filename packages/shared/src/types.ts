@@ -6,6 +6,16 @@ export type MissingReadmePolicy = 'skip' | 'placeholder' | 'empty_doc';
 export type FeishuNodeType = 'folder' | 'docx' | 'file';
 export type SyncJobStatus = 'pending' | 'running' | 'success' | 'failed';
 
+export type FeishuUserRole = 'admin' | 'manager' | 'member' | 'blacklist';
+
+/** 显式配置的飞书用户权限（default 组用户不写入库） */
+export interface FeishuUserPermission {
+  openId: string;
+  role: FeishuUserRole;
+  bindingIds?: string[];
+  label?: string;
+}
+
 export interface FeishuTarget {
   type: FeishuTargetType;
   wikiSpaceId?: string;
@@ -100,7 +110,7 @@ export interface BotSettings {
   commandListenEnabled: boolean;
   /** 允许下发指令的群 chat_id；为空表示不限制（机器人须在群内） */
   commandAllowedChatIds: string[];
-  /** 允许下发指令的用户 open_id；为空表示不限制 */
+  /** @deprecated 请改用 userPermissions 权限级别；保留仅为兼容旧数据 */
   commandAllowedUserOpenIds: string[];
   /** 群聊中是否必须 @ 机器人 才响应 */
   commandRequireMentionInGroup: boolean;
@@ -111,6 +121,8 @@ export interface BotSettings {
 export interface AppSettings {
   feishu?: FeishuCredentials;
   bot?: BotSettings;
+  /** 飞书用户权限名单（不含 default 组） */
+  userPermissions?: FeishuUserPermission[];
   dataDir?: string;
 }
 
@@ -131,6 +143,22 @@ export const DEFAULT_TRIGGERS: BindingTriggers = {
   scheduleEnabled: false,
   scheduleMinutes: 15,
 };
+
+/** 本地库：提交 hook；有云库：定时 fetch 远程 */
+export function defaultTriggersForSourceType(sourceType: RepoSourceType): BindingTriggers {
+  if (sourceType === 'cloud') {
+    return {
+      onGitCommit: false,
+      scheduleEnabled: true,
+      scheduleMinutes: 15,
+    };
+  }
+  return {
+    onGitCommit: true,
+    scheduleEnabled: false,
+    scheduleMinutes: 15,
+  };
+}
 
 export const DEFAULT_BOT_SETTINGS: BotSettings = {
   enabled: false,
