@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { eq, and, or } from 'drizzle-orm';
+import { eq, and, or, like } from 'drizzle-orm';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,7 @@ import type {
   RepositoryOptions,
   BotSettings,
   FeishuUserPermission,
+  BotBroadcastTarget,
 } from '@feishu-md/shared';
 import { DEFAULT_BOT_SETTINGS } from '@feishu-md/shared';
 import * as schema from './schema.js';
@@ -57,6 +58,9 @@ function parseBinding(row: typeof schema.bindings.$inferSelect): Binding {
     feishuTarget: JSON.parse(row.feishuTargetJson) as FeishuTarget,
     triggers: JSON.parse(row.triggersJson) as BindingTriggers,
     options: JSON.parse(row.optionsJson) as WorkspaceOptions | RepositoryOptions,
+    bindingSpecificBroadcastTargets: JSON.parse(
+      row.bindingBroadcastTargetsJson || '[]',
+    ) as BotBroadcastTarget[],
     lastSyncedSha: row.lastSyncedSha ?? undefined,
     lastSyncedAt: row.lastSyncedAt ?? undefined,
     createdAt: row.createdAt,
@@ -83,14 +87,17 @@ export async function insertBinding(db: DbClient, binding: Binding): Promise<voi
     repoPath: binding.repoPath,
     remoteUrl: binding.remoteUrl,
     branch: binding.branch,
-    syncMode: binding.syncMode,
-    feishuTargetJson: JSON.stringify(binding.feishuTarget),
-    triggersJson: JSON.stringify(binding.triggers),
-    optionsJson: JSON.stringify(binding.options),
-    lastSyncedSha: binding.lastSyncedSha,
-    lastSyncedAt: binding.lastSyncedAt,
-    createdAt: binding.createdAt,
-    updatedAt: binding.updatedAt,
+      syncMode: binding.syncMode,
+      feishuTargetJson: JSON.stringify(binding.feishuTarget),
+      triggersJson: JSON.stringify(binding.triggers),
+      optionsJson: JSON.stringify(binding.options),
+      bindingBroadcastTargetsJson: JSON.stringify(
+        binding.bindingSpecificBroadcastTargets ?? [],
+      ),
+      lastSyncedSha: binding.lastSyncedSha,
+      lastSyncedAt: binding.lastSyncedAt,
+      createdAt: binding.createdAt,
+      updatedAt: binding.updatedAt,
   });
 }
 
@@ -107,6 +114,9 @@ export async function updateBinding(db: DbClient, binding: Binding): Promise<voi
       feishuTargetJson: JSON.stringify(binding.feishuTarget),
       triggersJson: JSON.stringify(binding.triggers),
       optionsJson: JSON.stringify(binding.options),
+      bindingBroadcastTargetsJson: JSON.stringify(
+        binding.bindingSpecificBroadcastTargets ?? [],
+      ),
       lastSyncedSha: binding.lastSyncedSha,
       lastSyncedAt: binding.lastSyncedAt,
       updatedAt: binding.updatedAt,
@@ -259,6 +269,27 @@ export async function upsertNodeMapping(db: DbClient, mapping: NodeMapping): Pro
     feishuParentToken: mapping.feishuParentToken,
     contentSha: mapping.contentSha,
   });
+}
+
+export async function deleteNodeMapping(db: DbClient, id: string): Promise<void> {
+  await db.delete(schema.nodeMappings).where(eq(schema.nodeMappings.id, id));
+}
+
+export async function deleteNodeMappingsByBindingAndPrefix(
+  db: DbClient,
+  bindingId: string,
+  gitPathPrefix: string,
+): Promise<number> {
+  if (!gitPathPrefix) return 0;
+  const result = await db
+    .delete(schema.nodeMappings)
+    .where(
+      and(
+        eq(schema.nodeMappings.bindingId, bindingId),
+        like(schema.nodeMappings.gitPath, `${gitPathPrefix}/%`),
+      ),
+    );
+  return result.changes ?? 0;
 }
 
 export async function listNodeMappings(db: DbClient, bindingId: string): Promise<NodeMapping[]> {

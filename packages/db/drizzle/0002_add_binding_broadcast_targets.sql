@@ -1,0 +1,1 @@
+ALTER TABLE `bindings` ADD COLUMN `binding_broadcast_targets_json` text DEFAULT '[]' NOT NULL;

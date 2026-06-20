@@ -11,6 +11,7 @@ export const bindings = sqliteTable('bindings', {
   feishuTargetJson: text('feishu_target_json').notNull(),
   triggersJson: text('triggers_json').notNull(),
   optionsJson: text('options_json').notNull(),
+  bindingBroadcastTargetsJson: text('binding_broadcast_targets_json').notNull().default('[]'),
   lastSyncedSha: text('last_synced_sha'),
   lastSyncedAt: text('last_synced_at'),
   createdAt: text('created_at').notNull(),

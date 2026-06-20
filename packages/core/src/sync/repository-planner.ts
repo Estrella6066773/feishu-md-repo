@@ -69,6 +69,7 @@ export class RepositoryPlanner implements SyncPlanner {
       trigger: context.trigger,
       fromSha: context.fromSha,
       toSha: context.toSha,
+      allTrackedPaths: normalizedTree,
       operations,
     };
   }

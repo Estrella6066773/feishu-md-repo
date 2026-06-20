@@ -1,6 +1,6 @@
 import type { DbClient } from '@feishu-md/db';
 import { getBotSettings, getFeishuCredentials } from '@feishu-md/db';
-import type { Binding, BotSettings, SyncTriggerType } from '@feishu-md/shared';
+import type { Binding, BotBroadcastTarget, BotSettings, SyncTriggerType } from '@feishu-md/shared';
 import { createFeishuClient, sendTextMessage } from '@feishu-md/feishu';
 import type { RunSyncResult } from '@feishu-md/core';
 
@@ -22,7 +22,10 @@ export class BotBroadcaster {
     const shouldSend =
       (context.success && settings.broadcastOnSuccess) ||
       (!context.success && settings.broadcastOnFailure);
-    if (!shouldSend || settings.broadcastTargets.length === 0) return;
+    if (!shouldSend) return;
+
+    const targets = resolveBroadcastTargets(settings, context.binding);
+    if (targets.length === 0) return;
 
     const credentials = await getFeishuCredentials(this.db);
     if (!credentials) return;
@@ -34,7 +37,7 @@ export class BotBroadcaster {
       : `❌ 同步失败\n绑定：${context.binding.name}\n触发：${triggerLabel}\n原因：${context.errorMessage ?? '未知错误'}`;
 
     await Promise.all(
-      settings.broadcastTargets.map(async (target) => {
+      targets.map(async (target) => {
         const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
         try {
           await sendTextMessage(client, receiveIdType, target.receiveId, text);
@@ -61,6 +64,17 @@ export class BotBroadcaster {
       }),
     );
   }
+}
+
+function resolveBroadcastTargets(
+  settings: BotSettings,
+  binding: Binding,
+): BotBroadcastTarget[] {
+  const bindingTargets = binding.bindingSpecificBroadcastTargets;
+  if (bindingTargets === undefined) {
+    return settings.broadcastTargets;
+  }
+  return bindingTargets;
 }
 
 function triggerName(trigger: SyncTriggerType): string {

@@ -3,6 +3,8 @@ import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
+  deleteNodeMapping,
+  deleteNodeMappingsByBindingAndPrefix,
   getFeishuCredentials,
   getNodeMappingByGitPath,
   insertSyncLog,
@@ -205,6 +207,8 @@ async function executePlan(options: {
     previousContentSha?: string;
   }> = [];
 
+  const existingMappings = await listNodeMappings(db, binding.id);
+
   for (const operation of plan.operations) {
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
 
@@ -273,6 +277,15 @@ async function executePlan(options: {
     }
   }
 
+  const deletedCount = await deleteRemovedNodes({
+    db,
+    binding,
+    adapter,
+    treePaths: plan.allTrackedPaths,
+    existingMappings,
+  });
+  count += deletedCount;
+
   if (pendingDocUpdates.length > 0) {
     const mappings = await listNodeMappings(db, binding.id);
     const mappingByGitPath = new Map(mappings.map((item) => [item.gitPath, item]));
@@ -299,6 +312,51 @@ async function executePlan(options: {
   }
 
   return count;
+}
+
+async function deleteRemovedNodes(options: {
+  db: DbClient;
+  binding: Binding;
+  adapter: ReturnType<typeof createTargetAdapter>;
+  treePaths: string[];
+  existingMappings: Awaited<ReturnType<typeof listNodeMappings>>;
+}): Promise<number> {
+  const { db, binding, adapter, treePaths, existingMappings } = options;
+  const normalizedTree = treePaths.map((path) => path.replace(/\\/g, '/'));
+  const treeSet = new Set(normalizedTree);
+
+  const toDelete = existingMappings.filter((mapping) => {
+    const gitPath = mapping.gitPath.replace(/\\/g, '/');
+    if (treeSet.has(gitPath)) return false;
+    const hasDescendant = normalizedTree.some((path) => path.startsWith(`${gitPath}/`));
+    return !hasDescendant;
+  });
+
+  toDelete.sort((a, b) => gitPathDepth(b.gitPath) - gitPathDepth(a.gitPath));
+
+  let count = 0;
+  for (const mapping of toDelete) {
+    try {
+      await adapter.deleteNode(mapping.feishuNodeToken, mapping.feishuNodeType);
+      count += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[sync] 删除节点失败，视为已删除并清理本地映射: ${message}`, {
+        gitPath: mapping.gitPath,
+        nodeType: mapping.feishuNodeType,
+        nodeToken: mapping.feishuNodeToken,
+      });
+    }
+    await deleteNodeMappingsByBindingAndPrefix(db, binding.id, mapping.gitPath);
+    await deleteNodeMapping(db, mapping.id);
+  }
+
+  return count;
+}
+
+function gitPathDepth(gitPath: string): number {
+  if (!gitPath) return 0;
+  return gitPath.replace(/\\/g, '/').split('/').length;
 }
 
 async function resolveParentToken(

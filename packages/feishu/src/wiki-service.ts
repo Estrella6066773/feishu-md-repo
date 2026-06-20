@@ -189,4 +189,16 @@ export async function findWikiChildByTitle(
   };
 }
 
+export async function deleteWikiNode(
+  client: FeishuClient,
+  options: { spaceId: string; nodeToken: string },
+): Promise<void> {
+  const response = await withRateLimit(() =>
+    (client as FeishuClient & { delete: (url: string) => Promise<{ code?: number; msg?: string }> }).delete(
+      `https://open.feishu.cn/open-apis/wiki/v2/spaces/${encodeURIComponent(options.spaceId)}/nodes/${encodeURIComponent(options.nodeToken)}`,
+    ),
+  );
+  assertFeishuResponse(response, 'Delete wiki node');
+}
+
 export { createEmptyDocument, replaceDocumentMarkdown };

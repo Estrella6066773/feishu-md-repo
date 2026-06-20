@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { Binding, FeishuTarget, RepoSourceType, SyncLogEntry, SyncMode } from '@feishu-md/shared';
+import type { Binding, BotBroadcastTarget, FeishuTarget, RepoSourceType, SyncLogEntry, SyncMode } from '@feishu-md/shared';
 import { defaultOptionsForMode, defaultTriggersForSourceType } from '@feishu-md/shared';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
@@ -301,6 +301,11 @@ function BindingForm(props: {
   const [wikiRootNodeToken, setWikiRootNodeToken] = useState('');
   const [driveRootFolderToken, setDriveRootFolderToken] = useState('');
   const [ignoreGlobsText, setIgnoreGlobsText] = useState('');
+  const [bindingTargets, setBindingTargets] = useState<BotBroadcastTarget[]>([]);
+  const [newTargetType, setNewTargetType] = useState<'chat' | 'user'>('chat');
+  const [newTargetId, setNewTargetId] = useState('');
+  const [newTargetLabel, setNewTargetLabel] = useState('');
+  const [hasExplicitBindingTargets, setHasExplicitBindingTargets] = useState(false);
 
   useEffect(() => {
     const binding = props.initial;
@@ -316,6 +321,9 @@ function BindingForm(props: {
       setWikiRootNodeToken(binding.feishuTarget.wikiRootNodeToken ?? '');
       setDriveRootFolderToken(binding.feishuTarget.driveRootFolderToken ?? '');
       setIgnoreGlobsText(binding.options.ignoreGlobs.join('\n'));
+      const explicitTargets = binding.bindingSpecificBroadcastTargets;
+      setHasExplicitBindingTargets(explicitTargets !== undefined);
+      setBindingTargets(explicitTargets ?? []);
     } else {
       setName('');
       setSourceType('local');
@@ -328,6 +336,8 @@ function BindingForm(props: {
       setWikiRootNodeToken('');
       setDriveRootFolderToken('');
       setIgnoreGlobsText(defaultOptionsForMode('workspace').ignoreGlobs.join('\n'));
+      setHasExplicitBindingTargets(false);
+      setBindingTargets([]);
     }
   }, [props.initial, props.mode]);
 
@@ -397,6 +407,7 @@ function BindingForm(props: {
                 ? props.initial.triggers
                 : defaultTriggersForSourceType(sourceType),
             options: syncModeChanged ? defaultOptionsForMode(syncMode) : buildBindingOptions(),
+            bindingSpecificBroadcastTargets: hasExplicitBindingTargets ? bindingTargets : undefined,
           });
         }}
       >
@@ -548,6 +559,89 @@ function BindingForm(props: {
             placeholder={'**/dist/**\n**/.env*'}
           />
         </Field>
+
+        <div className="form-grid-span-2">
+          <label className="flex items-center gap-2 text-sm font-medium text-fg-primary">
+            <input
+              type="checkbox"
+              checked={hasExplicitBindingTargets}
+              onChange={(e) => setHasExplicitBindingTargets(e.target.checked)}
+            />
+            为该绑定单独指定机器人播报目标
+          </label>
+          <p className="text-xs text-fg-tertiary mt-1">
+            勾选后仅发送到下方目标；不勾选则使用设置页里的全局播报目标。空数组表示“本绑定不播报”。
+          </p>
+        </div>
+
+        {hasExplicitBindingTargets ? (
+          <div className="form-grid-span-2 space-y-3">
+            <div className="flex items-end gap-2">
+              <Field label="类型" className="w-28">
+                <select
+                  className="field-input"
+                  value={newTargetType}
+                  onChange={(e) => setNewTargetType(e.target.value as 'chat' | 'user')}
+                >
+                  <option value="chat">群聊</option>
+                  <option value="user">用户</option>
+                </select>
+              </Field>
+              <Field label="接收 ID" hint="chat_id 或 open_id" className="flex-1">
+                <input
+                  className="field-input"
+                  value={newTargetId}
+                  onChange={(e) => setNewTargetId(e.target.value)}
+                  placeholder={newTargetType === 'chat' ? 'oc_xxxxxxxxxxxxxxxx' : 'ou_xxxxxxxxxxxxxxxx'}
+                />
+              </Field>
+              <Field label="备注" className="flex-1">
+                <input
+                  className="field-input"
+                  value={newTargetLabel}
+                  onChange={(e) => setNewTargetLabel(e.target.value)}
+                  placeholder="可选"
+                />
+              </Field>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  if (!newTargetId.trim()) return;
+                  setBindingTargets((prev) => [
+                    ...prev,
+                    { type: newTargetType, receiveId: newTargetId.trim(), label: newTargetLabel.trim() || undefined },
+                  ]);
+                  setNewTargetId('');
+                  setNewTargetLabel('');
+                }}
+              >
+                添加
+              </Button>
+            </div>
+            {bindingTargets.length > 0 ? (
+              <ul className="space-y-1">
+                {bindingTargets.map((target, index) => (
+                  <li key={index} className="flex items-center justify-between text-sm px-3 py-2 bg-bg-secondary rounded-md">
+                    <span>
+                      {target.type === 'chat' ? '群聊' : '用户'} · {target.receiveId}
+                      {target.label ? ` · ${target.label}` : null}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setBindingTargets((prev) => prev.filter((_, i) => i !== index))}
+                    >
+                      删除
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-fg-tertiary">当前未配置目标，该绑定不会收到机器人播报。</p>
+            )}
+          </div>
+        ) : null}
 
         <div className="action-bar form-grid-span-2">
           <Button type="submit" variant="primary" disabled={props.submitting}>

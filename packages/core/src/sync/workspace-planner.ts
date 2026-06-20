@@ -70,6 +70,7 @@ export class WorkspacePlanner implements SyncPlanner {
       trigger: context.trigger,
       fromSha: context.fromSha,
       toSha: context.toSha,
+      allTrackedPaths: normalizedTree,
       operations,
     };
   }

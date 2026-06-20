@@ -37,14 +37,23 @@ function normalizeFeishuClientError(error: unknown): Error {
   if (error && typeof error === 'object' && 'response' in error) {
     const axiosLike = error as {
       message?: string;
-      response?: { status?: number; data?: { code?: number; msg?: string } };
+      response?: {
+        status?: number;
+        data?: {
+          code?: number;
+          msg?: string;
+          error?: unknown;
+          field_violations?: Array<{ field?: string; description?: string; value?: unknown }>;
+        };
+      };
     };
     const data = axiosLike.response?.data;
     if (data?.msg) {
-      return new FeishuApiError(
-        data.msg,
-        data.code,
-      );
+      const violations = (data.field_violations ?? [])
+        .map((v) => `${v.field ?? '?'}: ${v.description ?? JSON.stringify(v.value)}`)
+        .join('; ');
+      const detail = violations ? ` (${violations})` : '';
+      return new FeishuApiError(`${data.msg}${detail}`, data.code);
     }
     if (axiosLike.message) {
       return new FeishuApiError(axiosLike.message);

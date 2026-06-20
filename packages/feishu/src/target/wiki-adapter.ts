@@ -3,17 +3,12 @@ import type { FeishuClient, FeishuTargetAdapter, NodeRef } from '../client.js';
 import type { FeishuTarget } from '@feishu-md/shared';
 
 import {
-
   createWikiDocxNode,
-
   createWikiFolderNode,
-
+  deleteWikiNode,
   findWikiChildByTitle,
-
   moveWikiNode,
-
   replaceDocumentMarkdown,
-
 } from '../wiki-service.js';
 
 
@@ -156,10 +151,8 @@ export class WikiAdapter implements FeishuTargetAdapter {
 
 
 
-  async deleteNode(_token: string): Promise<void> {
-
-    // Wiki 节点删除 API 在官方 SDK 中尚未稳定提供，暂不支持自动删除。
-
+  async deleteNode(token: string, _nodeType: 'folder' | 'docx' | 'file'): Promise<void> {
+    await deleteWikiNode(this.client, { spaceId: this.spaceId, nodeToken: token });
   }
 
 }

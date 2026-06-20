@@ -17,6 +17,8 @@ export interface SyncPlan {
   trigger: SyncTriggerType;
   fromSha?: string;
   toSha: string;
+  /** 当前 Git 追踪的所有路径（归一化后），用于判断哪些历史节点已被移除 */
+  allTrackedPaths: string[];
   operations: SyncOperation[];
 }
 

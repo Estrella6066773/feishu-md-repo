@@ -109,4 +109,17 @@ export async function findDriveChildByName(
   return { token: matched.token, nodeType: 'file', title: matched.name };
 }
 
+export async function deleteDriveFile(
+  client: FeishuClient,
+  options: { fileToken: string; type: 'docx' | 'folder' | 'file' },
+): Promise<void> {
+  const response = await withRateLimit(() =>
+    client.drive.v1.file.delete({
+      path: { file_token: options.fileToken },
+      params: { type: options.type },
+    }),
+  );
+  assertFeishuResponse(response, 'Delete drive file');
+}
+
 export { replaceDocumentMarkdown };

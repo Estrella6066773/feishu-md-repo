@@ -52,6 +52,8 @@ export interface Binding {
   feishuTarget: FeishuTarget;
   triggers: BindingTriggers;
   options: WorkspaceOptions | RepositoryOptions;
+  /** 机器人播报：绑定级目标群聊/用户。空数组仍表示“不使用全局目标”。未配置(undefined) 回退到全局 broadcastTargets。 */
+  bindingSpecificBroadcastTargets?: BotBroadcastTarget[];
   lastSyncedSha?: string;
   lastSyncedAt?: string;
   createdAt: string;
@@ -171,6 +173,8 @@ export const DEFAULT_BOT_SETTINGS: BotSettings = {
   commandAllowedUserOpenIds: [],
   commandRequireMentionInGroup: true,
 };
+
+export const DEFAULT_BINDING_BROADCAST_TARGETS: BotBroadcastTarget[] = [];
 
 export function defaultOptionsForMode(mode: SyncMode): WorkspaceOptions | RepositoryOptions {
   return mode === 'workspace'
