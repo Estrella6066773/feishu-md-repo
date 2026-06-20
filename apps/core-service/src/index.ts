@@ -1,5 +1,5 @@
 import { serve } from '@hono/node-server';
-import { createDb } from '@feishu-md/db';
+import { createDb, failUnfinishedSyncLogs } from '@feishu-md/db';
 import { loadConfig } from './config.js';
 import { createApp } from './app.js';
 import { Scheduler, SyncQueue } from './scheduler.js';
@@ -16,6 +16,10 @@ const syncCoordinator = new SyncCoordinator(db, queue, broadcaster);
 const botManager = new BotManager(db, syncCoordinator);
 
 const app = createApp({ db, config, queue, scheduler, syncCoordinator, botManager });
+const abandoned = await failUnfinishedSyncLogs(db);
+if (abandoned > 0) {
+  console.log(`[core-service] 已将 ${abandoned} 条未完成同步标记为失败（服务重启放弃）`);
+}
 scheduler.start(db, syncCoordinator);
 await botManager.refresh();
 
@@ -43,4 +47,4 @@ server.on('error', (error: NodeJS.ErrnoException) => {
   }
   throw error;
 });
-
+

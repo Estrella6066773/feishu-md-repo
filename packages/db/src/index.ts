@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, or } from 'drizzle-orm';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -179,6 +179,32 @@ export async function updateSyncLog(db: DbClient, entry: SyncLogEntry): Promise<
       finishedAt: entry.finishedAt,
     })
     .where(eq(schema.syncLogs.id, entry.id));
+}
+
+/** 启动时兜底：将历史未完成日志统一标记失败 */
+export async function failUnfinishedSyncLogs(db: DbClient, message = '服务重启，未完成任务已放弃'): Promise<number> {
+  const runningRows = await db
+    .select({ id: schema.syncLogs.id, bindingId: schema.syncLogs.bindingId, trigger: schema.syncLogs.trigger })
+    .from(schema.syncLogs)
+    .where(
+      or(
+        eq(schema.syncLogs.status, 'pending'),
+        eq(schema.syncLogs.status, 'running'),
+      ),
+    );
+
+  const finishedAt = new Date().toISOString();
+  for (const row of runningRows) {
+    await db
+      .update(schema.syncLogs)
+      .set({
+        status: 'failed',
+        message,
+        finishedAt,
+      })
+      .where(eq(schema.syncLogs.id, row.id));
+  }
+  return runningRows.length;
 }
 
 export async function getNodeMappingByGitPath(

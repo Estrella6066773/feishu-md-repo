@@ -3,6 +3,7 @@ import { getBinding, insertSyncLog, updateSyncLog } from '@feishu-md/db';
 import type { SyncTriggerType } from '@feishu-md/shared';
 import { randomUUID } from 'node:crypto';
 import { runSync } from '@feishu-md/core';
+import { createGitProvider } from '@feishu-md/git';
 import type { SyncQueue } from './scheduler.js';
 import type { BotBroadcaster } from './bot/broadcaster.js';
 
@@ -43,6 +44,36 @@ export class SyncCoordinator {
       }
 
       try {
+        if (trigger === 'schedule' && !fullResync) {
+          const git = createGitProvider(
+            {
+              repoPath: binding.repoPath,
+              branch: binding.branch,
+              remoteUrl: binding.remoteUrl,
+            },
+            binding.sourceType,
+          );
+
+          if (binding.sourceType === 'cloud' && git.fetchLatest) {
+            await git.fetchLatest();
+          }
+
+          const latestSha = await git.getHeadSha();
+          if (binding.lastSyncedSha && latestSha === binding.lastSyncedSha) {
+            await updateSyncLog(this.db, {
+              id: logId,
+              bindingId,
+              trigger,
+              toSha: latestSha,
+              status: 'success',
+              message: '定时检查：无更新，已跳过同步',
+              startedAt,
+              finishedAt: new Date().toISOString(),
+            });
+            return;
+          }
+        }
+
         const result = await runSync({
           binding,
           db: this.db,
