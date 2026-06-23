@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { Binding, BotBroadcastTarget, FeishuTarget, RepoSourceType, SyncLogEntry, SyncMode } from '@feishu-md/shared';
-import { defaultOptionsForMode, defaultTriggersForSourceType } from '@feishu-md/shared';
+import { defaultOptionsForMode, defaultTriggersForSourceType, DEFAULT_SCHEDULE_MINUTES } from '@feishu-md/shared';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -216,6 +216,11 @@ export function BindingsPage() {
                   <div className="binding-path">{binding.repoPath}</div>
                   <div className="binding-meta">
                     分支 {binding.branch}
+                    {binding.triggers.scheduleEnabled
+                      ? ` · 每 ${binding.triggers.scheduleMinutes} 分钟检查`
+                      : binding.sourceType === 'local'
+                        ? ' · 提交时同步'
+                        : ' · 未启用定时检查'}
                     {binding.feishuTarget.type === 'wiki'
                       ? ` · Wiki ${binding.feishuTarget.wikiSpaceId?.slice(0, 8) || '（自动解析）'}…${binding.feishuTarget.wikiRootNodeToken ? ` · 父 ${binding.feishuTarget.wikiRootNodeToken.slice(0, 8)}…` : ''}`
                       : ` · 云空间 ${binding.feishuTarget.driveRootFolderToken?.slice(0, 12) || '（未填）'}…`}
@@ -306,6 +311,8 @@ function BindingForm(props: {
   const [newTargetId, setNewTargetId] = useState('');
   const [newTargetLabel, setNewTargetLabel] = useState('');
   const [hasExplicitBindingTargets, setHasExplicitBindingTargets] = useState(false);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleMinutes, setScheduleMinutes] = useState(DEFAULT_SCHEDULE_MINUTES);
 
   useEffect(() => {
     const binding = props.initial;
@@ -324,6 +331,8 @@ function BindingForm(props: {
       const explicitTargets = binding.bindingSpecificBroadcastTargets;
       setHasExplicitBindingTargets(explicitTargets !== undefined);
       setBindingTargets(explicitTargets ?? []);
+      setScheduleEnabled(binding.triggers.scheduleEnabled);
+      setScheduleMinutes(binding.triggers.scheduleMinutes);
     } else {
       setName('');
       setSourceType('local');
@@ -338,6 +347,9 @@ function BindingForm(props: {
       setIgnoreGlobsText(defaultOptionsForMode('workspace').ignoreGlobs.join('\n'));
       setHasExplicitBindingTargets(false);
       setBindingTargets([]);
+      const defaults = defaultTriggersForSourceType('local');
+      setScheduleEnabled(defaults.scheduleEnabled);
+      setScheduleMinutes(defaults.scheduleMinutes);
     }
   }, [props.initial, props.mode]);
 
@@ -346,6 +358,17 @@ function BindingForm(props: {
       setIgnoreGlobsText(defaultOptionsForMode(syncMode).ignoreGlobs.join('\n'));
     }
   }, [syncMode, props.initial]);
+
+  function buildBindingTriggers() {
+    const defaults = defaultTriggersForSourceType(sourceType);
+    const keepExistingCommitHook =
+      isEdit && props.initial && props.initial.sourceType === sourceType;
+    return {
+      onGitCommit: keepExistingCommitHook ? props.initial!.triggers.onGitCommit : defaults.onGitCommit,
+      scheduleEnabled,
+      scheduleMinutes: Math.max(1, Math.round(Number(scheduleMinutes) || DEFAULT_SCHEDULE_MINUTES)),
+    };
+  }
 
   function buildBindingOptions() {
     const customGlobs = ignoreGlobsText
@@ -402,10 +425,7 @@ function BindingForm(props: {
             branch: branch.trim() || 'main',
             syncMode,
             feishuTarget,
-            triggers:
-              isEdit && props.initial && props.initial.sourceType === sourceType
-                ? props.initial.triggers
-                : defaultTriggersForSourceType(sourceType),
+            triggers: buildBindingTriggers(),
             options: syncModeChanged ? defaultOptionsForMode(syncMode) : buildBindingOptions(),
             bindingSpecificBroadcastTargets: hasExplicitBindingTargets ? bindingTargets : undefined,
           });
@@ -437,12 +457,54 @@ function BindingForm(props: {
           <select
             className="field-input"
             value={sourceType}
-            onChange={(e) => setSourceType(e.target.value as RepoSourceType)}
+            onChange={(e) => {
+              const next = e.target.value as RepoSourceType;
+              if (next !== sourceType) {
+                const defaults = defaultTriggersForSourceType(next);
+                setScheduleEnabled(defaults.scheduleEnabled);
+                if (!isEdit) {
+                  setScheduleMinutes(defaults.scheduleMinutes);
+                }
+              }
+              setSourceType(next);
+            }}
           >
             <option value="local">无云仓库（本地提交 hook 触发）</option>
             <option value="cloud">有云仓库（定时 fetch 远程）</option>
           </select>
         </Field>
+
+        <Field
+          label="定时检查"
+          hint={
+            sourceType === 'cloud'
+              ? '有云仓库默认开启；按设定间隔 fetch 远程并检查是否有更新。'
+              : '可选。本地仓库除提交 hook 外，也可按间隔主动检查并同步。'
+          }
+        >
+          <label className="flex items-center gap-2 text-sm text-fg-primary mb-2">
+            <input
+              type="checkbox"
+              checked={scheduleEnabled}
+              onChange={(e) => setScheduleEnabled(e.target.checked)}
+            />
+            启用定时检查
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              className="field-input w-24"
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              value={scheduleMinutes}
+              disabled={!scheduleEnabled}
+              onChange={(e) => setScheduleMinutes(Number(e.target.value))}
+            />
+            <span className="text-sm text-fg-secondary">分钟（默认 {DEFAULT_SCHEDULE_MINUTES} 分钟）</span>
+          </div>
+        </Field>
+
         <Field label="本机仓库路径" className="form-grid-span-2" hint="本机 Git 仓库的绝对路径">
           <input
             className="field-input"

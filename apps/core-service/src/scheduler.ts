@@ -1,6 +1,7 @@
 import type { DbClient } from '@feishu-md/db';
 import { listBindings } from '@feishu-md/db';
 import type { SyncTriggerType } from '@feishu-md/shared';
+import { normalizeBindingTriggers } from '@feishu-md/shared';
 import type { SyncCoordinator } from './sync-coordinator.js';
 
 export class SyncQueue {
@@ -39,13 +40,13 @@ export class Scheduler {
     this.stopAll();
     const bindings = await listBindings(db);
     for (const binding of bindings) {
-      if (!binding.triggers.scheduleEnabled) continue;
-      const minutes = Math.max(1, binding.triggers.scheduleMinutes);
+      const triggers = normalizeBindingTriggers(binding.triggers, binding.sourceType);
+      if (!triggers.scheduleEnabled) continue;
       const timer = setInterval(
         () => {
           syncCoordinator.enqueueBindingSync(binding.id, 'schedule');
         },
-        minutes * 60 * 1000,
+        triggers.scheduleMinutes * 60 * 1000,
       );
       this.timers.set(binding.id, timer);
     }

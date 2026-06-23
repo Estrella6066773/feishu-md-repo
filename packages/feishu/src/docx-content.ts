@@ -1,5 +1,7 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
+import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
+import { splitMarkdownByDiagrams } from './mermaid-markdown.js';
 
 type ConvertBlock = NonNullable<
   NonNullable<
@@ -36,12 +38,55 @@ export async function replaceDocumentMarkdown(
   await clearDocumentBody(client, documentId);
 
   const trimmed = markdown.trim() || ' ';
-  const candidates = uniqueStrings([trimmed, flattenMarkdownTables(trimmed)]);
+  const segments = splitMarkdownByDiagrams(trimmed);
+  let insertIndex = 0;
 
+  for (const segment of segments) {
+    if (segment.kind === 'markdown') {
+      insertIndex += await insertMarkdownSegment(client, documentId, segment.content, insertIndex);
+      continue;
+    }
+
+    const whiteboardId = await insertBoardBlock(client, documentId, insertIndex);
+    try {
+      await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
+    } catch (error) {
+      const message = error instanceof FeishuApiError
+        ? `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      console.warn(`[sync] 画板图表导入失败，保留 Markdown 代码块: ${message}`);
+      await deleteDocumentBlockAt(client, documentId, insertIndex);
+      insertIndex += await insertMarkdownSegment(
+        client,
+        documentId,
+        wrapAsMermaidFence(segment.code),
+        insertIndex,
+      );
+      continue;
+    }
+    insertIndex += 1;
+  }
+
+  if (insertIndex === 0) {
+    await insertPlainTextBlockAt(client, documentId, trimmed, 0);
+  }
+}
+
+async function insertMarkdownSegment(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+  index: number,
+): Promise<number> {
+  const trimmed = markdown.trim();
+  if (!trimmed) return 0;
+
+  const candidates = uniqueStrings([trimmed, flattenMarkdownTables(trimmed)]);
   for (const content of candidates) {
     try {
-      await insertConvertedMarkdown(client, documentId, content);
-      return;
+      return await insertConvertedMarkdownAt(client, documentId, content, index);
     } catch (error) {
       if (!isDocxInsertRecoverableError(error)) {
         throw error;
@@ -49,14 +94,16 @@ export async function replaceDocumentMarkdown(
     }
   }
 
-  await insertPlainTextBlock(client, documentId, trimmed);
+  await insertPlainTextBlockAt(client, documentId, trimmed, index);
+  return 1;
 }
 
-async function insertConvertedMarkdown(
+async function insertConvertedMarkdownAt(
   client: FeishuClient,
   documentId: string,
   markdown: string,
-): Promise<void> {
+  index: number,
+): Promise<number> {
   const convertResponse = await withRateLimit(() =>
     client.docx.v1.document.convert({
       data: {
@@ -82,12 +129,14 @@ async function insertConvertedMarkdown(
       },
       data: {
         children_id: firstLevelBlockIds,
-        index: 0,
+        index,
         descendants: blocks as ConvertBlock[],
       },
     }),
   );
   assertFeishuResponse(createResponse, 'Insert converted docx blocks');
+
+  return firstLevelBlockIds.length;
 }
 
 async function clearDocumentBody(client: FeishuClient, documentId: string): Promise<void> {
@@ -118,10 +167,11 @@ async function clearDocumentBody(client: FeishuClient, documentId: string): Prom
   assertFeishuResponse(deleteResponse, 'Clear docx document body');
 }
 
-async function insertPlainTextBlock(
+async function insertPlainTextBlockAt(
   client: FeishuClient,
   documentId: string,
   text: string,
+  index: number,
 ): Promise<void> {
   const response = await withRateLimit(() =>
     client.docx.v1.documentBlockChildren.create({
@@ -138,10 +188,35 @@ async function insertPlainTextBlock(
             },
           },
         ],
+        index,
       },
     }),
   );
   assertFeishuResponse(response, 'Insert plain text block');
+}
+
+async function deleteDocumentBlockAt(
+  client: FeishuClient,
+  documentId: string,
+  index: number,
+): Promise<void> {
+  const deleteResponse = await withRateLimit(() =>
+    client.docx.v1.documentBlockChildren.batchDelete({
+      path: {
+        document_id: documentId,
+        block_id: documentId,
+      },
+      data: {
+        start_index: index,
+        end_index: index + 1,
+      },
+    }),
+  );
+  assertFeishuResponse(deleteResponse, 'Delete docx block at index');
+}
+
+function wrapAsMermaidFence(code: string): string {
+  return `\`\`\`mermaid\n${code.trim()}\n\`\`\``;
 }
 
 /** 将 GFM 表格转为列表，避免飞书 block 插入接口对表格块报 invalid param */

@@ -21,6 +21,7 @@ import type { Binding, BotSettings, FeishuCredentials, FeishuUserPermission, Syn
 import {
   defaultOptionsForMode,
   defaultTriggersForSourceType,
+  normalizeBindingTriggers,
   DEFAULT_BOT_SETTINGS,
 } from '@feishu-md/shared';
 import { installLocalHook, removeLocalHook } from '@feishu-md/git';
@@ -174,7 +175,7 @@ export function createApp(options: {
       branch: body.branch ?? 'main',
       syncMode,
       feishuTarget: body.feishuTarget ?? { type: 'wiki', wikiSpaceId: '' },
-      triggers: body.triggers ?? defaultTriggersForSourceType(body.sourceType ?? 'local'),
+      triggers: normalizeBindingTriggers(body.triggers, body.sourceType ?? 'local'),
       options: body.options ?? defaultOptionsForMode(syncMode),
       createdAt: now,
       updatedAt: now,
@@ -200,6 +201,10 @@ export function createApp(options: {
       ...existing,
       ...body,
       id: existing.id,
+      triggers: normalizeBindingTriggers(
+        body.triggers ?? existing.triggers,
+        (body.sourceType ?? existing.sourceType) as Binding['sourceType'],
+      ),
       updatedAt: new Date().toISOString(),
     };
 

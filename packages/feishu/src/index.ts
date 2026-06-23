@@ -3,6 +3,7 @@ export { FeishuApiError } from './api-error.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';
 export { getWikiNodeByToken, type ResolvedWikiNode } from './wiki-service.js';
 export { replaceDocumentMarkdown } from './docx-content.js';
+export { toFeishuDocumentUrl, type FeishuDocumentLinkTarget } from './document-url.js';
 export {
   sendTextMessage,
   replyTextMessage,
@@ -10,3 +11,19 @@ export {
   type ImReceiveIdType,
 } from './im-service.js';
 export { parseBotCommand, BOT_HELP_TEXT, type BotCommandAction } from './command-parser.js';
+export {
+  ensureWhiteboardInDocument,
+  insertBoardBlock,
+  importBoardMermaidDiagram,
+  replaceBoardMindMap,
+  replaceBoardLinkMindMap,
+  clearBoardNodes,
+  listBoardNodeIds,
+  type BoardMindMapLinkNode,
+} from './board-service.js';
+export {
+  splitMarkdownByDiagrams,
+  detectMermaidDiagramType,
+  MERMAID_DIAGRAM_TYPE,
+  type MarkdownDocumentSegment,
+} from './mermaid-markdown.js';

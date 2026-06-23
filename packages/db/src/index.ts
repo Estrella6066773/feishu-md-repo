@@ -19,7 +19,7 @@ import type {
   FeishuUserPermission,
   BotBroadcastTarget,
 } from '@feishu-md/shared';
-import { DEFAULT_BOT_SETTINGS } from '@feishu-md/shared';
+import { DEFAULT_BOT_SETTINGS, normalizeBindingTriggers } from '@feishu-md/shared';
 import * as schema from './schema.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,7 +56,10 @@ function parseBinding(row: typeof schema.bindings.$inferSelect): Binding {
     branch: row.branch,
     syncMode: row.syncMode,
     feishuTarget: JSON.parse(row.feishuTargetJson) as FeishuTarget,
-    triggers: JSON.parse(row.triggersJson) as BindingTriggers,
+    triggers: normalizeBindingTriggers(
+      JSON.parse(row.triggersJson) as Partial<BindingTriggers>,
+      row.sourceType,
+    ),
     options: JSON.parse(row.optionsJson) as WorkspaceOptions | RepositoryOptions,
     bindingSpecificBroadcastTargets: JSON.parse(
       row.bindingBroadcastTargetsJson || '[]',

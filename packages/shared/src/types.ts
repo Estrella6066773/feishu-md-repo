@@ -4,6 +4,16 @@ export type FeishuTargetType = 'wiki' | 'drive';
 export type SyncTriggerType = 'git' | 'schedule' | 'manual' | 'bot';
 export type MissingReadmePolicy = 'skip' | 'placeholder' | 'empty_doc';
 export type FeishuNodeType = 'folder' | 'docx' | 'file';
+
+/** 同步时在飞书根级创建的「同步文档总览」节点映射路径（非 Git 路径） */
+export const SYNC_OVERVIEW_GIT_PATH = '__sync_overview__';
+
+/** 同步文档总览在飞书侧的标题 */
+export const SYNC_OVERVIEW_TITLE = '同步文档总览';
+
+export function isReservedSyncGitPath(gitPath: string): boolean {
+  return gitPath.replace(/\\/g, '/') === SYNC_OVERVIEW_GIT_PATH;
+}
 export type SyncJobStatus = 'pending' | 'running' | 'success' | 'failed';
 
 export type FeishuUserRole = 'admin' | 'manager' | 'member' | 'blacklist';
@@ -140,25 +150,47 @@ export const DEFAULT_REPOSITORY_OPTIONS: RepositoryOptions = {
   ignoreGlobs: ['**/node_modules/**', '**/.git/**'],
 };
 
+/** 默认定时检查间隔（分钟） */
+export const DEFAULT_SCHEDULE_MINUTES = 10;
+
 export const DEFAULT_TRIGGERS: BindingTriggers = {
   onGitCommit: true,
   scheduleEnabled: false,
-  scheduleMinutes: 15,
+  scheduleMinutes: DEFAULT_SCHEDULE_MINUTES,
 };
 
-/** 本地库：提交 hook；有云库：定时 fetch 远程 */
+/** 本地库：提交 hook；有云库：默认定时 fetch 远程 */
 export function defaultTriggersForSourceType(sourceType: RepoSourceType): BindingTriggers {
   if (sourceType === 'cloud') {
     return {
       onGitCommit: false,
       scheduleEnabled: true,
-      scheduleMinutes: 15,
+      scheduleMinutes: DEFAULT_SCHEDULE_MINUTES,
     };
   }
   return {
     onGitCommit: true,
     scheduleEnabled: false,
-    scheduleMinutes: 15,
+    scheduleMinutes: DEFAULT_SCHEDULE_MINUTES,
+  };
+}
+
+export const MIN_SCHEDULE_MINUTES = 1;
+export const MAX_SCHEDULE_MINUTES = 1440;
+
+export function normalizeBindingTriggers(
+  triggers: Partial<BindingTriggers> | undefined,
+  sourceType: RepoSourceType = 'local',
+): BindingTriggers {
+  const defaults = defaultTriggersForSourceType(sourceType);
+  const merged = { ...defaults, ...triggers };
+  const minutes = Number(merged.scheduleMinutes);
+  return {
+    onGitCommit: Boolean(merged.onGitCommit),
+    scheduleEnabled: Boolean(merged.scheduleEnabled),
+    scheduleMinutes: Number.isFinite(minutes)
+      ? Math.min(MAX_SCHEDULE_MINUTES, Math.max(MIN_SCHEDULE_MINUTES, Math.round(minutes)))
+      : DEFAULT_SCHEDULE_MINUTES,
   };
 }
 

@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
+import { isReservedSyncGitPath } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
   deleteNodeMapping,
@@ -17,10 +18,13 @@ import { createGitProvider, resolveSyncPaths } from '@feishu-md/git';
 import {
   createFeishuClient,
   createTargetAdapter,
+  FeishuApiError,
   resolveRepositoryFeishuTarget,
+  toFeishuDocumentUrl,
   type NodeRef,
 } from '@feishu-md/feishu';
 import { createPlanner } from './sync/factory.js';
+import { syncOverviewWhiteboard } from './sync/overview-whiteboard.js';
 import type { SyncPlan } from './sync/planner.js';
 
 export interface RunSyncOptions {
@@ -113,7 +117,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
         binding.syncMode === 'repository' ? (binding.options as RepositoryOptions) : undefined,
     });
 
-    const operationCount = await executePlan({
+    const { operationCount, overviewUpdated } = await executePlan({
       plan,
       binding,
       db,
@@ -149,8 +153,12 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       toSha,
       status: 'success',
       message: isIncrementalNoop
-        ? '无内容变更，跳过写入'
-        : `已同步 ${operationCount} 项`,
+        ? overviewUpdated
+          ? '无正文变更，已更新同步文档总览'
+          : '无内容变更，跳过写入'
+        : overviewUpdated
+          ? `已同步 ${operationCount} 项，已更新同步文档总览`
+          : `已同步 ${operationCount} 项`,
       startedAt,
       finishedAt: new Date().toISOString(),
     });
@@ -178,7 +186,7 @@ async function executePlan(options: {
   db: DbClient;
   credentials: { appId: string; appSecret: string };
   syncMode: Binding['syncMode'];
-}): Promise<number> {
+}): Promise<{ operationCount: number; overviewUpdated: boolean }> {
   const { plan, binding, db, credentials, syncMode } = options;
   const client = createFeishuClient(credentials);
 
@@ -311,7 +319,26 @@ async function executePlan(options: {
     }
   }
 
-  return count;
+  let overviewUpdated = false;
+  try {
+    overviewUpdated = await syncOverviewWhiteboard({
+      binding,
+      db,
+      client,
+      adapter,
+      targetType: resolved.target.type,
+      syncMode,
+    });
+  } catch (error) {
+    const message = error instanceof FeishuApiError
+      ? `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}`
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    console.warn(`[sync] 同步文档总览更新失败: ${message}`);
+  }
+
+  return { operationCount: count, overviewUpdated };
 }
 
 async function deleteRemovedNodes(options: {
@@ -327,6 +354,7 @@ async function deleteRemovedNodes(options: {
 
   const toDelete = existingMappings.filter((mapping) => {
     const gitPath = mapping.gitPath.replace(/\\/g, '/');
+    if (isReservedSyncGitPath(gitPath)) return false;
     if (treeSet.has(gitPath)) return false;
     const hasDescendant = normalizedTree.some((path) => path.startsWith(`${gitPath}/`));
     return !hasDescendant;
@@ -459,14 +487,6 @@ function findLinkTargetMapping(
     if (mapping) return mapping;
   }
   return null;
-}
-
-function toFeishuDocumentUrl(mapping: Awaited<ReturnType<typeof listNodeMappings>>[number]): string {
-  if (mapping.feishuTargetType === 'wiki') {
-    return `https://feishu.cn/wiki/${mapping.feishuNodeToken}`;
-  }
-  const token = mapping.feishuDocToken ?? mapping.feishuNodeToken;
-  return `https://feishu.cn/docx/${token}`;
 }
 
 function normalizePath(path: string): string {

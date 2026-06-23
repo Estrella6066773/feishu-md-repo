@@ -83,6 +83,7 @@ pnpm dev:desktop
 | 云空间文件夹 / 文件 | `drive:drive` 或 `space:folder:create` |
 | 新版文档读写 | `docx:document` |
 | Markdown 转换（官方 convert 接口） | `docx:document` |
+| 画板节点（同步文档总览思维导图） | `board:whiteboard:node:read`、`board:whiteboard:node:create`、`board:whiteboard:node:delete` |
 | 机器人消息 | `im:message` |
 | 接收消息事件 | 订阅 `im.message.receive_v1`，订阅方式选 **长连接** |
 
@@ -94,9 +95,10 @@ pnpm dev:desktop
 - 手动同步 / 全量重建（队列执行）
 - **Wiki**：`POST /wiki/v2/spaces/:space_id/nodes` 创建 docx 子节点
 - **Drive**：`create_folder` + `docx/documents` 创建目录与文档
-- **正文写入**：`docx/document/convert`（Markdown）+ `documentBlockDescendant/create`
+- **正文写入**：`docx/document/convert`（Markdown）+ `documentBlockDescendant/create`；文内 Mermaid 流程图/图表代码块会插入画板块并用 API 绘制
 - 本地 Git post-commit hook（仅本地库）/ 有云库定时 fetch 远程
 - 节点映射持久化（避免重复创建）
+- **同步文档总览**：每次同步在飞书根级创建/更新「同步文档总览」文档，内含画板思维导图，展示当前已同步的文档树结构
 - **同步播报**：向配置的群/用户推送成功/失败消息
 - **飞书指令**：长连接监听 `同步` / `status` 等指令并触发同步
 
@@ -167,8 +169,22 @@ git commit -m "chore: 初始化项目"
 
 | 类型 | 默认触发 | 同步时 Git 行为 |
 |------|----------|-----------------|
-| **本地库** | `post-commit` hook 监听本机提交 | 读取本地 `HEAD`，不 fetch 远程 |
-| **有云库** | 每 15 分钟定时同步 | `git fetch origin <分支>` 后读 `origin/<分支>` |
+| **本地库** | `post-commit` hook；可选定时检查（默认 10 分钟，可单独设置） | 读取本地 `HEAD`，不 fetch 远程 |
+| **有云库** | 默认每 10 分钟定时检查（可在绑定里单独设置） | `git fetch origin <分支>` 后读 `origin/<分支>` |
 
 有云库**不会**安装 post-commit hook；只有远程有新 commit，且在定时/手动/机器人触发 fetch 后才会更新飞书。已有旧绑定若行为不对，请在面板重新保存一次以应用默认触发配置。
+
+### Markdown 中的流程图 / 图表
+
+同步正文时，下列 fenced 代码块会**自动插入飞书画板块**并绘制，而不是当作普通代码块：
+
+````markdown
+```mermaid
+flowchart LR
+    A[规划路线] --> B[移动城市]
+    B --> C[停下交互]
+```
+````
+
+也支持 ` ```flowchart `、` ```graph ` 语言标记，或首行以 `flowchart` / `graph` 开头的无语言标记块。支持的类型包括流程图、思维导图、时序图等（由飞书画板 Mermaid 导入接口解析）。
 
