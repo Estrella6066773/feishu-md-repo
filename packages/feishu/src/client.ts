@@ -33,6 +33,8 @@ export interface FeishuTargetAdapter {
     title: string,
     existing?: NodeRef,
   ): Promise<NodeRef>;
+  /** 校验飞书侧节点是否仍存在（映射未过期） */
+  nodeExists(ref: NodeRef): Promise<boolean>;
   updateDocumentContent(docToken: string, markdown: string): Promise<void>;
   moveNode(token: string, newParentToken: string | undefined): Promise<void>;
   deleteNode(token: string, nodeType: 'folder' | 'docx' | 'file'): Promise<void>;

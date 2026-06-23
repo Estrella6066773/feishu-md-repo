@@ -28,7 +28,8 @@ export class WorkspacePlanner implements SyncPlanner {
     const mdExtensions = options.mdExtensions;
     const normalizedTree = context.treePaths.map(normalizePath);
     const changedSet = new Set(context.changedPaths.map(normalizePath));
-    const incremental = context.fromSha != null && changedSet.size > 0;
+    const gapFillOnly = context.fullResync === true;
+    const incremental = !gapFillOnly && context.fromSha != null && changedSet.size > 0;
 
     const mdPaths = normalizedTree.filter((path) => isMarkdown(path, mdExtensions));
     const pathsToSync = incremental
@@ -52,6 +53,17 @@ export class WorkspacePlanner implements SyncPlanner {
     }
 
     for (const path of pathsToSync) {
+      if (gapFillOnly) {
+        operations.push({
+          type: 'ensure_doc' as const,
+          gitPath: path,
+          sourcePath: path,
+          title: basename(path, '.md'),
+          parentGitPath: dirname(path) === '.' ? '' : dirname(path),
+        });
+        continue;
+      }
+
       const content = await context.readMarkdown(path);
       if (content == null) continue;
 
@@ -71,6 +83,7 @@ export class WorkspacePlanner implements SyncPlanner {
       fromSha: context.fromSha,
       toSha: context.toSha,
       allTrackedPaths: normalizedTree,
+      gapFillOnly,
       operations,
     };
   }

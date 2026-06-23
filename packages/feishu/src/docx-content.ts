@@ -1,5 +1,6 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
+import { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import { splitMarkdownByDiagrams } from './mermaid-markdown.js';
 
@@ -50,6 +51,17 @@ export async function replaceDocumentMarkdown(
     const whiteboardId = await insertBoardBlock(client, documentId, insertIndex);
     try {
       await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      try {
+        await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
+      } catch (sectionError) {
+        const message = sectionError instanceof FeishuApiError
+          ? `${sectionError.message}${sectionError.code != null ? ` [code ${sectionError.code}]` : ''}`
+          : sectionError instanceof Error
+            ? sectionError.message
+            : String(sectionError);
+        console.warn(`[sync] 画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${message}`);
+      }
     } catch (error) {
       const message = error instanceof FeishuApiError
         ? `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}`

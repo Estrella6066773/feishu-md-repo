@@ -24,8 +24,12 @@ import {
   type NodeRef,
 } from '@feishu-md/feishu';
 import { createPlanner } from './sync/factory.js';
+import {
+  buildRepairOperationsForMissingRemote,
+  sortSyncOperations,
+} from './sync/repair-missing-nodes.js';
 import { syncOverviewWhiteboard } from './sync/overview-whiteboard.js';
-import type { SyncPlan } from './sync/planner.js';
+import type { SyncOperation, SyncPlan } from './sync/planner.js';
 
 export interface RunSyncOptions {
   binding: Binding;
@@ -101,6 +105,12 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       fromSha,
     });
 
+    const readMarkdown = (path: string) => git.readFileAtSha(toSha, path);
+    const workspaceOptions =
+      binding.syncMode === 'workspace' ? (binding.options as WorkspaceOptions) : undefined;
+    const repositoryOptions =
+      binding.syncMode === 'repository' ? (binding.options as RepositoryOptions) : undefined;
+
     const planner = createPlanner(binding.syncMode);
     const plan = await planner.buildPlan({
       bindingId: binding.id,
@@ -108,13 +118,12 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       trigger,
       fromSha,
       toSha,
+      fullResync,
       treePaths,
       changedPaths,
-      readMarkdown: (path) => git.readFileAtSha(toSha, path),
-      workspaceOptions:
-        binding.syncMode === 'workspace' ? (binding.options as WorkspaceOptions) : undefined,
-      repositoryOptions:
-        binding.syncMode === 'repository' ? (binding.options as RepositoryOptions) : undefined,
+      readMarkdown,
+      workspaceOptions,
+      repositoryOptions,
     });
 
     const { operationCount, overviewUpdated } = await executePlan({
@@ -123,12 +132,17 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       db,
       credentials,
       syncMode: binding.syncMode,
+      readMarkdown,
+      workspaceOptions,
+      repositoryOptions,
     });
 
     const isIncrementalNoop =
       plan.operations.length === 0 && fromSha != null && !fullResync && treePaths.length > 0;
 
-    if (plan.operations.length === 0 && !isIncrementalNoop) {
+    const isGapFillNoop = fullResync === true && operationCount === 0 && treePaths.length > 0;
+
+    if (plan.operations.length === 0 && !isIncrementalNoop && !isGapFillNoop && fullResync !== true) {
       if (treePaths.length === 0) {
         throw new Error('无可同步文件：请确认仓库路径、分支正确，且存在 Git 已跟踪的文件');
       }
@@ -152,13 +166,21 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       fromSha,
       toSha,
       status: 'success',
-      message: isIncrementalNoop
+      message: isGapFillNoop
         ? overviewUpdated
-          ? '无正文变更，已更新同步文档总览'
-          : '无内容变更，跳过写入'
-        : overviewUpdated
-          ? `已同步 ${operationCount} 项，已更新同步文档总览`
-          : `已同步 ${operationCount} 项`,
+          ? '飞书结构完整，已更新同步文档总览'
+          : '飞书结构完整，无需补缺'
+        : isIncrementalNoop
+          ? overviewUpdated
+            ? '无正文变更，已更新同步文档总览'
+            : '无内容变更，跳过写入'
+          : fullResync
+            ? overviewUpdated
+              ? `已查漏补缺 ${operationCount} 项，已更新同步文档总览`
+              : `已查漏补缺 ${operationCount} 项`
+            : overviewUpdated
+              ? `已同步 ${operationCount} 项，已更新同步文档总览`
+              : `已同步 ${operationCount} 项`,
       startedAt,
       finishedAt: new Date().toISOString(),
     });
@@ -186,8 +208,21 @@ async function executePlan(options: {
   db: DbClient;
   credentials: { appId: string; appSecret: string };
   syncMode: Binding['syncMode'];
+  readMarkdown: (path: string) => Promise<string | null>;
+  workspaceOptions?: WorkspaceOptions;
+  repositoryOptions?: RepositoryOptions;
 }): Promise<{ operationCount: number; overviewUpdated: boolean }> {
-  const { plan, binding, db, credentials, syncMode } = options;
+  const {
+    plan,
+    binding,
+    db,
+    credentials,
+    syncMode,
+    readMarkdown,
+    workspaceOptions,
+    repositoryOptions,
+  } = options;
+  const gapFillOnly = plan.gapFillOnly === true;
   const client = createFeishuClient(credentials);
 
   const resolved =
@@ -213,19 +248,50 @@ async function executePlan(options: {
     docToken: string;
     markdown: string;
     previousContentSha?: string;
+    forceWrite?: boolean;
   }> = [];
 
   const existingMappings = await listNodeMappings(db, binding.id);
 
-  for (const operation of plan.operations) {
+  let operations: SyncOperation[] = [...plan.operations];
+  if (gapFillOnly) {
+    const repairs = await buildRepairOperationsForMissingRemote({
+      binding,
+      db,
+      adapter,
+      plan,
+      syncMode,
+      bindingName: binding.name,
+      readMarkdown,
+      workspaceOptions,
+      repositoryOptions,
+      gapFillOnly: true,
+    });
+    const plannedPaths = new Set(operations.map((operation) => normalizePath(operation.gitPath)));
+    for (const repair of repairs) {
+      const gitPath = normalizePath(repair.gitPath);
+      if (plannedPaths.has(gitPath)) continue;
+      operations.push(repair);
+      plannedPaths.add(gitPath);
+    }
+    operations = sortSyncOperations(operations);
+  }
+
+  for (const operation of operations) {
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
 
     switch (operation.type) {
       case 'ensure_folder': {
         const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
-        const folder = existing
-          ? mappingToNodeRef(existing)
-          : await adapter.ensureFolder(operation.gitPath, parentToken, operation.title ?? operation.gitPath);
+        if (existing && (await adapter.nodeExists(mappingToNodeRef(existing)))) {
+          break;
+        }
+
+        const folder = await adapter.ensureFolder(
+          operation.gitPath,
+          parentToken,
+          operation.title ?? operation.gitPath,
+        );
 
         await upsertNodeMapping(db, {
           id: existing?.id ?? randomUUID(),
@@ -244,6 +310,13 @@ async function executePlan(options: {
       case 'ensure_doc': {
         const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
         const existingRef = existing ? mappingToNodeRef(existing) : undefined;
+        const remoteExists = existingRef ? await adapter.nodeExists(existingRef) : false;
+        const contentNeverSynced = !existing?.contentSha;
+
+        if (gapFillOnly && remoteExists && !contentNeverSynced) {
+          break;
+        }
+
         const useConfiguredRootDoc =
           operation.gitPath === '' && rootDocumentRef != null && existingRef == null;
         const doc = useConfiguredRootDoc
@@ -252,18 +325,26 @@ async function executePlan(options: {
               operation.gitPath,
               parentToken,
               operation.title ?? operation.gitPath,
-              existingRef,
+              remoteExists ? existingRef : undefined,
             );
 
         const docToken = doc.docToken ?? doc.token;
-        const contentMarkdown = operation.contentMarkdown ?? '';
-        if (contentMarkdown) {
+        const sourcePath = operation.sourcePath ?? operation.gitPath;
+        const shouldWriteContent = !gapFillOnly || !remoteExists || contentNeverSynced;
+        let contentMarkdown = operation.contentMarkdown;
+
+        if (shouldWriteContent && !contentMarkdown) {
+          contentMarkdown = (await readMarkdown(sourcePath)) ?? undefined;
+        }
+
+        if (shouldWriteContent && contentMarkdown) {
           pendingDocUpdates.push({
             gitPath: operation.gitPath,
-            sourcePath: operation.sourcePath ?? operation.gitPath,
+            sourcePath,
             docToken,
             markdown: contentMarkdown,
-            previousContentSha: existing?.contentSha,
+            previousContentSha: gapFillOnly ? undefined : existing?.contentSha,
+            forceWrite: gapFillOnly && (!remoteExists || contentNeverSynced),
           });
         }
 
@@ -305,7 +386,7 @@ async function executePlan(options: {
         mappingByGitPath,
       );
       const rewrittenSha = hashContent(rewritten);
-      if (pending.previousContentSha !== rewrittenSha) {
+      if (pending.forceWrite || pending.previousContentSha !== rewrittenSha) {
         await adapter.updateDocumentContent(pending.docToken, rewritten);
       }
 
@@ -495,4 +576,3 @@ function normalizePath(path: string): string {
 
 export { createPlanner } from './sync/factory.js';
 export type { SyncPlan, SyncOperation } from './sync/planner.js';
-

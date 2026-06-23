@@ -20,7 +20,8 @@ export class RepositoryPlanner implements SyncPlanner {
     const options = context.repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS;
     const normalizedTree = context.treePaths.map(normalizePath);
     const changedSet = new Set(context.changedPaths.map(normalizePath));
-    const incremental = context.fromSha != null && changedSet.size > 0;
+    const gapFillOnly = context.fullResync === true;
+    const incremental = !gapFillOnly && context.fromSha != null && changedSet.size > 0;
     const rootTitle = context.bindingName?.trim() || context.bindingId;
 
     const containers = discoverRepositoryContainers(normalizedTree, options.readmeNames);
@@ -29,7 +30,18 @@ export class RepositoryPlanner implements SyncPlanner {
     const operations = [];
 
     for (const container of containers) {
-      if (!isRepositoryContainerDirty(container, changedSet, incremental)) continue;
+      if (!gapFillOnly && !isRepositoryContainerDirty(container, changedSet, incremental)) continue;
+
+      if (gapFillOnly) {
+        operations.push({
+          type: 'ensure_doc' as const,
+          gitPath: container.logicalPath,
+          sourcePath: container.sourcePath,
+          title: repositoryContainerTitle(container.logicalPath, rootTitle),
+          parentGitPath: resolveRepositoryParentLogicalPath(container.logicalPath, containerPaths),
+        });
+        continue;
+      }
 
       const content = await context.readMarkdown(container.sourcePath);
       if (content == null) continue;
@@ -49,7 +61,18 @@ export class RepositoryPlanner implements SyncPlanner {
       options.readmeNames,
       containerSourcePaths,
     )) {
-      if (!isStandaloneFileDirty(filePath, changedSet, incremental)) continue;
+      if (!gapFillOnly && !isStandaloneFileDirty(filePath, changedSet, incremental)) continue;
+
+      if (gapFillOnly) {
+        operations.push({
+          type: 'ensure_doc' as const,
+          gitPath: filePath,
+          sourcePath: filePath,
+          title: standaloneMarkdownTitle(filePath),
+          parentGitPath: resolveParentForStandaloneFile(filePath, containerPaths),
+        });
+        continue;
+      }
 
       const content = await context.readMarkdown(filePath);
       if (content == null) continue;
@@ -70,6 +93,7 @@ export class RepositoryPlanner implements SyncPlanner {
       fromSha: context.fromSha,
       toSha: context.toSha,
       allTrackedPaths: normalizedTree,
+      gapFillOnly,
       operations,
     };
   }

@@ -8,6 +8,7 @@ import {
   moveDriveFile,
   replaceDocumentMarkdown,
 } from '../drive-service.js';
+import { driveNodeExists } from '../node-exists.js';
 
 export class DriveAdapter implements FeishuTargetAdapter {
   readonly type = 'drive' as const;
@@ -42,13 +43,17 @@ export class DriveAdapter implements FeishuTargetAdapter {
     });
   }
 
+  async nodeExists(ref: NodeRef): Promise<boolean> {
+    return driveNodeExists(this.client, ref);
+  }
+
   async ensureDocument(
     _gitPath: string,
     parentToken: string | undefined,
     title: string,
     existing?: NodeRef,
   ): Promise<NodeRef> {
-    if (existing?.docToken) {
+    if (existing && (await this.nodeExists(existing))) {
       return existing;
     }
 

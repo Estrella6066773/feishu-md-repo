@@ -10,6 +10,7 @@ import {
   moveWikiNode,
   replaceDocumentMarkdown,
 } from '../wiki-service.js';
+import { wikiNodeExists } from '../node-exists.js';
 
 
 
@@ -83,6 +84,14 @@ export class WikiAdapter implements FeishuTargetAdapter {
 
 
 
+  async nodeExists(ref: NodeRef): Promise<boolean> {
+
+    return wikiNodeExists(this.client, ref);
+
+  }
+
+
+
   async ensureDocument(
 
     _gitPath: string,
@@ -95,7 +104,7 @@ export class WikiAdapter implements FeishuTargetAdapter {
 
   ): Promise<NodeRef> {
 
-    if (existing?.docToken) {
+    if (existing && (await this.nodeExists(existing))) {
 
       return existing;
 
