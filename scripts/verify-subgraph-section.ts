@@ -24,7 +24,10 @@ const MERMAID = `flowchart TB
     D[节点D]
     C --> D
   end
+  E[外部节点]
   B --> C
+  B --> E
+  E --> C
 `;
 
 async function main(): Promise<void> {

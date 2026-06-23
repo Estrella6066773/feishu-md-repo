@@ -225,6 +225,26 @@ function buildBlockPayload(
   };
 }
 
+function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord): UnknownRecord {
+  return {
+    id,
+    type: 'composite_shape',
+    x: block.x,
+    y: block.y,
+    width: block.width,
+    height: block.height,
+    angle: block.angle ?? 0,
+    text: shapeTextPayload(block),
+    composite_shape: {
+      type:
+        typeof (block.composite_shape as UnknownRecord | undefined)?.type === 'string'
+          ? String((block.composite_shape as UnknownRecord).type)
+          : 'round_rect',
+    },
+    z_index: Number(block.z_index ?? 1),
+  };
+}
+
 function defaultConnectorStyle(): UnknownRecord {
   return {
     border_width: 'narrow',
@@ -452,7 +472,9 @@ function buildSectionBatch(
   const shapeSectionMap = new Map<string, SectionBuildPlan>();
   const sectionPayloads: UnknownRecord[] = [];
   const blockPayloads: UnknownRecord[] = [];
+  const externalBlockPayloads: UnknownRecord[] = [];
   const deleteIds: string[] = [];
+  const titleShapeIds = new Set<string>();
 
   for (const plan of plans) {
     sectionPayloads.push(
@@ -464,7 +486,10 @@ function buildSectionBatch(
       ),
     );
 
-    if (plan.titleShape?.id) deleteIds.push(String(plan.titleShape.id));
+    if (plan.titleShape?.id) {
+      titleShapeIds.add(String(plan.titleShape.id));
+      deleteIds.push(String(plan.titleShape.id));
+    }
 
     plan.memberShapes.forEach((shape, index) => {
       if (!shape.id) return;
@@ -475,6 +500,37 @@ function buildSectionBatch(
       deleteIds.push(oldId);
       blockPayloads.push(buildBlockPayload(newId, plan.sectionId, shape, index + 1, plan.bounds));
     });
+  }
+
+  const mapExternalBlock = (shapeId: string): boolean => {
+    if (shapeIdMap.has(shapeId)) return true;
+    if (titleShapeIds.has(shapeId)) return false;
+
+    const block = boardNodes.find(
+      (node) => node.id === shapeId && node.type === 'composite_shape' && !node.parent_id,
+    );
+    if (!block?.id) return false;
+
+    const newId = `sgo:${externalBlockPayloads.length + 1}`;
+    shapeIdMap.set(shapeId, newId);
+    deleteIds.push(shapeId);
+    externalBlockPayloads.push(buildTopLevelBlockPayload(newId, block));
+    return true;
+  };
+
+  let mappedMore = true;
+  while (mappedMore) {
+    mappedMore = false;
+    for (const conn of boardNodes) {
+      if (conn.type !== 'connector' || !conn.id || conn.parent_id) continue;
+      const { startId, endId } = getConnectorEndpointIds(conn);
+      const startMapped = shapeIdMap.has(startId);
+      const endMapped = shapeIdMap.has(endId);
+      if (!startMapped && !endMapped) continue;
+
+      if (!startMapped && mapExternalBlock(startId)) mappedMore = true;
+      if (!endMapped && mapExternalBlock(endId)) mappedMore = true;
+    }
   }
 
   const connectorPayloads: UnknownRecord[] = [];
@@ -505,7 +561,7 @@ function buildSectionBatch(
   }
 
   return {
-    batch: [...sectionPayloads, ...blockPayloads, ...connectorPayloads],
+    batch: [...sectionPayloads, ...blockPayloads, ...externalBlockPayloads, ...connectorPayloads],
     deleteIds: [...new Set(deleteIds)],
   };
 }
