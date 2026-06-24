@@ -7,15 +7,24 @@ export interface ParsedMermaidSubgraph {
 export interface ParsedMermaidGraph {
   nodeLabels: Map<string, string>;
   subgraphs: ParsedMermaidSubgraph[];
+  edges: ParsedMermaidEdge[];
+}
+
+export interface ParsedMermaidEdge {
+  from: string;
+  to: string;
 }
 
 const NODE_DEF_RE =
   /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
+const EDGE_RE =
+  /\b([A-Za-z][A-Za-z0-9_]*)\b\s*(?:--(?:[^>-]+)?-->|-->|-\.(?:[^>-]+)?->|==(?:[^>=]+)?==>)\s*\b([A-Za-z][A-Za-z0-9_]*)\b/g;
 
 /** 解析 Mermaid 流程图中的 subgraph 与节点标签，供导入后创建画板分区。 */
 export function parseMermaidGraph(code: string): ParsedMermaidGraph {
   const nodeLabels = new Map<string, string>();
   const subgraphs: ParsedMermaidSubgraph[] = [];
+  const edges: ParsedMermaidEdge[] = [];
   const stack: Array<{ title: string; memberIds: Set<string>; depth: number }> = [];
 
   for (const rawLine of code.split('\n')) {
@@ -56,9 +65,17 @@ export function parseMermaidGraph(code: string): ParsedMermaidGraph {
         current.memberIds.add(nodeId);
       }
     }
+
+    for (const match of line.matchAll(EDGE_RE)) {
+      const from = match[1];
+      const to = match[2];
+      if (from && to) {
+        edges.push({ from, to });
+      }
+    }
   }
 
-  return { nodeLabels, subgraphs };
+  return { nodeLabels, subgraphs, edges };
 }
 
 function parseSubgraphTitle(rest: string): string {

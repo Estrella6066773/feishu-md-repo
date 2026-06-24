@@ -32,8 +32,14 @@ interface BoardNodeRecord {
   children?: string[];
 }
 
-const SECTION_PADDING = 16;
-const SECTION_TITLE_HEIGHT = 28;
+const SECTION_PADDING = 28;
+const SECTION_TITLE_HEIGHT = 36;
+const SECTION_MIN_WIDTH = 220;
+const SECTION_MIN_HEIGHT = 160;
+const LAYOUT_GRID_SIZE = 8;
+const SECTION_GAP_X = 180;
+const BLOCK_GAP_X = 240;
+const BLOCK_GAP_Y = 120;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
 
 function sleep(ms: number): Promise<void> {
@@ -144,6 +150,14 @@ function shapeTextPayload(shape: BoardNodeRecord): UnknownRecord {
   return { text: label.slice(0, 1024) || ' ' };
 }
 
+function snapFloor(value: number): number {
+  return Math.floor(value / LAYOUT_GRID_SIZE) * LAYOUT_GRID_SIZE;
+}
+
+function snapCeil(value: number): number {
+  return Math.ceil(value / LAYOUT_GRID_SIZE) * LAYOUT_GRID_SIZE;
+}
+
 function computeSectionBounds(nodes: BoardNodeRecord[]): {
   x: number;
   y: number;
@@ -157,10 +171,15 @@ function computeSectionBounds(nodes: BoardNodeRecord[]): {
   const ws = nodes.map((node) => Number(node.width ?? 0));
   const hs = nodes.map((node) => Number(node.height ?? 0));
 
-  const x = Math.min(...xs) - SECTION_PADDING;
-  const y = Math.min(...ys) - SECTION_PADDING - SECTION_TITLE_HEIGHT;
-  const width = Math.max(...xs.map((value, index) => value + ws[index]!)) - x + SECTION_PADDING;
-  const height = Math.max(...ys.map((value, index) => value + hs[index]!)) - y + SECTION_PADDING;
+  const rawX = Math.min(...xs) - SECTION_PADDING;
+  const rawY = Math.min(...ys) - SECTION_PADDING - SECTION_TITLE_HEIGHT;
+  const rawRight = Math.max(...xs.map((value, index) => value + ws[index]!)) + SECTION_PADDING;
+  const rawBottom = Math.max(...ys.map((value, index) => value + hs[index]!)) + SECTION_PADDING;
+
+  const x = snapFloor(rawX);
+  const y = snapFloor(rawY);
+  const width = Math.max(SECTION_MIN_WIDTH, snapCeil(rawRight) - x);
+  const height = Math.max(SECTION_MIN_HEIGHT, snapCeil(rawBottom) - y);
 
   return { x, y, width, height };
 }
@@ -284,14 +303,69 @@ function remapEndpoint(
   };
 }
 
+function connectorEndpoint(
+  id: string | undefined,
+  snapTo: 'left' | 'right' | 'top' | 'bottom',
+): UnknownRecord | undefined {
+  if (!id) return undefined;
+  const position =
+    snapTo === 'left'
+      ? { x: 0, y: 0.5 }
+      : snapTo === 'right'
+        ? { x: 1, y: 0.5 }
+        : snapTo === 'top'
+          ? { x: 0.5, y: 0 }
+          : { x: 0.5, y: 1 };
+  return { id, snap_to: snapTo, position };
+}
+
+function chooseConnectorSnap(
+  from: BlockPlacement | undefined,
+  to: BlockPlacement | undefined,
+  isStart: boolean,
+): 'left' | 'right' | 'top' | 'bottom' {
+  if (!from || !to) return isStart ? 'right' : 'left';
+
+  if (from.rank != null && to.rank != null && from.rank !== to.rank) {
+    const forward = to.rank > from.rank;
+    if (isStart) return forward ? 'right' : 'left';
+    return forward ? 'left' : 'right';
+  }
+
+  const fromCenterX = from.x + from.width / 2;
+  const fromCenterY = from.y + from.height / 2;
+  const toCenterX = to.x + to.width / 2;
+  const toCenterY = to.y + to.height / 2;
+  const dx = toCenterX - fromCenterX;
+  const dy = toCenterY - fromCenterY;
+
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (isStart) return dx >= 0 ? 'right' : 'left';
+    return dx >= 0 ? 'left' : 'right';
+  }
+
+  if (isStart) return dy >= 0 ? 'bottom' : 'top';
+  return dy >= 0 ? 'top' : 'bottom';
+}
+
+function connectorAnchorPosition(placement: BlockPlacement | undefined): { x: number; y: number } {
+  if (!placement) return { x: 0, y: 0 };
+  return {
+    x: placement.x + placement.width / 2,
+    y: placement.y + placement.height / 2,
+  };
+}
+
 function buildConnectorPayload(
   conn: BoardNodeRecord,
   id: string,
   idMap: Map<string, string>,
   sectionId?: string,
   sectionOrigin?: { x: number; y: number },
+  placements?: Map<string, BlockPlacement>,
 ): UnknownRecord {
   const connector = conn.connector ?? {};
+  const { startId, endId } = getConnectorEndpointIds(conn);
   const startBlock = (connector.start as UnknownRecord | undefined) ?? {
     arrow_style: 'none',
     attached_object: connector.start_object,
@@ -310,31 +384,49 @@ function buildConnectorPayload(
       (connector.end_object as UnknownRecord | undefined),
     idMap,
   );
+  const startPlacement = placements?.get(startId);
+  const endPlacement = placements?.get(endId);
+  const readableStartAttached =
+    placements && startPlacement && endPlacement
+      ? connectorEndpoint(
+          idMap.get(startId) ?? startId,
+          chooseConnectorSnap(startPlacement, endPlacement, true),
+        )
+      : startAttached;
+  const readableEndAttached =
+    placements && startPlacement && endPlacement
+      ? connectorEndpoint(
+          idMap.get(endId) ?? endId,
+          chooseConnectorSnap(startPlacement, endPlacement, false),
+        )
+      : endAttached;
+  const startAnchor = connectorAnchorPosition(startPlacement);
+  const endAnchor = connectorAnchorPosition(endPlacement);
 
   const payload: UnknownRecord = {
     id,
     type: 'connector',
-    x: conn.x ?? 0,
-    y: conn.y ?? 0,
+    x: placements ? Math.min(startAnchor.x, endAnchor.x) : (conn.x ?? 0),
+    y: placements ? Math.min(startAnchor.y, endAnchor.y) : (conn.y ?? 0),
     width: conn.width ?? 0,
     height: conn.height ?? 0,
     angle: conn.angle ?? 0,
     style: conn.style ?? defaultConnectorStyle(),
     connector: {
-      shape: connector.shape ?? 'straight',
+      shape: 'straight',
       specified_coordinate: connector.specified_coordinate ?? true,
       caption_auto_direction: connector.caption_auto_direction ?? false,
-      turning_points: connector.turning_points ?? [],
+      turning_points: [],
       start: {
         arrow_style: startBlock.arrow_style ?? 'none',
-        attached_object: startAttached,
+        attached_object: readableStartAttached,
       },
       end: {
         arrow_style: endBlock.arrow_style ?? 'triangle_arrow',
-        attached_object: endAttached,
+        attached_object: readableEndAttached,
       },
-      start_object: startAttached,
-      end_object: endAttached,
+      start_object: readableStartAttached,
+      end_object: readableEndAttached,
     },
     z_index: Number(conn.z_index ?? 1),
   };
@@ -359,31 +451,6 @@ function resolveMemberLabels(
   return [...new Set(labels)];
 }
 
-function findMemberShapes(
-  boardNodes: BoardNodeRecord[],
-  memberLabels: string[],
-  consumedShapeIds: Set<string>,
-): BoardNodeRecord[] {
-  const shapes: BoardNodeRecord[] = [];
-
-  for (const label of memberLabels) {
-    const matches = boardNodes.filter(
-      (node) =>
-        node.type === 'composite_shape' &&
-        node.id &&
-        !node.parent_id &&
-        !consumedShapeIds.has(node.id) &&
-        nodeText(node) === label,
-    );
-
-    if (matches.length === 1) {
-      shapes.push(matches[0]!);
-    }
-  }
-
-  return shapes;
-}
-
 function findSubgraphTitleShape(
   boardNodes: BoardNodeRecord[],
   subgraph: ParsedMermaidSubgraph,
@@ -401,36 +468,59 @@ function findSubgraphTitleShape(
   );
 }
 
-function sortSubgraphsForProcessing(subgraphs: ParsedMermaidSubgraph[]): ParsedMermaidSubgraph[] {
-  return [...subgraphs].sort((left, right) => {
-    if (right.depth !== left.depth) return right.depth - left.depth;
-    return right.memberIds.length - left.memberIds.length;
-  });
-}
-
 interface SectionBuildPlan {
   subgraph: ParsedMermaidSubgraph;
   sectionId: string;
   bounds: { x: number; y: number; width: number; height: number };
+  memberIds: string[];
   memberShapes: BoardNodeRecord[];
   titleShape?: BoardNodeRecord;
   minZIndex: number;
+  ranks: Map<string, number>;
+}
+
+interface BlockPlacement {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rank?: number;
 }
 
 function planSubgraphSections(
   boardNodes: BoardNodeRecord[],
   subgraphs: ParsedMermaidSubgraph[],
   nodeLabels: Map<string, string>,
+  edges: Array<{ from: string; to: string }>,
 ): SectionBuildPlan[] {
   const plans: SectionBuildPlan[] = [];
   const consumedShapeIds = new Set<string>();
 
-  for (const [index, subgraph] of sortSubgraphsForProcessing(subgraphs).entries()) {
-    const memberLabels = resolveMemberLabels(subgraph, nodeLabels);
-    if (memberLabels.length === 0) continue;
+  for (const [index, subgraph] of subgraphs.entries()) {
+    const memberPairs: Array<{ memberId: string; shape: BoardNodeRecord }> = [];
+    for (const memberId of subgraph.memberIds) {
+      const label = nodeLabels.get(memberId);
+      if (!label?.trim()) continue;
 
+      const matches = boardNodes.filter(
+        (node) =>
+          node.type === 'composite_shape' &&
+          node.id &&
+          !node.parent_id &&
+          !consumedShapeIds.has(node.id) &&
+          nodeText(node) === label.trim(),
+      );
+      if (matches.length === 1) {
+        memberPairs.push({ memberId, shape: matches[0]! });
+      }
+    }
+
+    if (memberPairs.length === 0) continue;
+
+    const memberLabels = memberPairs.map(({ shape }) => nodeText(shape));
     const memberLabelSet = new Set(memberLabels);
-    const memberShapes = findMemberShapes(boardNodes, memberLabels, consumedShapeIds);
+    const memberIds = memberPairs.map(({ memberId }) => memberId);
+    const memberShapes = memberPairs.map(({ shape }) => shape);
     const bounds = computeSectionBounds(memberShapes);
     if (!bounds) continue;
 
@@ -444,9 +534,11 @@ function planSubgraphSections(
       subgraph,
       sectionId: `sg${index + 1}:1`,
       bounds,
+      memberIds,
       memberShapes,
       titleShape,
       minZIndex,
+      ranks: computeNodeRanks(memberIds, edges),
     });
 
     for (const shape of memberShapes) {
@@ -455,6 +547,137 @@ function planSubgraphSections(
   }
 
   return plans;
+}
+
+function computeNodeRanks(
+  memberIds: string[],
+  edges: Array<{ from: string; to: string }>,
+): Map<string, number> {
+  const memberSet = new Set(memberIds);
+  const incoming = new Map<string, number>();
+  const outgoing = new Map<string, string[]>();
+  const ranks = new Map<string, number>();
+
+  for (const memberId of memberIds) {
+    incoming.set(memberId, 0);
+    outgoing.set(memberId, []);
+    ranks.set(memberId, 0);
+  }
+
+  for (const edge of edges) {
+    if (!memberSet.has(edge.from) || !memberSet.has(edge.to)) continue;
+    outgoing.get(edge.from)?.push(edge.to);
+    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+  }
+
+  const queue = memberIds.filter((memberId) => (incoming.get(memberId) ?? 0) === 0);
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    visited.add(current);
+    const nextRank = (ranks.get(current) ?? 0) + 1;
+    for (const next of outgoing.get(current) ?? []) {
+      ranks.set(next, Math.max(ranks.get(next) ?? 0, nextRank));
+      incoming.set(next, (incoming.get(next) ?? 0) - 1);
+      if ((incoming.get(next) ?? 0) === 0) {
+        queue.push(next);
+      }
+    }
+  }
+
+  // 环形关系无法完全拓扑排序时，保留已知 rank，其余节点放在最后一列。
+  const fallbackRank = Math.max(0, ...ranks.values()) + 1;
+  for (const memberId of memberIds) {
+    if (!visited.has(memberId) && (outgoing.get(memberId)?.length ?? 0) > 0) {
+      ranks.set(memberId, fallbackRank);
+    }
+  }
+
+  return ranks;
+}
+
+function applyReadableLayout(
+  plans: SectionBuildPlan[],
+): Map<string, BlockPlacement> {
+  const placementByShapeId = new Map<string, BlockPlacement>();
+  const allShapes = plans.flatMap((plan) => plan.memberShapes);
+  const baseX = snapFloor(Math.min(...allShapes.map((shape) => Number(shape.x ?? 0))));
+  const baseY = snapFloor(Math.min(...allShapes.map((shape) => Number(shape.y ?? 0))));
+  let cursorX = baseX;
+
+  for (const plan of plans) {
+    const columns = new Map<number, BoardNodeRecord[]>();
+    plan.memberShapes.forEach((shape, index) => {
+      const memberId = plan.memberIds[index]!;
+      const rank = plan.ranks.get(memberId) ?? 0;
+      const column = columns.get(rank) ?? [];
+      column.push(shape);
+      columns.set(rank, column);
+    });
+
+    const sortedRanks = [...columns.keys()].sort((left, right) => left - right);
+    const maxRows = Math.max(1, ...[...columns.values()].map((column) => column.length));
+    const maxBlockWidth = Math.max(
+      120,
+      ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
+    );
+    const maxBlockHeight = Math.max(
+      56,
+      ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
+    );
+
+    const contentWidth =
+      sortedRanks.length <= 1
+        ? maxBlockWidth
+        : (sortedRanks.length - 1) * BLOCK_GAP_X + maxBlockWidth;
+    const contentHeight =
+      maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
+    const width = Math.max(SECTION_MIN_WIDTH, SECTION_PADDING * 2 + contentWidth);
+    const height = Math.max(
+      SECTION_MIN_HEIGHT,
+      SECTION_TITLE_HEIGHT + SECTION_PADDING * 2 + contentHeight,
+    );
+
+    plan.bounds = {
+      x: cursorX,
+      y: baseY,
+      width: snapCeil(width),
+      height: snapCeil(height),
+    };
+
+    for (const rank of sortedRanks) {
+      const column = columns.get(rank) ?? [];
+      const columnHeight =
+        column.length <= 1
+          ? maxBlockHeight
+          : (column.length - 1) * BLOCK_GAP_Y + maxBlockHeight;
+      const startY =
+        plan.bounds.y +
+        SECTION_TITLE_HEIGHT +
+        SECTION_PADDING +
+        Math.max(0, (contentHeight - columnHeight) / 2);
+
+      column.forEach((shape, rowIndex) => {
+        if (!shape.id) return;
+        const x = plan.bounds.x + SECTION_PADDING + rank * BLOCK_GAP_X;
+        const y = startY + rowIndex * BLOCK_GAP_Y;
+        shape.x = snapCeil(x);
+        shape.y = snapCeil(y);
+        placementByShapeId.set(String(shape.id), {
+          x: Number(shape.x),
+          y: Number(shape.y),
+          width: Number(shape.width ?? maxBlockWidth),
+          height: Number(shape.height ?? maxBlockHeight),
+          rank,
+        });
+      });
+    }
+
+    cursorX += plan.bounds.width + SECTION_GAP_X;
+  }
+
+  return placementByShapeId;
 }
 
 function findSectionForShape(
@@ -468,6 +691,7 @@ function buildSectionBatch(
   boardNodes: BoardNodeRecord[],
   plans: SectionBuildPlan[],
 ): { batch: UnknownRecord[]; deleteIds: string[] } {
+  const placementByShapeId = applyReadableLayout(plans);
   const shapeIdMap = new Map<string, string>();
   const shapeSectionMap = new Map<string, SectionBuildPlan>();
   const sectionPayloads: UnknownRecord[] = [];
@@ -512,7 +736,15 @@ function buildSectionBatch(
     if (!block?.id) return false;
 
     const newId = `sgo:${externalBlockPayloads.length + 1}`;
+    block.x = snapCeil(Number(block.x ?? 0));
+    block.y = snapCeil(Number(block.y ?? 0));
     shapeIdMap.set(shapeId, newId);
+    placementByShapeId.set(shapeId, {
+      x: Number(block.x ?? 0),
+      y: Number(block.y ?? 0),
+      width: Number(block.width ?? 120),
+      height: Number(block.height ?? 56),
+    });
     deleteIds.push(shapeId);
     externalBlockPayloads.push(buildTopLevelBlockPayload(newId, block));
     return true;
@@ -556,6 +788,7 @@ function buildSectionBatch(
         shapeIdMap,
         sameSection ? startSection.sectionId : undefined,
         sameSection ? startSection.bounds : undefined,
+        placementByShapeId,
       ),
     );
   }
@@ -616,7 +849,7 @@ export async function applyMermaidSubgraphSections(
   }
 
   let boardNodes = await listBoardNodes(client, whiteboardId);
-  const plans = planSubgraphSections(boardNodes, parsed.subgraphs, parsed.nodeLabels);
+  const plans = planSubgraphSections(boardNodes, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
   if (plans.length === 0) {
     await convertGroupNodesToSections(client, whiteboardId, boardNodes);
     return;
