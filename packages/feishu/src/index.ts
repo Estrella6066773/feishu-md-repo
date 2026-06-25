@@ -29,3 +29,15 @@ export {
 } from './mermaid-markdown.js';
 export { parseMermaidGraph, type ParsedMermaidGraph, type ParsedMermaidSubgraph } from './mermaid-subgraph.js';
 export { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
+export {
+  exportBoardNodesToMermaid,
+  extractBoardNodeLabel,
+  listWhiteboardNodes,
+} from './export/board-export.js';
+export {
+  exportDocumentToMarkdown,
+  formatExportError,
+  type ExportDocumentOptions,
+  type ExportDocumentResult,
+} from './export/markdown-exporter.js';
+export { parseFeishuDocumentUrl, type ParsedDocumentUrl, type FeishuDocumentUrlSource } from './export/document-url.js';

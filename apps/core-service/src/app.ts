@@ -25,6 +25,7 @@ import {
   DEFAULT_BOT_SETTINGS,
 } from '@feishu-md/shared';
 import { installLocalHook, removeLocalHook } from '@feishu-md/git';
+import { createFeishuClient, exportDocumentToMarkdown, formatExportError } from '@feishu-md/feishu';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
 import type { BotManager } from './bot/manager.js';
@@ -59,6 +60,7 @@ export const CORE_API_FEATURES = [
   'settings-user-permissions',
   'bindings-crud',
   'sync-log-detail',
+  'export-markdown',
 ] as const;
 
 export function createApp(options: {
@@ -261,6 +263,28 @@ export function createApp(options: {
 
     syncCoordinator.enqueueBindingSync(body.bindingId, 'git');
     return c.json({ ok: true, queued: true });
+  });
+
+  app.post('/api/export/markdown', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { documentUrl?: string };
+    if (!body.documentUrl?.trim()) {
+      return c.json({ error: 'documentUrl is required' }, 400);
+    }
+
+    const credentials = await getAppSettings(db).then((settings) => settings.feishu);
+    if (!credentials?.appId || !credentials?.appSecret) {
+      return c.json({ error: '飞书凭证未配置' }, 400);
+    }
+
+    const client = createFeishuClient(credentials);
+    try {
+      const result = await exportDocumentToMarkdown(client, {
+        documentUrl: body.documentUrl,
+      });
+      return c.json({ ok: true, title: result.title, markdown: result.markdown });
+    } catch (error) {
+      return c.json({ error: formatExportError(error) }, 400);
+    }
   });
 
   return app;

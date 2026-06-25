@@ -6,6 +6,7 @@ import {
   IconLink,
   IconLogs,
   IconSettings,
+  IconToolbox,
 } from '@/components/icons';
 import { fetchHealth, fetchSettings } from '@/lib/queries';
 
@@ -13,6 +14,7 @@ const navItems = [
   { to: '/', label: '仪表盘', end: true, icon: IconDashboard, desc: '服务状态与概览' },
   { to: '/bindings', label: '绑定管理', icon: IconLink, desc: 'Git 与飞书目标' },
   { to: '/logs', label: '同步日志', icon: IconLogs, desc: '历史同步记录' },
+  { to: '/toolbox', label: '飞书工具箱', icon: IconToolbox, desc: '文档导出等工具' },
   { to: '/settings', label: '设置', icon: IconSettings, desc: '凭证与机器人' },
 ] as const;
 
@@ -20,6 +22,7 @@ const pageMeta: Record<string, { title: string; desc: string }> = {
   '/': { title: '仪表盘', desc: '查看核心服务、绑定与最近同步情况' },
   '/bindings': { title: '绑定管理', desc: '配置 Git 来源、同步模式与飞书 Wiki / Drive 目标' },
   '/logs': { title: '同步日志', desc: '最近 100 条同步任务记录' },
+  '/toolbox': { title: '飞书工具箱', desc: '将单篇飞书文档与思维导图导出为 Markdown' },
   '/settings': { title: '设置', desc: '飞书应用凭证、播报与指令监听' },
 };
 

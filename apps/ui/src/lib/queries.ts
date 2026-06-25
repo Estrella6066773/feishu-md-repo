@@ -98,6 +98,13 @@ export function fetchSyncLogs(bindingId?: string) {
   return apiFetch<SyncLogEntry[]>(`/api/sync-logs${query}`);
 }
 
+export function exportDocumentToMarkdown(documentUrl: string) {
+  return apiFetch<{ ok: boolean; title?: string; markdown: string }>('/api/export/markdown', {
+    method: 'POST',
+    body: JSON.stringify({ documentUrl }),
+  });
+}
+
 export function fetchHealth() {
   return apiFetch<{
     ok: boolean;

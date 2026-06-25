@@ -22,6 +22,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
   if (!response.ok) {
     const text = await response.text();
+    const jsonError = tryParseApiError(text);
+    if (jsonError) {
+      throw new Error(jsonError);
+    }
     if (response.status === 404) {
       throw new Error(
         text.includes('Not Found')
@@ -33,4 +37,16 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   return response.json() as Promise<T>;
+}
+
+function tryParseApiError(text: string): string | null {
+  try {
+    const body = JSON.parse(text) as { error?: string };
+    if (typeof body.error === 'string' && body.error.trim()) {
+      return body.error;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
