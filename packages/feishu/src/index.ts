@@ -6,6 +6,7 @@ export { replaceDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocume
 export { toFeishuDocumentUrl, type FeishuDocumentLinkTarget } from './document-url.js';
 export {
   sendTextMessage,
+  sendPostMarkdownMessage,
   replyTextMessage,
   parseMessageText,
   type ImReceiveIdType,

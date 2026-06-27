@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { BotBroadcastTarget, BotSettings } from '@feishu-md/shared';
-import { DEFAULT_BOT_SETTINGS } from '@feishu-md/shared';
+import { BroadcastTargetEditor } from '@/components/BroadcastTargetEditor';
+import { DEFAULT_BOT_SETTINGS, type BotSettings } from '@feishu-md/shared';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHeader } from '@/components/ui/Card';
@@ -21,9 +21,6 @@ export function SettingsPage() {
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
   const [botSettings, setBotSettings] = useState<BotSettings>(DEFAULT_BOT_SETTINGS);
-  const [newTargetType, setNewTargetType] = useState<'chat' | 'user'>('chat');
-  const [newTargetId, setNewTargetId] = useState('');
-  const [newTargetLabel, setNewTargetLabel] = useState('');
 
   useEffect(() => {
     if (settings.data?.bot) {
@@ -43,28 +40,6 @@ export function SettingsPage() {
     mutationFn: saveBotSettings,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings'] }),
   });
-
-  function addBroadcastTarget() {
-    if (!newTargetId.trim()) return;
-    const target: BotBroadcastTarget = {
-      type: newTargetType,
-      receiveId: newTargetId.trim(),
-      label: newTargetLabel.trim() || undefined,
-    };
-    setBotSettings((prev) => ({
-      ...prev,
-      broadcastTargets: [...prev.broadcastTargets, target],
-    }));
-    setNewTargetId('');
-    setNewTargetLabel('');
-  }
-
-  function removeBroadcastTarget(index: number) {
-    setBotSettings((prev) => ({
-      ...prev,
-      broadcastTargets: prev.broadcastTargets.filter((_, i) => i !== index),
-    }));
-  }
 
   const connection = settings.data?.botConnection;
   const connectionClass = connection?.connected
@@ -228,45 +203,21 @@ export function SettingsPage() {
             />
             </div>
 
-            <Field label="播报目标" hint="群 chat_id（oc_xxx）或用户 open_id（ou_xxx）">
-              <div className="target-list">
-                {botSettings.broadcastTargets.map((target, index) => (
-                  <div key={`${target.type}-${target.receiveId}-${index}`} className="target-row">
-                    <span>
-                      {target.label ? `${target.label} · ` : ''}
-                      {target.type === 'chat' ? '群' : '用户'} {target.receiveId}
-                    </span>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => removeBroadcastTarget(index)}>
-                      移除
-                    </Button>
-                  </div>
-                ))}
-                <div className="input-grid input-grid-4">
-                  <select
-                    className="field-input"
-                    value={newTargetType}
-                    onChange={(e) => setNewTargetType(e.target.value as 'chat' | 'user')}
-                  >
-                    <option value="chat">群聊</option>
-                    <option value="user">用户</option>
-                  </select>
-                  <input
-                    className="field-input"
-                    placeholder="oc_xxx 或 ou_xxx"
-                    value={newTargetId}
-                    onChange={(e) => setNewTargetId(e.target.value)}
-                  />
-                  <input
-                    className="field-input"
-                    placeholder="备注名（可选）"
-                    value={newTargetLabel}
-                    onChange={(e) => setNewTargetLabel(e.target.value)}
-                  />
-                </div>
-                <Button type="button" variant="secondary" size="sm" onClick={addBroadcastTarget}>
-                  添加播报目标
-                </Button>
-              </div>
+            <Field label="播报目标" hint="群 chat_id（oc_xxx）或用户 open_id（ou_xxx）；每个目标可单独配置播报范围">
+              <BroadcastTargetEditor
+                targets={botSettings.broadcastTargets}
+                globalDefaults={{
+                  broadcastOnSuccess: botSettings.broadcastOnSuccess,
+                  broadcastOnFailure: botSettings.broadcastOnFailure,
+                }}
+                disabled={!botSettings.enabled || !botSettings.broadcastEnabled}
+                onChange={(broadcastTargets) =>
+                  setBotSettings((prev) => ({
+                    ...prev,
+                    broadcastTargets,
+                  }))
+                }
+              />
             </Field>
           </div>
 

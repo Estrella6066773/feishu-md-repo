@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
-import { isReservedSyncGitPath } from '@feishu-md/shared';
+import { isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
   deleteNodeMapping,
@@ -48,7 +48,10 @@ export interface RunSyncOptions {
 export interface RunSyncResult {
   logId: string;
   toSha: string;
+  fromSha?: string;
   operationCount: number;
+  commits: Array<{ sha: string; subject: string; message: string }>;
+  changedPaths: string[];
 }
 
 export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
@@ -109,6 +112,14 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       projectIgnoreGlobs,
       fromSha,
     });
+
+    const commits = await git.getCommitsBetween(fromSha, toSha);
+    const broadcastChangedPaths = fromSha
+      ? changedPaths
+      : filterPathsByProjectIgnoreGlobs(
+          await git.getCommitFilePaths(toSha),
+          mergeProjectIgnoreGlobs(projectIgnoreGlobs),
+        );
 
     const readMarkdown = (path: string) => git.readFileAtSha(toSha, path);
     const readBinaryFile = (path: string) => git.readBinaryFileAtSha(toSha, path);
@@ -192,7 +203,14 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       finishedAt: new Date().toISOString(),
     });
 
-    return { logId, toSha, operationCount };
+    return {
+      logId,
+      toSha,
+      fromSha,
+      operationCount,
+      commits,
+      changedPaths: broadcastChangedPaths,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await updateSyncLog(db, {

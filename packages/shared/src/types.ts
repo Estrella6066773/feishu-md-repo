@@ -106,10 +106,22 @@ export interface FeishuCredentials {
 
 export type BotTargetType = 'chat' | 'user';
 
+/** 播报目标级策略；未填字段继承全局 BotSettings 对应项 */
+export interface BotBroadcastTargetPolicy {
+  /** 成功时播报；undefined 继承全局 broadcastOnSuccess */
+  onSuccess?: boolean;
+  /** 失败时播报；undefined 继承全局 broadcastOnFailure */
+  onFailure?: boolean;
+  /** 限定的触发来源；undefined 或空数组表示不限制（全部） */
+  triggers?: SyncTriggerType[];
+}
+
 export interface BotBroadcastTarget {
   type: BotTargetType;
   receiveId: string;
   label?: string;
+  /** 目标级播报策略；undefined 表示完全继承全局默认 */
+  policy?: BotBroadcastTargetPolicy;
 }
 
 export interface BotSettings {

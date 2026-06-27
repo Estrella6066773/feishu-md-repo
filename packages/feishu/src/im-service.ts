@@ -3,6 +3,32 @@ import { assertFeishuResponse, withRateLimit } from './api-error.js';
 
 export type ImReceiveIdType = 'chat_id' | 'open_id' | 'user_id' | 'union_id' | 'email';
 
+export async function sendPostMarkdownMessage(
+  client: FeishuClient,
+  receiveIdType: ImReceiveIdType,
+  receiveId: string,
+  markdown: string,
+  title = '',
+): Promise<void> {
+  const text = markdown.slice(0, 4000);
+  const response = await withRateLimit(() =>
+    client.im.v1.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        msg_type: 'post',
+        content: JSON.stringify({
+          zh_cn: {
+            title,
+            content: [[{ tag: 'md', text }]],
+          },
+        }),
+      },
+    }),
+  );
+  assertFeishuResponse(response, 'Send IM post message');
+}
+
 export async function sendTextMessage(
   client: FeishuClient,
   receiveIdType: ImReceiveIdType,

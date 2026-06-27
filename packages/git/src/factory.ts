@@ -1,7 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { simpleGit, type SimpleGit } from 'simple-git';
-import type { GitProvider, GitProviderOptions, GitTreeEntry, ChangedPath } from './types.js';
+import type {
+  GitProvider,
+  GitProviderOptions,
+  GitTreeEntry,
+  ChangedPath,
+  GitCommitSummary,
+} from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +56,37 @@ abstract class BaseGitProvider implements GitProvider {
       });
     }
     return changes;
+  }
+
+  async getCommitsBetween(
+    sinceSha: string | undefined,
+    untilSha: string,
+  ): Promise<GitCommitSummary[]> {
+    const args = sinceSha
+      ? ['log', '--format=%H%x00%s%x00%b%x00', '-z', `${sinceSha}..${untilSha}`]
+      : ['log', '-1', '--format=%H%x00%s%x00%b%x00', '-z', untilSha];
+    const output = await this.git.raw(args);
+    if (!output.trim()) return [];
+
+    const parts = output.split('\0').filter((part) => part.length > 0);
+    const commits: GitCommitSummary[] = [];
+    for (let i = 0; i + 2 < parts.length; i += 3) {
+      const sha = parts[i]!;
+      const subject = parts[i + 1]!.trim();
+      const body = parts[i + 2]!.trim();
+      const message = body ? `${subject}\n\n${body}` : subject;
+      commits.push({ sha, subject, message });
+    }
+    return commits;
+  }
+
+  async getCommitFilePaths(sha: string): Promise<string[]> {
+    const output = await this.git.raw(['show', '--name-only', '--format=', sha]);
+    if (!output.trim()) return [];
+    return output
+      .split('\n')
+      .filter(Boolean)
+      .map((path) => path.replace(/\\/g, '/'));
   }
 
   async getTreeAtSha(sha: string): Promise<GitTreeEntry[]> {

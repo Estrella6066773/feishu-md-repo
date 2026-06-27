@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { Binding, BotBroadcastTarget, FeishuTarget, RepoSourceType, SyncLogEntry, SyncMode } from '@feishu-md/shared';
-import { defaultOptionsForMode, defaultTriggersForSourceType, DEFAULT_SCHEDULE_MINUTES } from '@feishu-md/shared';
+import { BroadcastTargetEditor } from '@/components/BroadcastTargetEditor';
+import { defaultOptionsForMode, defaultTriggersForSourceType, DEFAULT_BOT_SETTINGS, DEFAULT_SCHEDULE_MINUTES } from '@feishu-md/shared';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -15,6 +16,7 @@ import {
   createBinding,
   deleteBinding,
   fetchBindings,
+  fetchSettings,
   fetchSyncLogs,
   triggerSyncAndWait,
   updateBinding,
@@ -294,6 +296,8 @@ function BindingForm(props: {
   onCancel: () => void;
 }) {
   const isEdit = props.mode === 'edit';
+  const settings = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
+  const globalBroadcastDefaults = settings.data?.bot ?? DEFAULT_BOT_SETTINGS;
 
   const [name, setName] = useState('');
   const [sourceType, setSourceType] = useState<RepoSourceType>('local');
@@ -307,9 +311,6 @@ function BindingForm(props: {
   const [driveRootFolderToken, setDriveRootFolderToken] = useState('');
   const [ignoreGlobsText, setIgnoreGlobsText] = useState('');
   const [bindingTargets, setBindingTargets] = useState<BotBroadcastTarget[]>([]);
-  const [newTargetType, setNewTargetType] = useState<'chat' | 'user'>('chat');
-  const [newTargetId, setNewTargetId] = useState('');
-  const [newTargetLabel, setNewTargetLabel] = useState('');
   const [hasExplicitBindingTargets, setHasExplicitBindingTargets] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleMinutes, setScheduleMinutes] = useState(DEFAULT_SCHEDULE_MINUTES);
@@ -637,71 +638,18 @@ function BindingForm(props: {
         </div>
 
         {hasExplicitBindingTargets ? (
-          <div className="form-grid-span-2 space-y-3">
-            <div className="flex items-end gap-2">
-              <Field label="类型" className="w-28">
-                <select
-                  className="field-input"
-                  value={newTargetType}
-                  onChange={(e) => setNewTargetType(e.target.value as 'chat' | 'user')}
-                >
-                  <option value="chat">群聊</option>
-                  <option value="user">用户</option>
-                </select>
-              </Field>
-              <Field label="接收 ID" hint="chat_id 或 open_id" className="flex-1">
-                <input
-                  className="field-input"
-                  value={newTargetId}
-                  onChange={(e) => setNewTargetId(e.target.value)}
-                  placeholder={newTargetType === 'chat' ? 'oc_xxxxxxxxxxxxxxxx' : 'ou_xxxxxxxxxxxxxxxx'}
-                />
-              </Field>
-              <Field label="备注" className="flex-1">
-                <input
-                  className="field-input"
-                  value={newTargetLabel}
-                  onChange={(e) => setNewTargetLabel(e.target.value)}
-                  placeholder="可选"
-                />
-              </Field>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  if (!newTargetId.trim()) return;
-                  setBindingTargets((prev) => [
-                    ...prev,
-                    { type: newTargetType, receiveId: newTargetId.trim(), label: newTargetLabel.trim() || undefined },
-                  ]);
-                  setNewTargetId('');
-                  setNewTargetLabel('');
-                }}
-              >
-                添加
-              </Button>
-            </div>
-            {bindingTargets.length > 0 ? (
-              <ul className="space-y-1">
-                {bindingTargets.map((target, index) => (
-                  <li key={index} className="flex items-center justify-between text-sm px-3 py-2 bg-bg-secondary rounded-md">
-                    <span>
-                      {target.type === 'chat' ? '群聊' : '用户'} · {target.receiveId}
-                      {target.label ? ` · ${target.label}` : null}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={() => setBindingTargets((prev) => prev.filter((_, i) => i !== index))}
-                    >
-                      删除
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-fg-tertiary">当前未配置目标，该绑定不会收到机器人播报。</p>
-            )}
+          <div className="form-grid-span-2">
+            <BroadcastTargetEditor
+              targets={bindingTargets}
+              globalDefaults={{
+                broadcastOnSuccess: globalBroadcastDefaults.broadcastOnSuccess,
+                broadcastOnFailure: globalBroadcastDefaults.broadcastOnFailure,
+              }}
+              onChange={setBindingTargets}
+            />
+            {bindingTargets.length === 0 ? (
+              <p className="text-sm text-fg-tertiary mt-2">当前未配置目标，该绑定不会收到机器人播报。</p>
+            ) : null}
           </div>
         ) : null}
 

@@ -5,9 +5,11 @@ import {
   getChildBlockAtIndex,
   insertDocumentBlockChildrenAt,
   listDocumentBlocks,
+  type DocxBlockListItem,
 } from './docx-block-service.js';
 
 const BOARD_BLOCK_TYPE = 43;
+const BOARD_TOKEN_RETRY_DELAYS_MS = [200, 500, 800, 1200, 2000, 3000];
 
 type FeishuOpenResponse = { code?: number; msg?: string; data?: unknown };
 
@@ -208,13 +210,91 @@ async function feishuRequest(
   return response;
 }
 
+type BlockChildrenCreateResponse = Awaited<
+  ReturnType<typeof insertDocumentBlockChildrenAt>
+>;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractBoardToken(block: DocxBlockListItem | undefined | null): string | null {
+  const token = block?.board?.token;
+  return token ? String(token) : null;
+}
+
+function extractBoardTokenFromCreateResponse(
+  response: BlockChildrenCreateResponse,
+): string | null {
+  const children = (response.data?.children ?? []) as DocxBlockListItem[];
+  for (const child of children) {
+    const token = extractBoardToken(child);
+    if (token) return token;
+  }
+  return null;
+}
+
+async function findBoardBlockById(
+  client: FeishuClient,
+  documentId: string,
+  blockId: string,
+): Promise<DocxBlockListItem | null> {
+  const items = await listDocumentBlocks(client, documentId, 'List docx blocks for board id');
+  const block = items.find((item) => item.block_id === blockId);
+  if (!block || block.block_type !== BOARD_BLOCK_TYPE) return null;
+  return block;
+}
+
+async function resolveBoardWhiteboardId(
+  client: FeishuClient,
+  documentId: string,
+  options: {
+    childIndex?: number;
+    blockId?: string;
+    createResponse?: BlockChildrenCreateResponse;
+  },
+): Promise<string> {
+  const fromCreate = options.createResponse
+    ? extractBoardTokenFromCreateResponse(options.createResponse)
+    : null;
+  if (fromCreate) return fromCreate;
+
+  const blockId =
+    options.blockId
+    ?? ((options.createResponse?.data?.children?.[0] as DocxBlockListItem | undefined)?.block_id);
+
+  for (let attempt = 0; attempt <= BOARD_TOKEN_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (options.childIndex != null) {
+      const byIndex = await getWhiteboardIdAtChildIndex(client, documentId, options.childIndex);
+      if (byIndex) return byIndex;
+    }
+
+    if (blockId) {
+      const block = await findBoardBlockById(client, documentId, blockId);
+      const token = extractBoardToken(block);
+      if (token) return token;
+    }
+
+    const existing = await findBoardWhiteboardId(client, documentId);
+    if (existing) return existing;
+
+    if (attempt >= BOARD_TOKEN_RETRY_DELAYS_MS.length) break;
+    await sleep(BOARD_TOKEN_RETRY_DELAYS_MS[attempt]!);
+  }
+
+  throw new Error(
+    'Board block was inserted but whiteboard_id is unavailable after retries. '
+    + 'Confirm the app has board scopes and access to the document.',
+  );
+}
+
 /** 在 docx 指定位置插入画板块，返回 whiteboard_id */
 export async function insertBoardBlock(
   client: FeishuClient,
   documentId: string,
   index: number,
 ): Promise<string> {
-  await insertDocumentBlockChildrenAt(
+  const createResponse = await insertDocumentBlockChildrenAt(
     client,
     documentId,
     index,
@@ -227,11 +307,10 @@ export async function insertBoardBlock(
     'Insert board block',
   );
 
-  const whiteboardId = await getWhiteboardIdAtChildIndex(client, documentId, index);
-  if (!whiteboardId) {
-    throw new Error('Board block was inserted but whiteboard_id is unavailable');
-  }
-  return whiteboardId;
+  return resolveBoardWhiteboardId(client, documentId, {
+    childIndex: index,
+    createResponse,
+  });
 }
 
 /** 将 Mermaid / 流程图代码导入画板 */
@@ -274,10 +353,19 @@ export async function ensureWhiteboardInDocument(
   client: FeishuClient,
   documentId: string,
 ): Promise<string> {
-  const existing = await findBoardWhiteboardId(client, documentId);
-  if (existing) return existing;
-
   const items = await listDocumentBlocks(client, documentId, 'List docx blocks for board append');
+  const boardBlocks = items.filter((item) => item.block_type === BOARD_BLOCK_TYPE);
+
+  for (const block of boardBlocks) {
+    const token = extractBoardToken(block);
+    if (token) return token;
+  }
+
+  const pendingBoard = boardBlocks[boardBlocks.length - 1];
+  if (pendingBoard?.block_id) {
+    return resolveBoardWhiteboardId(client, documentId, { blockId: pendingBoard.block_id });
+  }
+
   const pageBlock = findDocumentPageBlock(items, documentId);
   const index = pageBlock?.children?.length ?? 0;
 

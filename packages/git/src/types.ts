@@ -6,6 +6,13 @@ export interface ChangedPath {
   changeType: GitChangeType;
 }
 
+export interface GitCommitSummary {
+  sha: string;
+  subject: string;
+  /** 完整提交说明（标题 + 正文），可能含 Markdown */
+  message: string;
+}
+
 export interface GitTreeEntry {
   path: string;
   type: 'tree' | 'blob';
@@ -18,6 +25,9 @@ export interface GitProvider {
   getRemoteHeadSha?(): Promise<string | null>;
   fetchLatest?(): Promise<void>;
   getChangedPaths(sinceSha: string, untilSha: string): Promise<ChangedPath[]>;
+  /** sinceSha 为空时仅返回 untilSha 对应的一条提交 */
+  getCommitsBetween(sinceSha: string | undefined, untilSha: string): Promise<GitCommitSummary[]>;
+  getCommitFilePaths(sha: string): Promise<string[]>;
   getTreeAtSha(sha: string): Promise<GitTreeEntry[]>;
   /** Git 规则：指定 commit 下 Git 跟踪的文件路径（非工作区全量扫描） */
   listTrackedPathsAtSha(sha: string): Promise<string[]>;
