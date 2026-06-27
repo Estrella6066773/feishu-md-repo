@@ -1,5 +1,6 @@
 import { basename, dirname } from 'node:path';
 import { DEFAULT_WORKSPACE_OPTIONS } from '@feishu-md/shared';
+import { markdownReferencesChangedImages } from '@feishu-md/feishu';
 import type { SyncPlan, SyncPlanContext, SyncPlanner } from './planner.js';
 
 function normalizePath(path: string): string {
@@ -33,7 +34,11 @@ export class WorkspacePlanner implements SyncPlanner {
 
     const mdPaths = normalizedTree.filter((path) => isMarkdown(path, mdExtensions));
     const pathsToSync = incremental
-      ? mdPaths.filter((path) => changedSet.has(path))
+      ? await filterIncrementalMarkdownPaths({
+          mdPaths,
+          changedSet,
+          readMarkdown: context.readMarkdown,
+        })
       : mdPaths;
 
     const folderSeedPaths = [...pathsToSync];
@@ -87,4 +92,34 @@ export class WorkspacePlanner implements SyncPlanner {
       operations,
     };
   }
+}
+
+async function filterIncrementalMarkdownPaths(options: {
+  mdPaths: string[];
+  changedSet: Set<string>;
+  readMarkdown: SyncPlanContext['readMarkdown'];
+}): Promise<string[]> {
+  const { mdPaths, changedSet, readMarkdown } = options;
+  const directChanges = mdPaths.filter((path) => changedSet.has(path));
+  if (directChanges.length === mdPaths.length) {
+    return directChanges;
+  }
+
+  const selected = new Set(directChanges);
+  const hasNonMarkdownChanges = [...changedSet].some((path) => !isMarkdown(path, ['.md', '.markdown']));
+
+  if (!hasNonMarkdownChanges) {
+    return directChanges;
+  }
+
+  for (const path of mdPaths) {
+    if (selected.has(path)) continue;
+    const content = await readMarkdown(path);
+    if (content == null) continue;
+    if (markdownReferencesChangedImages(content, path, changedSet)) {
+      selected.add(path);
+    }
+  }
+
+  return mdPaths.filter((path) => selected.has(path));
 }

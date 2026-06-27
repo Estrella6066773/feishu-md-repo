@@ -88,6 +88,15 @@ function normalizeDiagramCode(code: string, fenceLang: string): string {
   return trimmed;
 }
 
+/** 根据 Mermaid 源码首行推断导出时应使用的 fenced 语言标记 */
+export function detectDiagramFenceLang(code: string): string {
+  const firstLine = code.trim().split('\n')[0]?.trim().toLowerCase() ?? '';
+  if (firstLine.startsWith('flowchart') || firstLine.startsWith('graph ')) {
+    return 'flowchart';
+  }
+  return 'mermaid';
+}
+
 export function detectMermaidDiagramType(code: string, fenceLang: string): number {
   if (fenceLang === 'flowchart' || fenceLang === 'graph') {
     return MERMAID_DIAGRAM_TYPE.flowchart;

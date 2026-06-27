@@ -61,8 +61,6 @@ export class RepositoryPlanner implements SyncPlanner {
       options.readmeNames,
       containerSourcePaths,
     )) {
-      if (!gapFillOnly && !isStandaloneFileDirty(filePath, changedSet, incremental)) continue;
-
       if (gapFillOnly) {
         operations.push({
           type: 'ensure_doc' as const,
@@ -76,6 +74,8 @@ export class RepositoryPlanner implements SyncPlanner {
 
       const content = await context.readMarkdown(filePath);
       if (content == null) continue;
+
+      if (!isStandaloneFileDirty(filePath, changedSet, incremental, content)) continue;
 
       operations.push({
         type: 'update_doc' as const,

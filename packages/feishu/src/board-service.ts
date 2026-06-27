@@ -1,5 +1,11 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, withRateLimit } from './api-error.js';
+import {
+  findDocumentPageBlock,
+  getChildBlockAtIndex,
+  insertDocumentBlockChildrenAt,
+  listDocumentBlocks,
+} from './docx-block-service.js';
 
 const BOARD_BLOCK_TYPE = 43;
 
@@ -208,24 +214,18 @@ export async function insertBoardBlock(
   documentId: string,
   index: number,
 ): Promise<string> {
-  const createResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlockChildren.create({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
+  await insertDocumentBlockChildrenAt(
+    client,
+    documentId,
+    index,
+    [
+      {
+        block_type: BOARD_BLOCK_TYPE,
+        board: {},
       },
-      data: {
-        children: [
-          {
-            block_type: BOARD_BLOCK_TYPE,
-            board: {},
-          },
-        ],
-        index,
-      },
-    }),
+    ],
+    'Insert board block',
   );
-  assertFeishuResponse(createResponse, 'Insert board block');
 
   const whiteboardId = await getWhiteboardIdAtChildIndex(client, documentId, index);
   if (!whiteboardId) {
@@ -262,22 +262,11 @@ async function getWhiteboardIdAtChildIndex(
   documentId: string,
   childIndex: number,
 ): Promise<string | null> {
-  const listResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlock.list({
-      path: { document_id: documentId },
-      params: { page_size: 500 },
-    }),
-  );
-  assertFeishuResponse(listResponse, 'List docx blocks for board index');
-
-  const pageBlock = listResponse.data?.items?.find((item) => item.block_id === documentId);
-  const childId = pageBlock?.children?.[childIndex];
-  if (!childId) return null;
-
-  const boardBlock = listResponse.data?.items?.find(
-    (item) => item.block_id === childId && item.block_type === BOARD_BLOCK_TYPE,
-  );
-  return boardBlock?.board?.token ?? null;
+  const block = await getChildBlockAtIndex(client, documentId, childIndex, {
+    blockType: BOARD_BLOCK_TYPE,
+    action: 'List docx blocks for board index',
+  });
+  return block?.board?.token ?? null;
 }
 
 /** 在 docx 正文中查找或插入画板块，返回 whiteboard_id */
@@ -288,14 +277,8 @@ export async function ensureWhiteboardInDocument(
   const existing = await findBoardWhiteboardId(client, documentId);
   if (existing) return existing;
 
-  const listResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlock.list({
-      path: { document_id: documentId },
-      params: { page_size: 500 },
-    }),
-  );
-  assertFeishuResponse(listResponse, 'List docx blocks for board append');
-  const pageBlock = listResponse.data?.items?.find((item) => item.block_id === documentId);
+  const items = await listDocumentBlocks(client, documentId, 'List docx blocks for board append');
+  const pageBlock = findDocumentPageBlock(items, documentId);
   const index = pageBlock?.children?.length ?? 0;
 
   return insertBoardBlock(client, documentId, index);
@@ -305,15 +288,9 @@ async function findBoardWhiteboardId(
   client: FeishuClient,
   documentId: string,
 ): Promise<string | null> {
-  const listResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlock.list({
-      path: { document_id: documentId },
-      params: { page_size: 500 },
-    }),
-  );
-  assertFeishuResponse(listResponse, 'List docx blocks for board');
+  const items = await listDocumentBlocks(client, documentId, 'List docx blocks for board');
 
-  for (const item of listResponse.data?.items ?? []) {
+  for (const item of items) {
     if (item.block_type !== BOARD_BLOCK_TYPE) continue;
     const token = item.board?.token;
     if (token) return token;

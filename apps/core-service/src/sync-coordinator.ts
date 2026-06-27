@@ -3,7 +3,7 @@ import { getBinding, insertSyncLog, updateSyncLog } from '@feishu-md/db';
 import type { SyncTriggerType } from '@feishu-md/shared';
 import { randomUUID } from 'node:crypto';
 import { runSync } from '@feishu-md/core';
-import { createGitProvider } from '@feishu-md/git';
+import { createGitProvider, fetchRemoteForSync } from '@feishu-md/git';
 import type { SyncQueue } from './scheduler.js';
 import type { BotBroadcaster } from './bot/broadcaster.js';
 
@@ -54,8 +54,8 @@ export class SyncCoordinator {
             binding.sourceType,
           );
 
-          if (binding.sourceType === 'cloud' && git.fetchLatest) {
-            await git.fetchLatest();
+          if (binding.sourceType === 'cloud') {
+            await fetchRemoteForSync(git);
           }
 
           const latestSha = await git.getHeadSha();

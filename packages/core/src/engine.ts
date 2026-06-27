@@ -14,13 +14,18 @@ import {
   updateSyncLog,
   upsertNodeMapping,
 } from '@feishu-md/db';
-import { createGitProvider, resolveSyncPaths } from '@feishu-md/git';
+import { createGitProvider, fetchRemoteForSync, resolveSyncPaths } from '@feishu-md/git';
 import {
   createFeishuClient,
   createTargetAdapter,
+  extractMarkdownImageRefs,
   FeishuApiError,
+  readGitImageBinary,
+  resolveMarkdownImageGitPathCandidates,
   resolveRepositoryFeishuTarget,
   toFeishuDocumentUrl,
+  formatFeishuErrorMessage,
+  type MarkdownImageResolver,
   type NodeRef,
 } from '@feishu-md/feishu';
 import { createPlanner } from './sync/factory.js';
@@ -86,8 +91,8 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       binding.sourceType,
     );
 
-    if (binding.sourceType === 'cloud' && git.fetchLatest) {
-      await git.fetchLatest();
+    if (binding.sourceType === 'cloud') {
+      await fetchRemoteForSync(git);
     }
 
     const toSha = await git.getHeadSha();
@@ -106,6 +111,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
     });
 
     const readMarkdown = (path: string) => git.readFileAtSha(toSha, path);
+    const readBinaryFile = (path: string) => git.readBinaryFileAtSha(toSha, path);
     const workspaceOptions =
       binding.syncMode === 'workspace' ? (binding.options as WorkspaceOptions) : undefined;
     const repositoryOptions =
@@ -133,6 +139,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       credentials,
       syncMode: binding.syncMode,
       readMarkdown,
+      readBinaryFile,
       workspaceOptions,
       repositoryOptions,
     });
@@ -209,6 +216,7 @@ async function executePlan(options: {
   credentials: { appId: string; appSecret: string };
   syncMode: Binding['syncMode'];
   readMarkdown: (path: string) => Promise<string | null>;
+  readBinaryFile: (path: string) => Promise<Uint8Array | null>;
   workspaceOptions?: WorkspaceOptions;
   repositoryOptions?: RepositoryOptions;
 }): Promise<{ operationCount: number; overviewUpdated: boolean }> {
@@ -219,6 +227,7 @@ async function executePlan(options: {
     credentials,
     syncMode,
     readMarkdown,
+    readBinaryFile,
     workspaceOptions,
     repositoryOptions,
   } = options;
@@ -385,17 +394,23 @@ async function executePlan(options: {
         pending.sourcePath,
         mappingByGitPath,
       );
-      const rewrittenSha = hashContent(rewritten);
+      const rewrittenSha = await hashDocumentSyncContent(
+        rewritten,
+        pending.sourcePath,
+        readBinaryFile,
+      );
       if (pending.forceWrite || pending.previousContentSha !== rewrittenSha) {
-        await adapter.updateDocumentContent(pending.docToken, rewritten);
-      }
-
-      const latest = await getNodeMappingByGitPath(db, binding.id, pending.gitPath);
-      if (latest) {
-        await upsertNodeMapping(db, {
-          ...latest,
-          contentSha: rewrittenSha,
+        await adapter.updateDocumentContent(pending.docToken, rewritten, {
+          resolveImage: createMarkdownImageResolver(pending.sourcePath, readBinaryFile),
         });
+
+        const latest = await getNodeMappingByGitPath(db, binding.id, pending.gitPath);
+        if (latest) {
+          await upsertNodeMapping(db, {
+            ...latest,
+            contentSha: rewrittenSha,
+          });
+        }
       }
     }
   }
@@ -411,12 +426,7 @@ async function executePlan(options: {
       syncMode,
     });
   } catch (error) {
-    const message = error instanceof FeishuApiError
-      ? `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}`
-      : error instanceof Error
-        ? error.message
-        : String(error);
-    console.warn(`[sync] 同步文档总览更新失败: ${message}`);
+    console.warn(`[sync] 同步文档总览更新失败: ${formatFeishuErrorMessage(error)}`);
   }
 
   return { operationCount: count, overviewUpdated };
@@ -495,8 +505,90 @@ function mappingToNodeRef(mapping: Awaited<ReturnType<typeof getNodeMappingByGit
   };
 }
 
-function hashContent(content: string): string {
-  return createHash('sha256').update(content).digest('hex');
+/** 正文哈希叠加本地图片 blob；含版本号以便图片上传逻辑变更后触发重同步 */
+const DOCUMENT_SYNC_HASH_VERSION = 'image-sync-v11';
+
+async function hashDocumentSyncContent(
+  markdown: string,
+  sourcePath: string,
+  readBinaryFile: (path: string) => Promise<Uint8Array | null>,
+): Promise<string> {
+  const hash = createHash('sha256');
+  hash.update(DOCUMENT_SYNC_HASH_VERSION);
+  hash.update('\0');
+  hash.update(markdown);
+
+  const refs = extractMarkdownImageRefs(markdown);
+  const sortedRefs = [...refs].sort((a, b) => a.src.localeCompare(b.src));
+
+  for (const ref of sortedRefs) {
+    const candidates = resolveMarkdownImageGitPathCandidates(sourcePath, ref.src);
+    if (candidates.length === 0) continue;
+
+    hash.update('\0img\0');
+    hash.update(candidates[0]!);
+
+    const resolved = await readGitImageBinary(readBinaryFile, sourcePath, ref.src);
+    if (resolved) {
+      hash.update(createHash('sha256').update(resolved.data).digest('hex'));
+    }
+  }
+
+  return hash.digest('hex');
+}
+
+function createMarkdownImageResolver(
+  sourcePath: string,
+  readBinaryFile: (path: string) => Promise<Uint8Array | null>,
+): MarkdownImageResolver {
+  return async (src, _alt) => {
+    const raw = src.trim();
+    if (!raw || raw.startsWith('data:')) return null;
+
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      return fetchRemoteImage(raw);
+    }
+
+    const resolved = await readGitImageBinary(readBinaryFile, sourcePath, raw);
+    if (!resolved) return null;
+
+    return {
+      data: resolved.data,
+      fileName: fileNameFromPath(resolved.gitPath),
+    };
+  };
+}
+
+function fileNameFromPath(path: string): string {
+  const name = posix.basename(path);
+  return name || 'image.png';
+}
+
+async function fetchRemoteImage(
+  url: string,
+): Promise<{ data: Uint8Array; fileName: string } | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.byteLength === 0) return null;
+
+    const fileName = fileNameFromUrl(url) ?? 'image.png';
+    return { data, fileName };
+  } catch {
+    return null;
+  }
+}
+
+function fileNameFromUrl(url: string): string | null {
+  try {
+    const pathname = new URL(url).pathname;
+    const name = posix.basename(pathname);
+    return name || null;
+  } catch {
+    return null;
+  }
 }
 
 function rewriteInternalMarkdownLinks(
@@ -504,7 +596,7 @@ function rewriteInternalMarkdownLinks(
   sourcePath: string,
   mappingByGitPath: Map<string, Awaited<ReturnType<typeof listNodeMappings>>[number]>,
 ): string {
-  return markdown.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (full, text: string, href: string) => {
+  return markdown.replace(/(?<!!)\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (full, text: string, href: string) => {
     const resolved = resolveInternalLinkTarget(sourcePath, href, mappingByGitPath);
     if (!resolved) return full;
     return `[${text}](${resolved})`;

@@ -1,8 +1,8 @@
 export * from './client.js';
-export { FeishuApiError } from './api-error.js';
+export { FeishuApiError, formatFeishuErrorMessage } from './api-error.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';
 export { getWikiNodeByToken, type ResolvedWikiNode } from './wiki-service.js';
-export { replaceDocumentMarkdown } from './docx-content.js';
+export { replaceDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
 export { toFeishuDocumentUrl, type FeishuDocumentLinkTarget } from './document-url.js';
 export {
   sendTextMessage,
@@ -23,6 +23,7 @@ export {
 } from './board-service.js';
 export {
   splitMarkdownByDiagrams,
+  detectDiagramFenceLang,
   detectMermaidDiagramType,
   MERMAID_DIAGRAM_TYPE,
   type MarkdownDocumentSegment,
@@ -41,3 +42,28 @@ export {
   type ExportDocumentResult,
 } from './export/markdown-exporter.js';
 export { parseFeishuDocumentUrl, type ParsedDocumentUrl, type FeishuDocumentUrlSource } from './export/document-url.js';
+export {
+  splitMarkdownByImages,
+  extractMarkdownImageRefs,
+  markdownContainsImages,
+  markdownReferencesChangedImages,
+  resolveMarkdownImageGitPath,
+  resolveMarkdownImageGitPathCandidates,
+  readGitImageBinary,
+  stripMarkdownImagesToFallback,
+  type MarkdownImageSegment,
+  type MarkdownImageRef,
+} from './markdown-images.js';
+export {
+  bindConvertedImageBlocks,
+  createEmptyImageBlockAt,
+  insertDocxImageAt,
+  insertImageBlock,
+  resolveImageBlockIdsAfterConvertInsert,
+  uploadAndBindDocxImageBlock,
+  deleteImageBlockById,
+  deleteDocumentBlockById,
+  toDocxImageUploadFileName,
+  type DocxImagePayload,
+  type DocxImageResolver,
+} from './image-service.js';

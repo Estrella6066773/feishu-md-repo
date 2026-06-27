@@ -1,8 +1,22 @@
 import type { FeishuClient } from './client.js';
-import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
+import { assertFeishuResponse, FeishuApiError, formatFeishuErrorMessage, withRateLimit } from './api-error.js';
 import { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
+import {
+  clearDocumentBody,
+  deleteDocumentBlockAtIndex,
+  insertPlainTextBlockAt,
+} from './docx-block-service.js';
+import { bindConvertedImageBlocks, insertDocxImageAt, resolveImageBlockIdsAfterConvertInsert } from './image-service.js';
+import type { DocxImageResolver } from './image-service.js';
 import { splitMarkdownByDiagrams } from './mermaid-markdown.js';
+import { markdownContainsImages, splitMarkdownByImages, stripMarkdownImagesToFallback } from './markdown-images.js';
+
+export type MarkdownImageResolver = DocxImageResolver;
+
+export interface ReplaceDocumentMarkdownOptions {
+  resolveImage?: MarkdownImageResolver;
+}
 
 type ConvertBlock = NonNullable<
   NonNullable<
@@ -35,6 +49,7 @@ export async function replaceDocumentMarkdown(
   client: FeishuClient,
   documentId: string,
   markdown: string,
+  options?: ReplaceDocumentMarkdownOptions,
 ): Promise<void> {
   await clearDocumentBody(client, documentId);
 
@@ -44,7 +59,13 @@ export async function replaceDocumentMarkdown(
 
   for (const segment of segments) {
     if (segment.kind === 'markdown') {
-      insertIndex += await insertMarkdownSegment(client, documentId, segment.content, insertIndex);
+      insertIndex += await insertMarkdownSegment(
+        client,
+        documentId,
+        segment.content,
+        insertIndex,
+        options,
+      );
       continue;
     }
 
@@ -55,26 +76,17 @@ export async function replaceDocumentMarkdown(
       try {
         await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
       } catch (sectionError) {
-        const message = sectionError instanceof FeishuApiError
-          ? `${sectionError.message}${sectionError.code != null ? ` [code ${sectionError.code}]` : ''}`
-          : sectionError instanceof Error
-            ? sectionError.message
-            : String(sectionError);
-        console.warn(`[sync] 画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${message}`);
+        console.warn(`[sync] 画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`);
       }
     } catch (error) {
-      const message = error instanceof FeishuApiError
-        ? `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}`
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      console.warn(`[sync] 画板图表导入失败，保留 Markdown 代码块: ${message}`);
-      await deleteDocumentBlockAt(client, documentId, insertIndex);
+      console.warn(`[sync] 画板图表导入失败，保留 Markdown 代码块: ${formatFeishuErrorMessage(error)}`);
+      await deleteDocumentBlockAtIndex(client, documentId, insertIndex);
       insertIndex += await insertMarkdownSegment(
         client,
         documentId,
         wrapAsMermaidFence(segment.code),
         insertIndex,
+        options,
       );
       continue;
     }
@@ -91,14 +103,19 @@ async function insertMarkdownSegment(
   documentId: string,
   markdown: string,
   index: number,
+  options?: ReplaceDocumentMarkdownOptions,
 ): Promise<number> {
   const trimmed = markdown.trim();
   if (!trimmed) return 0;
 
+  if (options?.resolveImage && markdownContainsImages(trimmed)) {
+    return insertMarkdownSegmentWithImages(client, documentId, trimmed, index, options);
+  }
+
   const candidates = uniqueStrings([trimmed, flattenMarkdownTables(trimmed)]);
   for (const content of candidates) {
     try {
-      return await insertConvertedMarkdownAt(client, documentId, content, index);
+      return await insertConvertedMarkdownAt(client, documentId, content, index, options);
     } catch (error) {
       if (!isDocxInsertRecoverableError(error)) {
         throw error;
@@ -106,8 +123,69 @@ async function insertMarkdownSegment(
     }
   }
 
-  await insertPlainTextBlockAt(client, documentId, trimmed, index);
+  const fallback = stripMarkdownImagesToFallback(trimmed).trim() || trimmed;
+  await insertPlainTextBlockAt(client, documentId, fallback, index);
   return 1;
+}
+
+/** 含图片的 Markdown：正文 convert 插入，图片单独 create + upload + replace_image */
+async function insertMarkdownSegmentWithImages(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+  index: number,
+  options: ReplaceDocumentMarkdownOptions,
+): Promise<number> {
+  const resolveImage = options.resolveImage;
+  if (!resolveImage) return 0;
+
+  const segments = splitMarkdownByImages(markdown);
+  let currentIndex = index;
+  let insertedCount = 0;
+
+  for (const segment of segments) {
+    if (segment.kind === 'markdown') {
+      if (!segment.content.trim()) continue;
+      const count = await insertMarkdownSegment(client, documentId, segment.content, currentIndex);
+      currentIndex += count;
+      insertedCount += count;
+      continue;
+    }
+
+    try {
+      const resolved = await resolveImage(segment.src, segment.alt);
+      if (!resolved) {
+        console.warn(`[sync] 图片无法解析，插入文本占位: ${segment.src}`);
+        await insertPlainTextBlockAt(
+          client,
+          documentId,
+          segment.alt.trim() || `[图片: ${segment.src}]`,
+          currentIndex,
+        );
+        currentIndex += 1;
+        insertedCount += 1;
+        continue;
+      }
+
+      await insertDocxImageAt(client, documentId, currentIndex, resolved);
+      currentIndex += 1;
+      insertedCount += 1;
+    } catch (error) {
+      console.warn(
+        `[sync] 图片上传失败，插入文本占位: ${segment.src} (${formatFeishuErrorMessage(error)})`,
+      );
+      await insertPlainTextBlockAt(
+        client,
+        documentId,
+        segment.alt.trim() || `[图片: ${segment.src}]`,
+        currentIndex,
+      );
+      currentIndex += 1;
+      insertedCount += 1;
+    }
+  }
+
+  return insertedCount;
 }
 
 async function insertConvertedMarkdownAt(
@@ -115,6 +193,7 @@ async function insertConvertedMarkdownAt(
   documentId: string,
   markdown: string,
   index: number,
+  options?: ReplaceDocumentMarkdownOptions,
 ): Promise<number> {
   const convertResponse = await withRateLimit(() =>
     client.docx.v1.document.convert({
@@ -126,8 +205,9 @@ async function insertConvertedMarkdownAt(
   );
   assertFeishuResponse(convertResponse, 'Convert markdown to docx blocks');
 
-  const blocks = convertResponse.data?.blocks ?? [];
+  const rawBlocks = convertResponse.data?.blocks ?? [];
   const firstLevelBlockIds = convertResponse.data?.first_level_block_ids ?? [];
+  const blocks = sanitizeConvertBlocksForInsert(rawBlocks as ConvertBlock[]);
 
   if (blocks.length === 0 || firstLevelBlockIds.length === 0) {
     throw new FeishuApiError('Convert markdown returned no blocks');
@@ -142,89 +222,66 @@ async function insertConvertedMarkdownAt(
       data: {
         children_id: firstLevelBlockIds,
         index,
-        descendants: blocks as ConvertBlock[],
+        descendants: blocks,
       },
     }),
   );
   assertFeishuResponse(createResponse, 'Insert converted docx blocks');
 
+  // 含图片的 Markdown 走 insertMarkdownSegmentWithImages，此处仅处理 convert 结果里可能残留的 Image Block
+  if (options?.resolveImage && markdownContainsImages(markdown)) {
+    const imageBlockIds = await resolveImageBlockIdsAfterConvertInsert(client, documentId, {
+      convertBlocks: blocks,
+      firstLevelBlockIds,
+      blockIdRelations: (createResponse.data?.block_id_relations ?? []) as Array<{
+        temporary_block_id?: string;
+        block_id?: string;
+      }>,
+      insertIndex: index,
+      insertedTopLevelCount: firstLevelBlockIds.length,
+    });
+    if (imageBlockIds.length > 0) {
+      await bindConvertedImageBlocks(
+        client,
+        documentId,
+        imageBlockIds,
+        markdown,
+        options.resolveImage,
+      );
+    }
+  }
+
   return firstLevelBlockIds.length;
 }
 
-async function clearDocumentBody(client: FeishuClient, documentId: string): Promise<void> {
-  const listResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlock.list({
-      path: { document_id: documentId },
-      params: { page_size: 500 },
-    }),
-  );
-  assertFeishuResponse(listResponse, 'List docx blocks');
+const DOCX_TABLE_BLOCK_TYPE = 31;
 
-  const pageBlock = listResponse.data?.items?.find((item) => item.block_id === documentId);
-  const childCount = pageBlock?.children?.length ?? 0;
-  if (childCount === 0) return;
+/** 飞书 FAQ：插入前去除表格 merge_info，避免 invalid param */
+function sanitizeConvertBlocksForInsert(blocks: ConvertBlock[]): ConvertBlock[] {
+  return blocks.map((block) => {
+    const record = block as ConvertBlock & Record<string, unknown>;
+    if (record.block_type !== DOCX_TABLE_BLOCK_TYPE || !record.table) {
+      return block;
+    }
 
-  const deleteResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlockChildren.batchDelete({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
-      },
-      data: {
-        start_index: 0,
-        end_index: childCount,
-      },
-    }),
-  );
-  assertFeishuResponse(deleteResponse, 'Clear docx document body');
+    return {
+      ...record,
+      table: stripMergeInfo(record.table as Record<string, unknown>),
+    } as ConvertBlock;
+  });
 }
 
-async function insertPlainTextBlockAt(
-  client: FeishuClient,
-  documentId: string,
-  text: string,
-  index: number,
-): Promise<void> {
-  const response = await withRateLimit(() =>
-    client.docx.v1.documentBlockChildren.create({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
-      },
-      data: {
-        children: [
-          {
-            block_type: 2,
-            text: {
-              elements: [{ text_run: { content: text.slice(0, 8000) } }],
-            },
-          },
-        ],
-        index,
-      },
-    }),
-  );
-  assertFeishuResponse(response, 'Insert plain text block');
-}
+function stripMergeInfo(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...value };
+  delete result.merge_info;
 
-async function deleteDocumentBlockAt(
-  client: FeishuClient,
-  documentId: string,
-  index: number,
-): Promise<void> {
-  const deleteResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlockChildren.batchDelete({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
-      },
-      data: {
-        start_index: index,
-        end_index: index + 1,
-      },
-    }),
-  );
-  assertFeishuResponse(deleteResponse, 'Delete docx block at index');
+  if (result.property && typeof result.property === 'object') {
+    const property = { ...(result.property as Record<string, unknown>) };
+    delete property.merge_info;
+    result.property = property;
+  }
+
+  return result;
 }
 
 function wrapAsMermaidFence(code: string): string {

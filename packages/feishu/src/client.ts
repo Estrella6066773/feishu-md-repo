@@ -35,20 +35,18 @@ export interface FeishuTargetAdapter {
   ): Promise<NodeRef>;
   /** 校验飞书侧节点是否仍存在（映射未过期） */
   nodeExists(ref: NodeRef): Promise<boolean>;
-  updateDocumentContent(docToken: string, markdown: string): Promise<void>;
+  updateDocumentContent(
+    docToken: string,
+    markdown: string,
+    options?: import('./docx-content.js').ReplaceDocumentMarkdownOptions,
+  ): Promise<void>;
   moveNode(token: string, newParentToken: string | undefined): Promise<void>;
   deleteNode(token: string, nodeType: 'folder' | 'docx' | 'file'): Promise<void>;
-  uploadFile?(
-    gitPath: string,
-    parentToken: string | undefined,
-    fileName: string,
-    content: Uint8Array,
-  ): Promise<NodeRef>;
 }
 
 export { createTargetAdapter } from './target/factory.js';
 export { WikiAdapter } from './target/wiki-adapter.js';
 export { DriveAdapter } from './target/drive-adapter.js';
 export { FeishuApiError } from './api-error.js';
-export { replaceDocumentMarkdown } from './docx-content.js';
+export { replaceDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
 

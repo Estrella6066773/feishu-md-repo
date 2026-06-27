@@ -83,6 +83,7 @@ pnpm dev:desktop
 | 云空间文件夹 / 文件 | `drive:drive` 或 `space:folder:create` |
 | 新版文档读写 | `docx:document` |
 | Markdown 转换（官方 convert 接口） | `docx:document` |
+| 文档内图片上传 | `docs:document.media:upload` |
 | 画板节点（同步文档总览思维导图） | `board:whiteboard:node:read`、`board:whiteboard:node:create`、`board:whiteboard:node:delete` |
 | 机器人消息 | `im:message` |
 | 接收消息事件 | 订阅 `im.message.receive_v1`，订阅方式选 **长连接** |
@@ -95,7 +96,7 @@ pnpm dev:desktop
 - 手动同步 / 全量重建（队列执行）
 - **Wiki**：`POST /wiki/v2/spaces/:space_id/nodes` 创建 docx 子节点
 - **Drive**：`create_folder` + `docx/documents` 创建目录与文档
-- **正文写入**：`docx/document/convert`（Markdown）+ `documentBlockDescendant/create`；文内 Mermaid 流程图/图表代码块会插入画板块并用 API 绘制
+- **正文写入**：`docx/document/convert`（Markdown）+ 分段插入；本地/Git 图片读取二进制后直接写入 Image Block（`docx_image` + `replace_image`），不镜像到云空间、不在文档中保留 GitHub 链接；文内 Mermaid 流程图/图表代码块会插入画板块并用 API 绘制
 - 本地 Git post-commit hook（仅本地库）/ 有云库定时 fetch 远程
 - 节点映射持久化（避免重复创建）
 - **同步文档总览**：每次同步在飞书根级创建/更新「同步文档总览」文档，内含画板思维导图，展示当前已同步的文档树结构

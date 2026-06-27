@@ -1,11 +1,17 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { GitProvider, GitProviderOptions, GitTreeEntry, ChangedPath } from './types.js';
+
+const execFileAsync = promisify(execFile);
 
 abstract class BaseGitProvider implements GitProvider {
   protected git: SimpleGit;
   protected branch: string;
+  protected repoPath: string;
 
   constructor(repoPath: string, branch: string) {
+    this.repoPath = repoPath;
     this.git = simpleGit(repoPath);
     this.branch = branch;
   }
@@ -70,6 +76,22 @@ abstract class BaseGitProvider implements GitProvider {
   async readFileAtSha(sha: string, path: string): Promise<string | null> {
     try {
       return await this.git.show([`${sha}:${path}`]);
+    } catch {
+      return null;
+    }
+  }
+
+  async readBinaryFileAtSha(sha: string, path: string): Promise<Uint8Array | null> {
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['-C', this.repoPath, 'cat-file', '-p', `${sha}:${path}`],
+        { maxBuffer: 20 * 1024 * 1024, encoding: 'buffer' },
+      );
+      if (!stdout || !Buffer.isBuffer(stdout) || stdout.length === 0) {
+        return null;
+      }
+      return new Uint8Array(stdout);
     } catch {
       return null;
     }
@@ -157,4 +179,16 @@ export function createGitProvider(options: GitProviderOptions, sourceType: 'loca
     return new CloudGitProvider(options);
   }
   return new LocalGitProvider(options.repoPath, options.branch);
+}
+
+/** 有云库同步前拉取远程；网络失败时降级使用本地已有 origin 快照，避免整次同步中断 */
+export async function fetchRemoteForSync(git: GitProvider): Promise<void> {
+  if (!git.fetchLatest) return;
+
+  try {
+    await git.fetchLatest();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[sync] git fetch 失败，使用本地已有远程分支快照继续: ${message}`);
+  }
 }

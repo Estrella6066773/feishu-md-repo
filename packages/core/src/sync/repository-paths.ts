@@ -1,4 +1,5 @@
 import { basename, dirname } from 'node:path';
+import { markdownReferencesChangedImages } from '@feishu-md/feishu';
 
 const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
 
@@ -166,7 +167,12 @@ export function isStandaloneFileDirty(
   filePath: string,
   changedPaths: Set<string>,
   incremental: boolean,
+  markdownContent?: string,
 ): boolean {
   if (!incremental) return true;
-  return changedPaths.has(filePath);
+  if (changedPaths.has(filePath)) return true;
+  if (markdownContent && markdownReferencesChangedImages(markdownContent, filePath, changedPaths)) {
+    return true;
+  }
+  return false;
 }

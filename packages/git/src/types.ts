@@ -24,6 +24,7 @@ export interface GitProvider {
   /** Git 规则：排除 .gitattributes 中 export-ignore 的路径 */
   filterPathsByGitExportIgnore(sha: string, paths: string[]): Promise<string[]>;
   readFileAtSha(sha: string, path: string): Promise<string | null>;
+  readBinaryFileAtSha(sha: string, path: string): Promise<Uint8Array | null>;
 }
 
 export interface GitProviderOptions {

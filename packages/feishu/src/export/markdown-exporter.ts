@@ -6,6 +6,7 @@ import {
   exportBoardNodesToMermaid,
   listWhiteboardNodes,
 } from './board-export.js';
+import { detectDiagramFenceLang } from '../mermaid-markdown.js';
 
 export interface ExportDocumentOptions {
   documentUrl: string;
@@ -279,9 +280,10 @@ async function renderBoardBlock(context: ExportContext, block: DocxBlock): Promi
 
   try {
     const rawNodes = await listWhiteboardNodes(context.client, whiteboardId);
-    const mermaidCode = exportBoardNodesToMermaid(rawNodes);
-    if (mermaidCode) {
-      return `\`\`\`mermaid\n${mermaidCode}\n\`\`\``;
+    const diagramCode = exportBoardNodesToMermaid(rawNodes);
+    if (diagramCode) {
+      const fenceLang = detectDiagramFenceLang(diagramCode);
+      return `\`\`\`${fenceLang}\n${diagramCode}\n\`\`\``;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

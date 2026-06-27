@@ -136,9 +136,13 @@ export class WikiAdapter implements FeishuTargetAdapter {
 
 
 
-  async updateDocumentContent(docToken: string, markdown: string): Promise<void> {
+  async updateDocumentContent(
+    docToken: string,
+    markdown: string,
+    options?: import('../docx-content.js').ReplaceDocumentMarkdownOptions,
+  ): Promise<void> {
 
-    await replaceDocumentMarkdown(this.client, docToken, markdown);
+    await replaceDocumentMarkdown(this.client, docToken, markdown, options);
 
   }
 
