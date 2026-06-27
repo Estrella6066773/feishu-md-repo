@@ -106,31 +106,26 @@ export function hasCustomOutcomePolicy(policy: BotBroadcastTargetPolicy | undefi
   return policy?.onSuccess !== undefined || policy?.onFailure !== undefined;
 }
 
-export const MAX_BROADCAST_CHANGED_FILES = 5;
+export interface SyncBroadcastChangedFile {
+  gitPath: string;
+  url?: string;
+}
 
-export const MAX_BROADCAST_MESSAGE_LENGTH = 4000;
-
-export interface SyncBroadcastCommitSummary {
+export interface SyncBroadcastCommitDetail {
   sha: string;
   subject: string;
-  message: string;
+  body: string;
+  changedFiles: SyncBroadcastChangedFile[];
 }
 
 export interface SyncBroadcastResultSummary {
   toSha: string;
   operationCount: number;
-  commits?: SyncBroadcastCommitSummary[];
-  changedPaths?: string[];
+  commits?: SyncBroadcastCommitDetail[];
 }
 
-function formatCommitBlocks(commits: SyncBroadcastCommitSummary[]): string {
-  return commits
-    .map((commit) => {
-      const message = commit.message.trim() || commit.subject.trim();
-      return `**${commit.sha.slice(0, 7)}**\n${message}`;
-    })
-    .join('\n\n');
-}
+/** 飞书卡片 Markdown 单条内容建议上限（超出将按提交区块拆分多条消息） */
+export const FEISHU_BROADCAST_MARKDOWN_LIMIT = 28_000;
 
 export function formatSyncBroadcastMessage(options: {
   bindingName: string;
@@ -139,46 +134,151 @@ export function formatSyncBroadcastMessage(options: {
   result?: SyncBroadcastResultSummary;
   errorMessage?: string;
 }): string {
+  const parts = buildSyncBroadcastMessageParts(options);
+  return [parts.topicRoot, ...parts.threadMessages].join('\n\n---\n\n');
+}
+
+export interface SyncBroadcastMessageParts {
+  /** 群聊主会话中的话题根消息（短摘要） */
+  topicRoot: string;
+  /** 话题内逐条回复的 Markdown 正文 */
+  threadMessages: string[];
+}
+
+export function buildSyncBroadcastMessageParts(options: {
+  bindingName: string;
+  trigger: SyncTriggerType;
+  success: boolean;
+  result?: SyncBroadcastResultSummary;
+  errorMessage?: string;
+}): SyncBroadcastMessageParts {
   const triggerLabel = SYNC_TRIGGER_LABELS[options.trigger] ?? options.trigger;
 
   if (!options.success) {
-    return `❌ 同步失败\n绑定：${options.bindingName}\n触发：${triggerLabel}\n原因：${options.errorMessage ?? '未知错误'}`;
+    return {
+      topicRoot: formatSyncBroadcastFailureDetail({
+        bindingName: options.bindingName,
+        trigger: options.trigger,
+        errorMessage: options.errorMessage,
+      }),
+      threadMessages: [],
+    };
   }
 
-  const lines = [
-    '✅ **同步成功**',
-    `**绑定：** ${options.bindingName}`,
-    `**触发：** ${triggerLabel}`,
-  ];
-
+  const sha = options.result?.toSha.slice(0, 7) ?? '-';
   const commits = options.result?.commits ?? [];
-  if (commits.length > 0) {
-    lines.push('');
-    lines.push(commits.length > 1 ? `**更新提交（${commits.length}）：**` : '**更新提交：**');
-    lines.push('');
-    lines.push(formatCommitBlocks(commits));
-  } else {
-    lines.push(`**Commit：** \`${options.result?.toSha.slice(0, 7) ?? '-'}\``);
+
+  const topicRoot = [
+    '✅ **同步成功**',
+    '',
+    `- **绑定**：${options.bindingName}`,
+    `- **触发**：${triggerLabel}`,
+    `- **Commit**：\`${sha}\``,
+    `- **操作数**：${options.result?.operationCount ?? 0}`,
+  ].join('\n');
+
+  const threadMessages: string[] = [];
+  for (const commit of commits) {
+    threadMessages.push(
+      ...splitSyncBroadcastMarkdown(formatCommitMessageReply(commit)),
+    );
+    const filesReply = formatCommitFilesReply(commit);
+    if (filesReply) {
+      threadMessages.push(...splitSyncBroadcastMarkdown(filesReply));
+    }
   }
 
-  const paths = options.result?.changedPaths ?? [];
-  if (paths.length > 0) {
-    lines.push('');
-    lines.push(paths.length > 1 ? `**相关文件（${paths.length}）：**` : '**相关文件：**');
-    const shown = paths.slice(0, MAX_BROADCAST_CHANGED_FILES);
-    for (const path of shown) {
-      lines.push(`- \`${path}\``);
-    }
-    if (paths.length > MAX_BROADCAST_CHANGED_FILES) {
-      lines.push(`- … 共 ${paths.length} 个文件`);
-    }
+  return { topicRoot, threadMessages };
+}
+
+function formatSyncBroadcastFailureDetail(options: {
+  bindingName: string;
+  trigger: SyncTriggerType;
+  errorMessage?: string;
+}): string {
+  const triggerLabel = SYNC_TRIGGER_LABELS[options.trigger] ?? options.trigger;
+  return [
+    '❌ **同步失败**',
+    '',
+    `- **绑定**：${options.bindingName}`,
+    `- **触发**：${triggerLabel}`,
+    `- **原因**：${options.errorMessage ?? '未知错误'}`,
+  ].join('\n');
+}
+
+function formatCommitMessageReply(commit: SyncBroadcastCommitDetail): string {
+  const lines = [`### \`${commit.sha.slice(0, 7)}\` ${commit.subject}`];
+  if (commit.body.trim()) {
+    lines.push('', commit.body.trim());
+  }
+  return lines.join('\n');
+}
+
+function formatCommitFilesReply(commit: SyncBroadcastCommitDetail): string | null {
+  if (commit.changedFiles.length === 0) return null;
+  const lines = ['**相关文件**'];
+  for (const file of commit.changedFiles) {
+    lines.push(formatChangedFileLine(file));
+  }
+  return lines.join('\n');
+}
+
+function formatChangedFileLine(file: SyncBroadcastChangedFile): string {
+  if (file.url) {
+    return `- [${file.gitPath}](${file.url})`;
+  }
+  return `- \`${file.gitPath}\``;
+}
+
+export function splitSyncBroadcastMarkdown(markdown: string, limit = FEISHU_BROADCAST_MARKDOWN_LIMIT): string[] {
+  if (markdown.length <= limit) return [markdown];
+
+  const sections = markdown.split('\n---\n');
+  if (sections.length <= 1) {
+    return chunkPlainMarkdown(markdown, limit);
   }
 
-  lines.push('');
-  lines.push(`**操作数：** ${options.result?.operationCount ?? 0}`);
-  const markdown = lines.join('\n');
-  if (markdown.length <= MAX_BROADCAST_MESSAGE_LENGTH) {
-    return markdown;
+  const header = sections[0]!;
+  const commitSections = sections.slice(1).map((section) => `---\n${section}`);
+  const chunks: string[] = [];
+  let current = header;
+
+  for (const section of commitSections) {
+    const candidate = current ? `${current}\n\n${section}` : section;
+    if (candidate.length <= limit) {
+      current = candidate;
+      continue;
+    }
+
+    if (current.trim()) {
+      chunks.push(current.trim());
+    }
+
+    if (section.length <= limit) {
+      current = section;
+      continue;
+    }
+
+    chunks.push(...chunkPlainMarkdown(section, limit));
+    current = '';
   }
-  return `${markdown.slice(0, MAX_BROADCAST_MESSAGE_LENGTH - 20).trimEnd()}\n\n…（内容过长已截断）`;
+
+  if (current.trim()) {
+    chunks.push(current.trim());
+  }
+
+  return chunks.length > 0 ? chunks : chunkPlainMarkdown(markdown, limit);
+}
+
+function chunkPlainMarkdown(markdown: string, limit: number): string[] {
+  const chunks: string[] = [];
+  let rest = markdown;
+  while (rest.length > limit) {
+    let splitAt = rest.lastIndexOf('\n', limit);
+    if (splitAt < limit * 0.5) splitAt = limit;
+    chunks.push(rest.slice(0, splitAt).trim());
+    rest = rest.slice(splitAt).trimStart();
+  }
+  if (rest.trim()) chunks.push(rest.trim());
+  return chunks;
 }

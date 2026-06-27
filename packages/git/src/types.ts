@@ -9,8 +9,8 @@ export interface ChangedPath {
 export interface GitCommitSummary {
   sha: string;
   subject: string;
-  /** 完整提交说明（标题 + 正文），可能含 Markdown */
-  message: string;
+  /** commit message 正文（首行 subject 之后的部分） */
+  body: string;
 }
 
 export interface GitTreeEntry {

@@ -1,8 +1,18 @@
 import type { DbClient } from '@feishu-md/db';
 import { getBotSettings, getFeishuCredentials } from '@feishu-md/db';
 import type { Binding, BotBroadcastTarget, BotSettings, SyncTriggerType } from '@feishu-md/shared';
-import { formatSyncBroadcastMessage, shouldBroadcastToTarget } from '@feishu-md/shared';
-import { createFeishuClient, sendPostMarkdownMessage, sendTextMessage } from '@feishu-md/feishu';
+import {
+  buildSyncBroadcastMessageParts,
+  shouldBroadcastToTarget,
+  splitSyncBroadcastMarkdown,
+} from '@feishu-md/shared';
+import {
+  createFeishuClient,
+  isFeishuTopicUnsupportedError,
+  sendBroadcastAsTopicThread,
+  sendMarkdownCardMessages,
+  sendTextMessage,
+} from '@feishu-md/feishu';
 import type { RunSyncResult } from '@feishu-md/core';
 
 export interface SyncBroadcastContext {
@@ -32,7 +42,7 @@ export class BotBroadcaster {
     if (!credentials) return;
 
     const client = createFeishuClient(credentials);
-    const message = formatSyncBroadcastMessage({
+    const parts = buildSyncBroadcastMessageParts({
       bindingName: context.binding.name,
       trigger: context.trigger,
       success: context.success,
@@ -42,18 +52,41 @@ export class BotBroadcaster {
 
     await Promise.all(
       targets.map(async (target) => {
-        const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
         try {
-          if (context.success) {
-            await sendPostMarkdownMessage(client, receiveIdType, target.receiveId, message);
-          } else {
-            await sendTextMessage(client, receiveIdType, target.receiveId, message);
-          }
+          await this.deliverBroadcast(client, target, parts);
         } catch (error) {
           console.error('[bot] broadcast failed', target.receiveId, error);
         }
       }),
     );
+  }
+
+  private async deliverBroadcast(
+    client: ReturnType<typeof createFeishuClient>,
+    target: BotBroadcastTarget,
+    parts: ReturnType<typeof buildSyncBroadcastMessageParts>,
+  ): Promise<void> {
+    if (target.type === 'chat') {
+      try {
+        await sendBroadcastAsTopicThread(
+          client,
+          target.receiveId,
+          parts.topicRoot,
+          parts.threadMessages,
+        );
+        return;
+      } catch (error) {
+        if (!isFeishuTopicUnsupportedError(error)) {
+          throw error;
+        }
+        console.warn('[bot] chat topic unsupported, fallback to flat markdown cards', target.receiveId);
+      }
+    }
+
+    const flatMarkdown = [parts.topicRoot, ...parts.threadMessages].join('\n\n---\n\n');
+    const chunks = splitSyncBroadcastMarkdown(flatMarkdown);
+    const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
+    await sendMarkdownCardMessages(client, receiveIdType, target.receiveId, chunks);
   }
 
   async sendCustomMessage(text: string, settings?: BotSettings): Promise<void> {

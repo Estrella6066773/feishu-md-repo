@@ -29,6 +29,7 @@ import {
   type NodeRef,
 } from '@feishu-md/feishu';
 import { createPlanner } from './sync/factory.js';
+import { resolveGitPathToDocumentUrl } from './sync/git-path-mapping.js';
 import {
   buildRepairOperationsForMissingRemote,
   sortSyncOperations,
@@ -50,8 +51,19 @@ export interface RunSyncResult {
   toSha: string;
   fromSha?: string;
   operationCount: number;
-  commits: Array<{ sha: string; subject: string; message: string }>;
-  changedPaths: string[];
+  commits: SyncBroadcastCommitDetail[];
+}
+
+export interface SyncBroadcastChangedFile {
+  gitPath: string;
+  url?: string;
+}
+
+export interface SyncBroadcastCommitDetail {
+  sha: string;
+  subject: string;
+  body: string;
+  changedFiles: SyncBroadcastChangedFile[];
 }
 
 export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
@@ -114,12 +126,6 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
     });
 
     const commits = await git.getCommitsBetween(fromSha, toSha);
-    const broadcastChangedPaths = fromSha
-      ? changedPaths
-      : filterPathsByProjectIgnoreGlobs(
-          await git.getCommitFilePaths(toSha),
-          mergeProjectIgnoreGlobs(projectIgnoreGlobs),
-        );
 
     const readMarkdown = (path: string) => git.readFileAtSha(toSha, path);
     const readBinaryFile = (path: string) => git.readBinaryFileAtSha(toSha, path);
@@ -203,13 +209,27 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       finishedAt: new Date().toISOString(),
     });
 
+    const readmeNames =
+      binding.syncMode === 'repository'
+        ? (binding.options as RepositoryOptions).readmeNames
+        : [];
+
+    const broadcastCommits = await buildBroadcastCommitDetails({
+      git,
+      commits,
+      projectIgnoreGlobs,
+      bindingId: binding.id,
+      db,
+      syncMode: binding.syncMode,
+      readmeNames,
+    });
+
     return {
       logId,
       toSha,
       fromSha,
       operationCount,
-      commits,
-      changedPaths: broadcastChangedPaths,
+      commits: broadcastCommits,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -682,6 +702,39 @@ function findLinkTargetMapping(
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+async function buildBroadcastCommitDetails(options: {
+  git: ReturnType<typeof createGitProvider>;
+  commits: Awaited<ReturnType<ReturnType<typeof createGitProvider>['getCommitsBetween']>>;
+  projectIgnoreGlobs: string[];
+  bindingId: string;
+  db: DbClient;
+  syncMode: Binding['syncMode'];
+  readmeNames: string[];
+}): Promise<SyncBroadcastCommitDetail[]> {
+  const { git, commits, projectIgnoreGlobs, bindingId, db, syncMode, readmeNames } = options;
+  const mappings = await listNodeMappings(db, bindingId);
+  const mappingByGitPath = new Map(mappings.map((item) => [normalizePath(item.gitPath), item]));
+  const ignoreGlobs = mergeProjectIgnoreGlobs(projectIgnoreGlobs);
+
+  const details: SyncBroadcastCommitDetail[] = [];
+  for (const commit of commits) {
+    const rawPaths = await git.getCommitFilePaths(commit.sha);
+    const paths = filterPathsByProjectIgnoreGlobs(rawPaths, ignoreGlobs).sort((a, b) =>
+      a.localeCompare(b),
+    );
+    details.push({
+      sha: commit.sha,
+      subject: commit.subject,
+      body: commit.body,
+      changedFiles: paths.map((gitPath) => ({
+        gitPath,
+        url: resolveGitPathToDocumentUrl(gitPath, mappingByGitPath, syncMode, readmeNames),
+      })),
+    });
+  }
+  return details;
 }
 
 export { createPlanner } from './sync/factory.js';

@@ -71,13 +71,13 @@ abstract class BaseGitProvider implements GitProvider {
     const parts = output.split('\0').filter((part) => part.length > 0);
     const commits: GitCommitSummary[] = [];
     for (let i = 0; i + 2 < parts.length; i += 3) {
-      const sha = parts[i]!;
-      const subject = parts[i + 1]!.trim();
-      const body = parts[i + 2]!.trim();
-      const message = body ? `${subject}\n\n${body}` : subject;
-      commits.push({ sha, subject, message });
+      commits.push({
+        sha: parts[i]!,
+        subject: parts[i + 1]!,
+        body: parts[i + 2]!.trim(),
+      });
     }
-    return commits;
+    return commits.reverse();
   }
 
   async getCommitFilePaths(sha: string): Promise<string[]> {
