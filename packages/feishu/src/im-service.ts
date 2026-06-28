@@ -28,18 +28,22 @@ function extractMessageSendResult(response: {
   };
 }
 
+function normalizeMdParagraph(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+}
+
 function expandMarkdownParagraphs(markdown: string): string[] {
   const parts = markdown
     .split(/\n\n(?=(?:## |### |\*\*相关文件))/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+    .map((part) => normalizeMdParagraph(part))
+    .filter((part) => part.length > 0);
   return parts.length > 0 ? parts : [markdown];
 }
 
 function buildPostMarkdownContent(markdown: string | string[], title = '') {
   const paragraphs = (Array.isArray(markdown) ? markdown : expandMarkdownParagraphs(markdown))
-    .map((part) => part.trim())
-    .filter(Boolean)
+    .map((part) => normalizeMdParagraph(part))
+    .filter((part) => part.length > 0)
     .map((part) => [{ tag: 'md' as const, text: part.slice(0, FEISHU_POST_MD_MAX_LENGTH) }]);
 
   return JSON.stringify({

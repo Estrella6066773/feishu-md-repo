@@ -127,7 +127,8 @@ export interface SyncBroadcastResultSummary {
 }
 
 export interface SyncBroadcastThreadPlan {
-  commitReplies: string[];
+  /** 每条 commit 话题回复；string[] 表示同一回复内多个 md 段落（标题 + 正文） */
+  commitReplies: Array<string | string[]>;
   fileReplies: string[];
 }
 
@@ -142,47 +143,112 @@ function formatCommitHashLine(result?: SyncBroadcastResultSummary): string {
 
 function extractCommitBody(commit: SyncBroadcastCommitSummary): string {
   const subject = commit.subject.trim();
-  const fullMessage = commit.message.trim() || subject;
-  if (!subject) return fullMessage;
+  const fullMessage = commit.message.replace(/\r\n/g, '\n').replace(/\n+$/, '') || subject;
+  if (!subject) return preserveCommitBodyLineBreaks(fullMessage);
   if (fullMessage === subject) return '';
   if (fullMessage.startsWith(subject)) {
-    return fullMessage.slice(subject.length).replace(/^\n+/, '');
+    const body = fullMessage.slice(subject.length).replace(/^\n+/, '');
+    return preserveCommitBodyLineBreaks(body);
   }
-  return fullMessage;
+  return preserveCommitBodyLineBreaks(fullMessage);
 }
 
-export function formatSyncBroadcastCommitReply(commit: SyncBroadcastCommitSummary): string {
+/**
+ * Markdown 会把单个换行折叠成空格；将段内单换行转为硬换行，保留空行分段，跳过代码块。
+ */
+function preserveCommitBodyLineBreaks(body: string): string {
+  if (!body) return body;
+
+  const segments = body.split(/(```[\s\S]*?```)/g);
+  return segments
+    .map((segment, index) => {
+      if (index % 2 === 1 && segment.startsWith('```')) {
+        return segment;
+      }
+      return segment
+        .split('\n\n')
+        .map((paragraph) => {
+          const lines = paragraph.split('\n');
+          if (lines.length <= 1) {
+            return paragraph;
+          }
+          return lines.map((line) => line.replace(/[ \t]+$/, '')).join('  \n');
+        })
+        .join('\n\n');
+    })
+    .join('');
+}
+
+function formatCommitReplyHeading(commit: SyncBroadcastCommitSummary): string {
   const subject = commit.subject.trim();
-  const heading = subject
+  return subject
     ? `### \`${commit.sha.slice(0, 7)}\` ${subject}`
     : `### \`${commit.sha.slice(0, 7)}\``;
+}
+
+function splitMarkdownBodyChunks(body: string, maxLen: number): string[] {
+  if (body.length <= maxLen) return [body];
+
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const paragraph of body.split(/\n\n/)) {
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length <= maxLen) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = '';
+    }
+
+    if (paragraph.length <= maxLen) {
+      current = paragraph;
+      continue;
+    }
+
+    let offset = 0;
+    while (offset < paragraph.length) {
+      chunks.push(paragraph.slice(offset, offset + maxLen));
+      offset += maxLen;
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+/** commit 话题回复段落：标题与正文分开发送，正文保留 Git 原始 Markdown */
+export function formatSyncBroadcastCommitReplyParagraphs(
+  commit: SyncBroadcastCommitSummary,
+): string[] {
+  const heading = formatCommitReplyHeading(commit);
   const body = extractCommitBody(commit);
-  return body ? `${heading}\n${body}` : heading;
+  return body ? [heading, body] : [heading];
 }
 
-function packCommitReplyMessages(commit: SyncBroadcastCommitSummary): string[] {
-  const first = formatSyncBroadcastCommitReply(commit);
-  if (first.length <= MAX_BROADCAST_MESSAGE_LENGTH) {
-    return [first];
-  }
-
-  const subject = commit.subject.trim();
-  const heading = subject
-    ? `### \`${commit.sha.slice(0, 7)}\` ${subject}`
-    : `### \`${commit.sha.slice(0, 7)}\``;
+function packCommitReplyMessages(commit: SyncBroadcastCommitSummary): Array<string | string[]> {
+  const heading = formatCommitReplyHeading(commit);
   const body = extractCommitBody(commit);
   if (!body) {
-    return [heading];
+    return [[heading]];
   }
 
-  const firstBodyLimit = MAX_BROADCAST_MESSAGE_LENGTH - heading.length - 1;
-  const messages = [`${heading}\n${body.slice(0, firstBodyLimit)}`];
-  let offset = firstBodyLimit;
-  while (offset < body.length) {
-    messages.push(body.slice(offset, offset + MAX_BROADCAST_MESSAGE_LENGTH));
-    offset += MAX_BROADCAST_MESSAGE_LENGTH;
+  const bodyParts = splitMarkdownBodyChunks(body, MAX_BROADCAST_MESSAGE_LENGTH);
+  if (bodyParts.length === 1) {
+    return [[heading, bodyParts[0]!]];
   }
-  return messages;
+
+  const replies: Array<string | string[]> = [[heading, bodyParts[0]!]];
+  for (let index = 1; index < bodyParts.length; index += 1) {
+    replies.push(bodyParts[index]!);
+  }
+  return replies;
 }
 
 function formatFileLine(file: SyncBroadcastFileEntry): string {
@@ -227,7 +293,7 @@ export function buildSyncBroadcastThreadPlan(
   result?: SyncBroadcastResultSummary,
   files: SyncBroadcastFileEntry[] = [],
 ): SyncBroadcastThreadPlan {
-  const commitReplies: string[] = [];
+  const commitReplies: Array<string | string[]> = [];
   for (const commit of result?.commits ?? []) {
     commitReplies.push(...packCommitReplyMessages(commit));
   }

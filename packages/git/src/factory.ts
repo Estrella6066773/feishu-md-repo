@@ -73,7 +73,7 @@ abstract class BaseGitProvider implements GitProvider {
     for (let i = 0; i + 2 < parts.length; i += 3) {
       const sha = parts[i]!;
       const subject = parts[i + 1]!.trim();
-      const body = parts[i + 2]!.trim();
+      const body = parts[i + 2]!.replace(/\r\n/g, '\n').replace(/\n+$/, '');
       const message = body ? `${subject}\n\n${body}` : subject;
       commits.push({ sha, subject, message });
     }
