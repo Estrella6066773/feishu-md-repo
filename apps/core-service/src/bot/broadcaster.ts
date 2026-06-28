@@ -1,17 +1,22 @@
 import type { DbClient } from '@feishu-md/db';
-import { getBotSettings, getFeishuCredentials } from '@feishu-md/db';
+import { getBotSettings, getFeishuCredentials, listNodeMappings } from '@feishu-md/db';
 import type { Binding, BotBroadcastTarget, BotSettings, SyncTriggerType } from '@feishu-md/shared';
 import {
-  buildSyncBroadcastMessageParts,
+  buildSyncBroadcastThreadPlan,
+  findNodeMappingForGitPath,
+  formatSyncBroadcastSummary,
+  hasSyncBroadcastThreadDetails,
+  normalizeRepoPath,
   shouldBroadcastToTarget,
-  splitSyncBroadcastMarkdown,
+  type SyncBroadcastFileEntry,
 } from '@feishu-md/shared';
 import {
   createFeishuClient,
-  isFeishuTopicUnsupportedError,
-  sendBroadcastAsTopicThread,
-  sendMarkdownCardMessages,
+  isFeishuThreadReplyUnsupportedError,
+  replyPostMarkdownMessage,
+  sendPostMarkdownMessage,
   sendTextMessage,
+  toFeishuDocumentUrl,
 } from '@feishu-md/feishu';
 import type { RunSyncResult } from '@feishu-md/core';
 
@@ -42,51 +47,62 @@ export class BotBroadcaster {
     if (!credentials) return;
 
     const client = createFeishuClient(credentials);
-    const parts = buildSyncBroadcastMessageParts({
-      bindingName: context.binding.name,
-      trigger: context.trigger,
-      success: context.success,
-      result: context.result,
-      errorMessage: context.errorMessage,
-    });
+    const fileEntries = context.success
+      ? await this.resolveBroadcastFileEntries(context.binding.id, context.result?.changedPaths ?? [])
+      : [];
 
     await Promise.all(
       targets.map(async (target) => {
+        const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
         try {
-          await this.deliverBroadcast(client, target, parts);
+          if (!context.success) {
+            const failureMessage = formatSyncBroadcastSummary({
+              bindingName: context.binding.name,
+              trigger: context.trigger,
+              success: false,
+              errorMessage: context.errorMessage,
+            });
+            await sendTextMessage(client, receiveIdType, target.receiveId, failureMessage);
+            return;
+          }
+
+          const summary = formatSyncBroadcastSummary({
+            bindingName: context.binding.name,
+            trigger: context.trigger,
+            success: true,
+            result: context.result,
+          });
+          const { messageId } = await sendPostMarkdownMessage(
+            client,
+            receiveIdType,
+            target.receiveId,
+            summary,
+          );
+
+          const threadPlan = buildSyncBroadcastThreadPlan(context.result, fileEntries);
+          if (!hasSyncBroadcastThreadDetails(context.result, fileEntries)) {
+            return;
+          }
+
+          try {
+            for (const reply of threadPlan.commitReplies) {
+              await replyPostMarkdownMessage(client, messageId, reply, { replyInThread: true });
+            }
+            for (const reply of threadPlan.fileReplies) {
+              await replyPostMarkdownMessage(client, messageId, reply, { replyInThread: true });
+            }
+          } catch (error) {
+            if (isFeishuThreadReplyUnsupportedError(error)) {
+              console.warn('[bot] broadcast thread reply unsupported for target', target.receiveId);
+              return;
+            }
+            throw error;
+          }
         } catch (error) {
           console.error('[bot] broadcast failed', target.receiveId, error);
         }
       }),
     );
-  }
-
-  private async deliverBroadcast(
-    client: ReturnType<typeof createFeishuClient>,
-    target: BotBroadcastTarget,
-    parts: ReturnType<typeof buildSyncBroadcastMessageParts>,
-  ): Promise<void> {
-    if (target.type === 'chat') {
-      try {
-        await sendBroadcastAsTopicThread(
-          client,
-          target.receiveId,
-          parts.topicRoot,
-          parts.threadMessages,
-        );
-        return;
-      } catch (error) {
-        if (!isFeishuTopicUnsupportedError(error)) {
-          throw error;
-        }
-        console.warn('[bot] chat topic unsupported, fallback to flat markdown cards', target.receiveId);
-      }
-    }
-
-    const flatMarkdown = [parts.topicRoot, ...parts.threadMessages].join('\n\n---\n\n');
-    const chunks = splitSyncBroadcastMarkdown(flatMarkdown);
-    const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
-    await sendMarkdownCardMessages(client, receiveIdType, target.receiveId, chunks);
   }
 
   async sendCustomMessage(text: string, settings?: BotSettings): Promise<void> {
@@ -104,6 +120,26 @@ export class BotBroadcaster {
         await sendTextMessage(client, receiveIdType, target.receiveId, text);
       }),
     );
+  }
+
+  private async resolveBroadcastFileEntries(
+    bindingId: string,
+    changedPaths: string[],
+  ): Promise<SyncBroadcastFileEntry[]> {
+    if (changedPaths.length === 0) return [];
+
+    const mappings = await listNodeMappings(this.db, bindingId);
+    const mappingByGitPath = new Map(
+      mappings.map((mapping) => [normalizeRepoPath(mapping.gitPath), mapping]),
+    );
+
+    return changedPaths.map((path) => {
+      const mapping = findNodeMappingForGitPath(path, mappingByGitPath);
+      return {
+        path,
+        url: mapping ? toFeishuDocumentUrl(mapping) : undefined,
+      };
+    });
   }
 }
 

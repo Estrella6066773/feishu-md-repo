@@ -1,37 +1,74 @@
 import type { FeishuClient } from './client.js';
-import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
+import { FeishuApiError, assertFeishuResponse, withRateLimit } from './api-error.js';
 
 export type ImReceiveIdType = 'chat_id' | 'open_id' | 'user_id' | 'union_id' | 'email';
 
-export interface ImMessageRef {
+export interface ImMessageSendResult {
   messageId: string;
+  threadId?: string;
 }
 
-function readMessageId(response: { data?: { message_id?: string } }, action: string): string {
+const FEISHU_IM_THREAD_UNSUPPORTED_CODE = 230071;
+const FEISHU_POST_MD_MAX_LENGTH = 4000;
+
+export function isFeishuThreadReplyUnsupportedError(error: unknown): boolean {
+  return error instanceof FeishuApiError && error.code === FEISHU_IM_THREAD_UNSUPPORTED_CODE;
+}
+
+function extractMessageSendResult(response: {
+  data?: { message_id?: string; thread_id?: string };
+}): ImMessageSendResult {
   const messageId = response.data?.message_id;
   if (!messageId) {
-    throw new FeishuApiError(`${action} failed: missing message_id in response`);
+    throw new FeishuApiError('Send IM message failed: missing message_id');
   }
-  return messageId;
+  return {
+    messageId,
+    threadId: response.data?.thread_id,
+  };
 }
 
-function buildInteractiveMarkdownCard(markdown: string, title?: string): Record<string, unknown> {
-  const card: Record<string, unknown> = {
-    schema: '2.0',
-    config: { update_multi: true },
-    body: {
-      elements: [{ tag: 'markdown', content: markdown }],
+function expandMarkdownParagraphs(markdown: string): string[] {
+  const parts = markdown
+    .split(/\n\n(?=(?:## |### |\*\*相关文件))/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : [markdown];
+}
+
+function buildPostMarkdownContent(markdown: string | string[], title = '') {
+  const paragraphs = (Array.isArray(markdown) ? markdown : expandMarkdownParagraphs(markdown))
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => [{ tag: 'md' as const, text: part.slice(0, FEISHU_POST_MD_MAX_LENGTH) }]);
+
+  return JSON.stringify({
+    zh_cn: {
+      title,
+      content: paragraphs.length > 0 ? paragraphs : [[{ tag: 'md', text: '' }]],
     },
-  };
+  });
+}
 
-  if (title) {
-    card.header = {
-      template: 'blue',
-      title: { tag: 'plain_text', content: title.slice(0, 100) },
-    };
-  }
-
-  return card;
+export async function sendPostMarkdownMessage(
+  client: FeishuClient,
+  receiveIdType: ImReceiveIdType,
+  receiveId: string,
+  markdown: string | string[],
+  title = '',
+): Promise<ImMessageSendResult> {
+  const response = await withRateLimit(() =>
+    client.im.v1.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        msg_type: 'post',
+        content: buildPostMarkdownContent(markdown, title),
+      },
+    }),
+  );
+  assertFeishuResponse(response, 'Send IM post message');
+  return extractMessageSendResult(response);
 }
 
 export async function sendTextMessage(
@@ -39,97 +76,39 @@ export async function sendTextMessage(
   receiveIdType: ImReceiveIdType,
   receiveId: string,
   text: string,
-): Promise<ImMessageRef> {
+): Promise<ImMessageSendResult> {
   const response = await withRateLimit(() =>
     client.im.v1.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
         receive_id: receiveId,
         msg_type: 'text',
-        content: JSON.stringify({ text: text.slice(0, 4000) }),
+        content: JSON.stringify({ text: text.slice(0, FEISHU_POST_MD_MAX_LENGTH) }),
       },
     }),
   );
   assertFeishuResponse(response, 'Send IM message');
-  return { messageId: readMessageId(response, 'Send IM message') };
+  return extractMessageSendResult(response);
 }
 
-export async function sendInteractiveMarkdownMessage(
-  client: FeishuClient,
-  receiveIdType: ImReceiveIdType,
-  receiveId: string,
-  markdown: string,
-  title?: string,
-): Promise<ImMessageRef> {
-  const response = await withRateLimit(() =>
-    client.im.v1.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        msg_type: 'interactive',
-        content: JSON.stringify(buildInteractiveMarkdownCard(markdown, title)),
-      },
-    }),
-  );
-  assertFeishuResponse(response, 'Send IM markdown card');
-  return { messageId: readMessageId(response, 'Send IM markdown card') };
-}
-
-export async function replyInteractiveMarkdownMessage(
+export async function replyPostMarkdownMessage(
   client: FeishuClient,
   messageId: string,
-  markdown: string,
-  options?: { title?: string; replyInThread?: boolean },
-): Promise<ImMessageRef> {
+  markdown: string | string[],
+  options?: { replyInThread?: boolean; title?: string },
+): Promise<ImMessageSendResult> {
   const response = await withRateLimit(() =>
     client.im.v1.message.reply({
       path: { message_id: messageId },
       data: {
-        msg_type: 'interactive',
-        content: JSON.stringify(buildInteractiveMarkdownCard(markdown, options?.title)),
-        reply_in_thread: options?.replyInThread ?? false,
+        msg_type: 'post',
+        content: buildPostMarkdownContent(markdown, options?.title ?? ''),
+        reply_in_thread: options?.replyInThread === true,
       },
     }),
   );
-  assertFeishuResponse(response, 'Reply IM markdown card');
-  return { messageId: readMessageId(response, 'Reply IM markdown card') };
-}
-
-export async function sendMarkdownCardMessages(
-  client: FeishuClient,
-  receiveIdType: ImReceiveIdType,
-  receiveId: string,
-  markdownChunks: string[],
-  title?: string,
-): Promise<void> {
-  for (let index = 0; index < markdownChunks.length; index += 1) {
-    const chunkTitle =
-      markdownChunks.length > 1 && title
-        ? `${title} (${index + 1}/${markdownChunks.length})`
-        : title;
-    await sendInteractiveMarkdownMessage(
-      client,
-      receiveIdType,
-      receiveId,
-      markdownChunks[index]!,
-      chunkTitle,
-    );
-  }
-}
-
-/** 群聊：先发 Markdown 根消息，再以话题形式逐条回复 */
-export async function sendBroadcastAsTopicThread(
-  client: FeishuClient,
-  chatId: string,
-  topicRoot: string,
-  threadMessages: string[],
-): Promise<void> {
-  const root = await sendInteractiveMarkdownMessage(client, 'chat_id', chatId, topicRoot);
-  for (const message of threadMessages) {
-    await replyInteractiveMarkdownMessage(client, root.messageId, message, {
-      replyInThread: true,
-    });
-  }
+  assertFeishuResponse(response, 'Reply IM post message');
+  return extractMessageSendResult(response);
 }
 
 export async function replyTextMessage(
@@ -137,19 +116,19 @@ export async function replyTextMessage(
   messageId: string,
   text: string,
   options?: { replyInThread?: boolean },
-): Promise<ImMessageRef> {
+): Promise<ImMessageSendResult> {
   const response = await withRateLimit(() =>
     client.im.v1.message.reply({
       path: { message_id: messageId },
       data: {
         msg_type: 'text',
-        content: JSON.stringify({ text: text.slice(0, 4000) }),
-        reply_in_thread: options?.replyInThread ?? false,
+        content: JSON.stringify({ text: text.slice(0, FEISHU_POST_MD_MAX_LENGTH) }),
+        reply_in_thread: options?.replyInThread === true,
       },
     }),
   );
   assertFeishuResponse(response, 'Reply IM message');
-  return { messageId: readMessageId(response, 'Reply IM message') };
+  return extractMessageSendResult(response);
 }
 
 export function parseMessageText(content: string, messageType: string): string {
@@ -160,9 +139,4 @@ export function parseMessageText(content: string, messageType: string): string {
   } catch {
     return content.trim();
   }
-}
-
-/** 群未开启话题能力时飞书返回 230071 */
-export function isFeishuTopicUnsupportedError(error: unknown): boolean {
-  return error instanceof FeishuApiError && error.code === 230071;
 }

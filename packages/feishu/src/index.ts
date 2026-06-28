@@ -6,15 +6,13 @@ export { replaceDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocume
 export { toFeishuDocumentUrl, type FeishuDocumentLinkTarget } from './document-url.js';
 export {
   sendTextMessage,
-  sendInteractiveMarkdownMessage,
-  sendMarkdownCardMessages,
-  sendBroadcastAsTopicThread,
-  replyInteractiveMarkdownMessage,
+  sendPostMarkdownMessage,
   replyTextMessage,
+  replyPostMarkdownMessage,
+  isFeishuThreadReplyUnsupportedError,
   parseMessageText,
-  isFeishuTopicUnsupportedError,
   type ImReceiveIdType,
-  type ImMessageRef,
+  type ImMessageSendResult,
 } from './im-service.js';
 export { parseBotCommand, BOT_HELP_TEXT, type BotCommandAction } from './command-parser.js';
 export {
