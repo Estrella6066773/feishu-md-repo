@@ -241,6 +241,23 @@ function BroadcastTargetCard(props: {
             />
           </div>
         ) : null}
+
+        <Toggle
+          label="安静模式"
+          description={
+            target.type === 'chat'
+              ? '全部播报写入 bot 创建的固定话题，不在群会话刷屏（群内需支持话题）'
+              : '安静模式仅适用于群聊目标'
+          }
+          checked={policy?.quietMode ?? false}
+          disabled={disabled || target.type !== 'chat'}
+          onChange={(checked) =>
+            onPolicyChange({
+              ...policy,
+              quietMode: checked,
+            })
+          }
+        />
       </div>
     </div>
   );

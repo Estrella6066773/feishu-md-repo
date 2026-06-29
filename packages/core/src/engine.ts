@@ -50,7 +50,7 @@ export interface RunSyncResult {
   toSha: string;
   fromSha?: string;
   operationCount: number;
-  commits: Array<{ sha: string; subject: string; message: string }>;
+  commits: Array<{ sha: string; subject: string; body: string; message: string }>;
   changedPaths: string[];
 }
 

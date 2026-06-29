@@ -114,6 +114,8 @@ export interface BotBroadcastTargetPolicy {
   onFailure?: boolean;
   /** 限定的触发来源；undefined 或空数组表示不限制（全部） */
   triggers?: SyncTriggerType[];
+  /** 安静模式：全部播报写入 bot 维护的固定话题，不在群会话刷屏（仅群聊） */
+  quietMode?: boolean;
 }
 
 export interface BotBroadcastTarget {
@@ -122,6 +124,10 @@ export interface BotBroadcastTarget {
   label?: string;
   /** 目标级播报策略；undefined 表示完全继承全局默认 */
   policy?: BotBroadcastTargetPolicy;
+  /** 安静模式下由 bot 创建并持久化的话题 ID（omt_ 开头） */
+  quietThreadId?: string;
+  /** 安静模式话题对应的群会话根消息 ID */
+  quietRootMessageId?: string;
 }
 
 export interface BotSettings {

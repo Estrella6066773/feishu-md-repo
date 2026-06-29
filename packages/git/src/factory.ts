@@ -62,22 +62,27 @@ abstract class BaseGitProvider implements GitProvider {
     sinceSha: string | undefined,
     untilSha: string,
   ): Promise<GitCommitSummary[]> {
-    const args = sinceSha
-      ? ['log', '--format=%H%x00%s%x00%b%x00', '-z', `${sinceSha}..${untilSha}`]
-      : ['log', '-1', '--format=%H%x00%s%x00%b%x00', '-z', untilSha];
-    const output = await this.git.raw(args);
-    if (!output.trim()) return [];
+    let shas: string[];
+    if (!sinceSha || sinceSha === untilSha) {
+      shas = [untilSha];
+    } else {
+      const output = await this.git.raw(['log', '--format=%H', '-z', `${sinceSha}..${untilSha}`]);
+      shas = parseGitLogShaList(output);
+      if (shas.length === 0) {
+        shas = [untilSha];
+      }
+    }
 
-    const parts = output.split('\0').filter((part) => part.length > 0);
     const commits: GitCommitSummary[] = [];
-    for (let i = 0; i + 2 < parts.length; i += 3) {
-      const sha = parts[i]!;
-      const subject = parts[i + 1]!.trim();
-      const body = parts[i + 2]!.replace(/\r\n/g, '\n').replace(/\n+$/, '');
-      const message = body ? `${subject}\n\n${body}` : subject;
-      commits.push({ sha, subject, message });
+    for (const sha of shas) {
+      commits.push(await this.readCommitSummary(sha));
     }
     return commits;
+  }
+
+  protected async readCommitSummary(sha: string): Promise<GitCommitSummary> {
+    const raw = await this.git.raw(['cat-file', '-p', sha]);
+    return parseCommitObjectToSummary(sha, raw);
   }
 
   async getCommitFilePaths(sha: string): Promise<string[]> {
@@ -173,6 +178,39 @@ function mapChangeType(status: string): ChangedPath['changeType'] {
   if (status.startsWith('D')) return 'delete';
   if (status.startsWith('R')) return 'rename';
   return 'modify';
+}
+
+const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+
+function normalizeCommitText(text: string): string {
+  return text.replace(/^\ufeff/, '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
+}
+
+function parseGitLogShaList(output: string): string[] {
+  return normalizeCommitText(output)
+    .split('\0')
+    .map((part) => part.replace(/^\ufeff/, '').trim())
+    .filter((part) => GIT_SHA_PATTERN.test(part));
+}
+
+function parseCommitObjectToSummary(sha: string, raw: string): GitCommitSummary {
+  const normalized = raw.replace(/^\ufeff/, '').replace(/\r\n/g, '\n');
+  const headerEnd = normalized.indexOf('\n\n');
+  const messageText = headerEnd >= 0 ? normalized.slice(headerEnd + 2).replace(/\n$/, '') : '';
+
+  const firstNewline = messageText.indexOf('\n');
+  let subject: string;
+  let body: string;
+  if (firstNewline >= 0) {
+    subject = messageText.slice(0, firstNewline).trim();
+    body = messageText.slice(firstNewline + 1).replace(/^\n+/, '');
+  } else {
+    subject = messageText.trim();
+    body = '';
+  }
+
+  const message = body ? `${subject}\n\n${body}` : subject;
+  return { sha, subject, body, message };
 }
 
 export class LocalGitProvider extends BaseGitProvider {

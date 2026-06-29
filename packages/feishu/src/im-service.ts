@@ -1,7 +1,7 @@
 import type { FeishuClient } from './client.js';
 import { FeishuApiError, assertFeishuResponse, withRateLimit } from './api-error.js';
 
-export type ImReceiveIdType = 'chat_id' | 'open_id' | 'user_id' | 'union_id' | 'email';
+export type ImReceiveIdType = 'chat_id' | 'open_id' | 'user_id' | 'union_id' | 'email' | 'thread_id';
 
 export interface ImMessageSendResult {
   messageId: string;
@@ -25,6 +25,39 @@ function extractMessageSendResult(response: {
   return {
     messageId,
     threadId: response.data?.thread_id,
+  };
+}
+
+export interface ImMessageDetail {
+  messageId: string;
+  threadId?: string;
+  rootId?: string;
+  parentId?: string;
+}
+
+export async function getImMessage(
+  client: FeishuClient,
+  messageId: string,
+): Promise<ImMessageDetail | null> {
+  const response = await withRateLimit(() =>
+    client.im.v1.message.get({
+      path: { message_id: messageId },
+    }),
+  );
+  if (response.code !== 0) {
+    return null;
+  }
+
+  const item = response.data?.items?.[0];
+  if (!item?.message_id) {
+    return null;
+  }
+
+  return {
+    messageId: item.message_id,
+    threadId: item.thread_id,
+    rootId: item.root_id,
+    parentId: item.parent_id,
   };
 }
 
@@ -63,7 +96,7 @@ export async function sendPostMarkdownMessage(
 ): Promise<ImMessageSendResult> {
   const response = await withRateLimit(() =>
     client.im.v1.message.create({
-      params: { receive_id_type: receiveIdType },
+      params: { receive_id_type: receiveIdType as 'chat_id' },
       data: {
         receive_id: receiveId,
         msg_type: 'post',
@@ -83,7 +116,7 @@ export async function sendTextMessage(
 ): Promise<ImMessageSendResult> {
   const response = await withRateLimit(() =>
     client.im.v1.message.create({
-      params: { receive_id_type: receiveIdType },
+      params: { receive_id_type: receiveIdType as 'chat_id' },
       data: {
         receive_id: receiveId,
         msg_type: 'text',

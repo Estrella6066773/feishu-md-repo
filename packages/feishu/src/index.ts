@@ -9,10 +9,12 @@ export {
   sendPostMarkdownMessage,
   replyTextMessage,
   replyPostMarkdownMessage,
+  getImMessage,
   isFeishuThreadReplyUnsupportedError,
   parseMessageText,
   type ImReceiveIdType,
   type ImMessageSendResult,
+  type ImMessageDetail,
 } from './im-service.js';
 export { parseBotCommand, BOT_HELP_TEXT, type BotCommandAction } from './command-parser.js';
 export {

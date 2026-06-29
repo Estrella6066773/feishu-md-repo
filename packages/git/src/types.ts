@@ -9,6 +9,8 @@ export interface ChangedPath {
 export interface GitCommitSummary {
   sha: string;
   subject: string;
+  /** Git 正文（不含 subject 行） */
+  body: string;
   message: string;
 }
 

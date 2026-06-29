@@ -61,9 +61,9 @@ function parseBinding(row: typeof schema.bindings.$inferSelect): Binding {
       row.sourceType,
     ),
     options: JSON.parse(row.optionsJson) as WorkspaceOptions | RepositoryOptions,
-    bindingSpecificBroadcastTargets: JSON.parse(
-      row.bindingBroadcastTargetsJson || '[]',
-    ) as BotBroadcastTarget[],
+    bindingSpecificBroadcastTargets: parseBindingBroadcastTargets(
+      row.bindingBroadcastTargetsJson,
+    ),
     lastSyncedSha: row.lastSyncedSha ?? undefined,
     lastSyncedAt: row.lastSyncedAt ?? undefined,
     createdAt: row.createdAt,
@@ -94,14 +94,29 @@ export async function insertBinding(db: DbClient, binding: Binding): Promise<voi
       feishuTargetJson: JSON.stringify(binding.feishuTarget),
       triggersJson: JSON.stringify(binding.triggers),
       optionsJson: JSON.stringify(binding.options),
-      bindingBroadcastTargetsJson: JSON.stringify(
-        binding.bindingSpecificBroadcastTargets ?? [],
+      bindingBroadcastTargetsJson: serializeBindingBroadcastTargets(
+        binding.bindingSpecificBroadcastTargets,
       ),
       lastSyncedSha: binding.lastSyncedSha,
       lastSyncedAt: binding.lastSyncedAt,
       createdAt: binding.createdAt,
       updatedAt: binding.updatedAt,
   });
+}
+
+function parseBindingBroadcastTargets(
+  json: string | null | undefined,
+): BotBroadcastTarget[] | undefined {
+  if (!json || json === '[]') return undefined;
+  const parsed = JSON.parse(json) as BotBroadcastTarget[];
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function serializeBindingBroadcastTargets(
+  targets: BotBroadcastTarget[] | undefined,
+): string {
+  if (targets === undefined || targets.length === 0) return '[]';
+  return JSON.stringify(targets);
 }
 
 export async function updateBinding(db: DbClient, binding: Binding): Promise<void> {
@@ -117,8 +132,8 @@ export async function updateBinding(db: DbClient, binding: Binding): Promise<voi
       feishuTargetJson: JSON.stringify(binding.feishuTarget),
       triggersJson: JSON.stringify(binding.triggers),
       optionsJson: JSON.stringify(binding.options),
-      bindingBroadcastTargetsJson: JSON.stringify(
-        binding.bindingSpecificBroadcastTargets ?? [],
+      bindingBroadcastTargetsJson: serializeBindingBroadcastTargets(
+        binding.bindingSpecificBroadcastTargets,
       ),
       lastSyncedSha: binding.lastSyncedSha,
       lastSyncedAt: binding.lastSyncedAt,

@@ -79,6 +79,10 @@ export function formatBroadcastPolicySummary(
   if (onFailure) outcomes.push('失败');
   parts.push(outcomes.length > 0 ? outcomes.join('/') : '不播报');
 
+  if (policy?.quietMode) {
+    parts.push(target.type === 'chat' ? '安静模式' : '安静模式（需群聊）');
+  }
+
   return parts.join(' · ');
 }
 
@@ -106,11 +110,16 @@ export function hasCustomOutcomePolicy(policy: BotBroadcastTargetPolicy | undefi
   return policy?.onSuccess !== undefined || policy?.onFailure !== undefined;
 }
 
+export function isBroadcastQuietMode(target: BotBroadcastTarget): boolean {
+  return target.policy?.quietMode === true && target.type === 'chat';
+}
+
 export const MAX_BROADCAST_MESSAGE_LENGTH = 4000;
 
 export interface SyncBroadcastCommitSummary {
   sha: string;
   subject: string;
+  body?: string;
   message: string;
 }
 
@@ -127,7 +136,7 @@ export interface SyncBroadcastResultSummary {
 }
 
 export interface SyncBroadcastThreadPlan {
-  /** 每条 commit 话题回复；string[] 表示同一回复内多个 md 段落（标题 + 正文） */
+  /** 每个 commit 至少一条话题回复；string[] 表示标题与正文分段的 Markdown 段落 */
   commitReplies: Array<string | string[]>;
   fileReplies: string[];
 }
@@ -142,14 +151,26 @@ function formatCommitHashLine(result?: SyncBroadcastResultSummary): string {
 }
 
 function extractCommitBody(commit: SyncBroadcastCommitSummary): string {
+  const rawBody = commit.body?.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+  if (rawBody) {
+    return preserveCommitBodyLineBreaks(rawBody);
+  }
+
   const subject = commit.subject.trim();
   const fullMessage = commit.message.replace(/\r\n/g, '\n').replace(/\n+$/, '') || subject;
   if (!subject) return preserveCommitBodyLineBreaks(fullMessage);
   if (fullMessage === subject) return '';
-  if (fullMessage.startsWith(subject)) {
-    const body = fullMessage.slice(subject.length).replace(/^\n+/, '');
-    return preserveCommitBodyLineBreaks(body);
+
+  const subjectPrefix = `${subject}\n\n`;
+  if (fullMessage.startsWith(subjectPrefix)) {
+    return preserveCommitBodyLineBreaks(fullMessage.slice(subjectPrefix.length));
   }
+
+  const subjectLinePrefix = `${subject}\n`;
+  if (fullMessage.startsWith(subjectLinePrefix)) {
+    return preserveCommitBodyLineBreaks(fullMessage.slice(subjectLinePrefix.length));
+  }
+
   return preserveCommitBodyLineBreaks(fullMessage);
 }
 
@@ -236,7 +257,7 @@ function packCommitReplyMessages(commit: SyncBroadcastCommitSummary): Array<stri
   const heading = formatCommitReplyHeading(commit);
   const body = extractCommitBody(commit);
   if (!body) {
-    return [[heading]];
+    return [heading];
   }
 
   const bodyParts = splitMarkdownBodyChunks(body, MAX_BROADCAST_MESSAGE_LENGTH);
@@ -322,11 +343,18 @@ export function formatSyncBroadcastSummary(options: {
     return `❌ 同步失败\n绑定：${options.bindingName}\n触发：${triggerLabel}\n原因：${options.errorMessage ?? '未知错误'}`;
   }
 
-  return [
+  const lines = [
     '✅ **同步成功**',
     `- **绑定**：${options.bindingName}`,
     `- **触发**：${triggerLabel}`,
     formatCommitHashLine(options.result),
-    `- **操作数**：${options.result?.operationCount ?? 0}`,
-  ].join('\n');
+  ];
+
+  const changedFileCount = options.result?.changedPaths?.length ?? 0;
+  if (changedFileCount > 0) {
+    lines.push(`- **文件**：更新了 ${changedFileCount} 个`);
+  }
+
+  lines.push(`- **操作数**：${options.result?.operationCount ?? 0}`);
+  return lines.join('\n');
 }

@@ -6,6 +6,7 @@ import {
   findNodeMappingForGitPath,
   formatSyncBroadcastSummary,
   hasSyncBroadcastThreadDetails,
+  isBroadcastQuietMode,
   normalizeRepoPath,
   shouldBroadcastToTarget,
   type SyncBroadcastFileEntry,
@@ -14,11 +15,19 @@ import {
   createFeishuClient,
   isFeishuThreadReplyUnsupportedError,
   replyPostMarkdownMessage,
+  replyTextMessage,
   sendPostMarkdownMessage,
   sendTextMessage,
   toFeishuDocumentUrl,
+  type FeishuClient,
 } from '@feishu-md/feishu';
 import type { RunSyncResult } from '@feishu-md/core';
+import {
+  clearQuietBroadcastThread,
+  ensureQuietBroadcastThread,
+  isQuietThreadInvalidError,
+  type QuietBroadcastThread,
+} from './quiet-thread.js';
 
 export interface SyncBroadcastContext {
   binding: Binding;
@@ -53,51 +62,12 @@ export class BotBroadcaster {
 
     await Promise.all(
       targets.map(async (target) => {
-        const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
         try {
-          if (!context.success) {
-            const failureMessage = formatSyncBroadcastSummary({
-              bindingName: context.binding.name,
-              trigger: context.trigger,
-              success: false,
-              errorMessage: context.errorMessage,
-            });
-            await sendTextMessage(client, receiveIdType, target.receiveId, failureMessage);
+          if (isBroadcastQuietMode(target)) {
+            await this.sendQuietBroadcast(client, context, target, fileEntries);
             return;
           }
-
-          const summary = formatSyncBroadcastSummary({
-            bindingName: context.binding.name,
-            trigger: context.trigger,
-            success: true,
-            result: context.result,
-          });
-          const { messageId } = await sendPostMarkdownMessage(
-            client,
-            receiveIdType,
-            target.receiveId,
-            summary,
-          );
-
-          const threadPlan = buildSyncBroadcastThreadPlan(context.result, fileEntries);
-          if (!hasSyncBroadcastThreadDetails(context.result, fileEntries)) {
-            return;
-          }
-
-          try {
-            for (const reply of threadPlan.commitReplies) {
-              await replyPostMarkdownMessage(client, messageId, reply, { replyInThread: true });
-            }
-            for (const reply of threadPlan.fileReplies) {
-              await replyPostMarkdownMessage(client, messageId, reply, { replyInThread: true });
-            }
-          } catch (error) {
-            if (isFeishuThreadReplyUnsupportedError(error)) {
-              console.warn('[bot] broadcast thread reply unsupported for target', target.receiveId);
-              return;
-            }
-            throw error;
-          }
+          await this.sendNormalBroadcast(client, context, target, fileEntries);
         } catch (error) {
           console.error('[bot] broadcast failed', target.receiveId, error);
         }
@@ -120,6 +90,145 @@ export class BotBroadcaster {
         await sendTextMessage(client, receiveIdType, target.receiveId, text);
       }),
     );
+  }
+
+  private async sendQuietBroadcast(
+    client: FeishuClient,
+    context: SyncBroadcastContext,
+    target: BotBroadcastTarget,
+    fileEntries: SyncBroadcastFileEntry[],
+  ): Promise<void> {
+    let thread = await ensureQuietBroadcastThread(client, this.db, context.binding, target);
+    if (!thread) {
+      console.warn('[bot] quiet mode unavailable, fallback to normal broadcast', target.receiveId);
+      await this.sendNormalBroadcast(client, context, target, fileEntries);
+      return;
+    }
+
+    try {
+      await this.postQuietBroadcastMessages(client, thread, context, fileEntries);
+    } catch (error) {
+      if (!target.quietThreadId || !isQuietThreadInvalidError(error)) {
+        throw error;
+      }
+      console.warn('[bot] quiet thread invalid, recreating', target.receiveId, error);
+      await clearQuietBroadcastThread(this.db, context.binding, target);
+      thread = await ensureQuietBroadcastThread(client, this.db, context.binding, target);
+      if (!thread) {
+        await this.sendNormalBroadcast(client, context, target, fileEntries);
+        return;
+      }
+      await this.postQuietBroadcastMessages(client, thread, context, fileEntries);
+    }
+  }
+
+  private async postQuietBroadcastMessages(
+    client: FeishuClient,
+    thread: QuietBroadcastThread,
+    context: SyncBroadcastContext,
+    fileEntries: SyncBroadcastFileEntry[],
+  ): Promise<void> {
+    const replyInThread = async (content: string | string[]) => {
+      await replyPostMarkdownMessage(client, thread.rootMessageId, content, {
+        replyInThread: true,
+      });
+    };
+
+    if (!context.success) {
+      const failureMessage = formatSyncBroadcastSummary({
+        bindingName: context.binding.name,
+        trigger: context.trigger,
+        success: false,
+        errorMessage: context.errorMessage,
+      });
+      await replyTextMessage(client, thread.rootMessageId, failureMessage, {
+        replyInThread: true,
+      });
+      return;
+    }
+
+    const summary = formatSyncBroadcastSummary({
+      bindingName: context.binding.name,
+      trigger: context.trigger,
+      success: true,
+      result: context.result,
+    });
+    await replyInThread(summary);
+
+    const threadPlan = buildSyncBroadcastThreadPlan(context.result, fileEntries);
+    for (const reply of threadPlan.commitReplies) {
+      await replyInThread(reply);
+    }
+    for (const reply of threadPlan.fileReplies) {
+      await replyInThread(reply);
+    }
+  }
+
+  private async sendNormalBroadcast(
+    client: FeishuClient,
+    context: SyncBroadcastContext,
+    target: BotBroadcastTarget,
+    fileEntries: SyncBroadcastFileEntry[],
+  ): Promise<void> {
+    const receiveIdType = target.type === 'chat' ? 'chat_id' : 'open_id';
+
+    if (!context.success) {
+      const failureMessage = formatSyncBroadcastSummary({
+        bindingName: context.binding.name,
+        trigger: context.trigger,
+        success: false,
+        errorMessage: context.errorMessage,
+      });
+      await sendTextMessage(client, receiveIdType, target.receiveId, failureMessage);
+      return;
+    }
+
+    const summary = formatSyncBroadcastSummary({
+      bindingName: context.binding.name,
+      trigger: context.trigger,
+      success: true,
+      result: context.result,
+    });
+    const { messageId } = await sendPostMarkdownMessage(
+      client,
+      receiveIdType,
+      target.receiveId,
+      summary,
+    );
+
+    const threadPlan = buildSyncBroadcastThreadPlan(context.result, fileEntries);
+    if (!hasSyncBroadcastThreadDetails(context.result, fileEntries)) {
+      return;
+    }
+
+    try {
+      for (const reply of threadPlan.commitReplies) {
+        try {
+          await replyPostMarkdownMessage(client, messageId, reply, { replyInThread: true });
+        } catch (error) {
+          if (isFeishuThreadReplyUnsupportedError(error)) {
+            throw error;
+          }
+          console.warn('[bot] commit thread reply failed', target.receiveId, error);
+        }
+      }
+      for (const reply of threadPlan.fileReplies) {
+        try {
+          await replyPostMarkdownMessage(client, messageId, reply, { replyInThread: true });
+        } catch (error) {
+          if (isFeishuThreadReplyUnsupportedError(error)) {
+            throw error;
+          }
+          console.warn('[bot] file thread reply failed', target.receiveId, error);
+        }
+      }
+    } catch (error) {
+      if (isFeishuThreadReplyUnsupportedError(error)) {
+        console.warn('[bot] broadcast thread reply unsupported for target', target.receiveId);
+        return;
+      }
+      throw error;
+    }
   }
 
   private async resolveBroadcastFileEntries(
@@ -148,8 +257,8 @@ function resolveBroadcastTargets(
   binding: Binding,
 ): BotBroadcastTarget[] {
   const bindingTargets = binding.bindingSpecificBroadcastTargets;
-  if (bindingTargets === undefined) {
-    return settings.broadcastTargets;
+  if (bindingTargets !== undefined && bindingTargets.length > 0) {
+    return bindingTargets;
   }
-  return bindingTargets;
+  return settings.broadcastTargets;
 }
