@@ -246,7 +246,7 @@ function BroadcastTargetCard(props: {
           label="安静模式"
           description={
             target.type === 'chat'
-              ? '全部播报写入 bot 创建的固定话题，不在群会话刷屏（群内需支持话题）'
+              ? '每次同步报告收束为一条话题回复，写入 bot 维护的固定话题（群内需支持话题）'
               : '安静模式仅适用于群聊目标'
           }
           checked={policy?.quietMode ?? false}

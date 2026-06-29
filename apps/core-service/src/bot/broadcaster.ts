@@ -2,6 +2,7 @@ import type { DbClient } from '@feishu-md/db';
 import { getBotSettings, getFeishuCredentials, listNodeMappings } from '@feishu-md/db';
 import type { Binding, BotBroadcastTarget, BotSettings, SyncTriggerType } from '@feishu-md/shared';
 import {
+  buildQuietBroadcastMessages,
   buildSyncBroadcastThreadPlan,
   findNodeMappingForGitPath,
   formatSyncBroadcastSummary,
@@ -128,12 +129,6 @@ export class BotBroadcaster {
     context: SyncBroadcastContext,
     fileEntries: SyncBroadcastFileEntry[],
   ): Promise<void> {
-    const replyInThread = async (content: string | string[]) => {
-      await replyPostMarkdownMessage(client, thread.rootMessageId, content, {
-        replyInThread: true,
-      });
-    };
-
     if (!context.success) {
       const failureMessage = formatSyncBroadcastSummary({
         bindingName: context.binding.name,
@@ -153,14 +148,12 @@ export class BotBroadcaster {
       success: true,
       result: context.result,
     });
-    await replyInThread(summary);
-
     const threadPlan = buildSyncBroadcastThreadPlan(context.result, fileEntries);
-    for (const reply of threadPlan.commitReplies) {
-      await replyInThread(reply);
-    }
-    for (const reply of threadPlan.fileReplies) {
-      await replyInThread(reply);
+    const messages = buildQuietBroadcastMessages(summary, threadPlan);
+    for (const content of messages) {
+      await replyPostMarkdownMessage(client, thread.rootMessageId, content, {
+        replyInThread: true,
+      });
     }
   }
 

@@ -323,6 +323,49 @@ export function buildSyncBroadcastThreadPlan(
   return { commitReplies, fileReplies };
 }
 
+function flattenThreadReply(reply: string | string[]): string[] {
+  return Array.isArray(reply) ? reply : [reply];
+}
+
+function normalizeBroadcastParagraph(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+}
+
+/**
+ * 安静模式：将摘要、commit 详情与文件列表收束为尽量少的话题回复（优先一条）。
+ */
+export function buildQuietBroadcastMessages(
+  summary: string,
+  threadPlan: SyncBroadcastThreadPlan,
+): Array<string | string[]> {
+  const paragraphs: string[] = [normalizeBroadcastParagraph(summary)];
+
+  for (const reply of threadPlan.commitReplies) {
+    for (const part of flattenThreadReply(reply)) {
+      paragraphs.push(normalizeBroadcastParagraph(part));
+    }
+  }
+
+  for (const reply of threadPlan.fileReplies) {
+    paragraphs.push(normalizeBroadcastParagraph(reply));
+  }
+
+  const expanded: string[] = [];
+  for (const paragraph of paragraphs) {
+    if (paragraph.length <= MAX_BROADCAST_MESSAGE_LENGTH) {
+      expanded.push(paragraph);
+      continue;
+    }
+    expanded.push(...splitMarkdownBodyChunks(paragraph, MAX_BROADCAST_MESSAGE_LENGTH));
+  }
+
+  if (expanded.length === 0) {
+    return [summary];
+  }
+
+  return [expanded];
+}
+
 export function hasSyncBroadcastThreadDetails(
   result?: SyncBroadcastResultSummary,
   files: SyncBroadcastFileEntry[] = [],

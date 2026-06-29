@@ -45,6 +45,9 @@ const SECTION_GAP_X = 180;
 const BLOCK_GAP_X = 240;
 const BLOCK_GAP_Y = 120;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
+const SECTION_Z_INDEX_BASE = 100;
+const CONNECTOR_Z_INDEX = 1000;
+const BLOCK_Z_INDEX_BASE = 2000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -240,12 +243,13 @@ function buildSectionPayload(
   title: string,
   bounds: { x: number; y: number; width: number; height: number },
   zIndex: number,
+  parent?: { id: string; origin: { x: number; y: number } },
 ): UnknownRecord {
-  return {
+  const payload: UnknownRecord = {
     id,
     type: 'section',
-    x: bounds.x,
-    y: bounds.y,
+    x: parent ? toRelativeCoordinate(bounds.x, parent.origin.x) : bounds.x,
+    y: parent ? toRelativeCoordinate(bounds.y, parent.origin.y) : bounds.y,
     width: bounds.width,
     height: bounds.height,
     angle: 0,
@@ -261,6 +265,16 @@ function buildSectionPayload(
     },
     section: { title: title.slice(0, 100) },
   };
+
+  if (parent) {
+    payload.parent_id = parent.id;
+  }
+
+  return payload;
+}
+
+function sectionZIndex(depth: number): number {
+  return SECTION_Z_INDEX_BASE + depth;
 }
 
 // 这里的“块”对应飞书画板的 composite_shape，是实际承载文本的最小单位。
@@ -291,7 +305,7 @@ function buildBlockPayload(
   };
 }
 
-function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord): UnknownRecord {
+function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord, zIndex: number): UnknownRecord {
   return {
     id,
     type: 'composite_shape',
@@ -307,7 +321,7 @@ function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord): UnknownR
           ? String((block.composite_shape as UnknownRecord).type)
           : 'round_rect',
     },
-    z_index: Number(block.z_index ?? 1),
+    z_index: zIndex,
   };
 }
 
@@ -414,7 +428,7 @@ function buildGeneratedConnectorPayload(
       start_object: connectorEndpoint(startObjectId, 'right'),
       end_object: connectorEndpoint(endObjectId, 'left'),
     },
-    z_index: 1,
+    z_index: CONNECTOR_Z_INDEX,
   };
 
   if (sectionId && sectionOrigin) {
@@ -486,7 +500,6 @@ interface SectionBuildPlan {
   memberIds: string[];
   memberShapes: BoardNodeRecord[];
   titleShape?: BoardNodeRecord;
-  minZIndex: number;
   ranks: Map<string, number>;
 }
 
@@ -529,11 +542,6 @@ function planSubgraphSections(
     if (!bounds) continue;
 
     const titleShape = findSubgraphTitleShape(boardNodes, subgraph, memberLabelSet, consumedShapeIds);
-    const minZIndex = [...memberShapes, ...(titleShape ? [titleShape] : [])].reduce(
-      (min, node) => Math.min(min, Number(node.z_index ?? 0)),
-      0,
-    );
-
     plans.push({
       subgraph,
       sectionId: `sg${index + 1}:1`,
@@ -541,7 +549,6 @@ function planSubgraphSections(
       memberIds,
       memberShapes,
       titleShape,
-      minZIndex,
       ranks: computeNodeRanks(memberIds, edges),
     });
 
@@ -737,6 +744,7 @@ function buildSectionBatch(
   const deleteIds: string[] = [];
   const titleShapeIds = new Set<string>();
   const subgraphTitles = new Set(plans.map((plan) => plan.subgraph.title));
+  const nodeLabelSet = new Set([...nodeLabels.values()].map((label) => label.trim()).filter(Boolean));
   const sectionConnectorCounts = new Map<string, number>();
 
   for (const frameShape of boardNodes.filter((node) =>
@@ -766,7 +774,15 @@ function buildSectionBatch(
         mermaidPlacementMap.set(memberId, placement);
       }
       deleteIds.push(oldId);
-      blockPayloads.push(buildBlockPayload(newId, plan.sectionId, shape, index + 1, plan.bounds));
+      blockPayloads.push(
+        buildBlockPayload(
+          newId,
+          plan.sectionId,
+          shape,
+          BLOCK_Z_INDEX_BASE + blockPayloads.length,
+          plan.bounds,
+        ),
+      );
     });
   }
 
@@ -800,7 +816,9 @@ function buildSectionBatch(
     placementByShapeId.set(oldId, placement);
     mermaidPlacementMap.set(nodeId, placement);
     deleteIds.push(oldId);
-    externalBlockPayloads.push(buildTopLevelBlockPayload(newId, block));
+    externalBlockPayloads.push(
+      buildTopLevelBlockPayload(newId, block, BLOCK_Z_INDEX_BASE + blockPayloads.length + externalBlockPayloads.length),
+    );
     return true;
   };
 
@@ -812,6 +830,17 @@ function buildSectionBatch(
   for (const conn of boardNodes) {
     if (conn.type === 'connector' && conn.id && !conn.parent_id) {
       deleteIds.push(String(conn.id));
+    }
+  }
+
+  for (const node of boardNodes) {
+    if (
+      node.type === 'composite_shape' &&
+      node.id &&
+      !node.parent_id &&
+      nodeLabelSet.has(nodeText(node))
+    ) {
+      deleteIds.push(String(node.id));
     }
   }
 
@@ -849,17 +878,29 @@ function buildSectionBatch(
     );
   }
 
-  const sectionPayloads = plans.map((plan) => {
+  const planBySubgraphId = new Map(plans.map((plan) => [plan.subgraph.id, plan]));
+  const sectionPayloads = [...plans]
+    .sort((left, right) => left.subgraph.depth - right.subgraph.depth)
+    .map((plan) => {
+      const parentPlan = plan.subgraph.parentId ? planBySubgraphId.get(plan.subgraph.parentId) : undefined;
+      const parent = parentPlan
+        ? {
+            id: parentPlan.sectionId,
+            origin: parentPlan.bounds,
+          }
+        : undefined;
+
     return buildSectionPayload(
       plan.sectionId,
       plan.subgraph.title,
       plan.bounds,
-      Math.max(0, plan.minZIndex - 1),
+      sectionZIndex(plan.subgraph.depth),
+      parent,
     );
-  });
+    });
 
   return {
-    batch: [...sectionPayloads, ...blockPayloads, ...externalBlockPayloads, ...connectorPayloads],
+    batch: [...sectionPayloads, ...blockPayloads, ...connectorPayloads, ...externalBlockPayloads],
     deleteIds: [...new Set(deleteIds)],
   };
 }
