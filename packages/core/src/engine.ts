@@ -114,12 +114,14 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
     });
 
     const commits = await git.getCommitsBetween(fromSha, toSha);
-    const broadcastChangedPaths = fromSha
+    const broadcastChangedPaths = fullResync
       ? changedPaths
-      : filterPathsByProjectIgnoreGlobs(
-          await git.getCommitFilePaths(toSha),
-          mergeProjectIgnoreGlobs(projectIgnoreGlobs),
-        );
+      : fromSha
+        ? changedPaths
+        : filterPathsByProjectIgnoreGlobs(
+            await git.getCommitFilePaths(toSha),
+            mergeProjectIgnoreGlobs(projectIgnoreGlobs),
+          );
 
     const readMarkdown = (path: string) => git.readFileAtSha(toSha, path);
     const readBinaryFile = (path: string) => git.readBinaryFileAtSha(toSha, path);
@@ -158,7 +160,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
     const isIncrementalNoop =
       plan.operations.length === 0 && fromSha != null && !fullResync && treePaths.length > 0;
 
-    const isGapFillNoop = fullResync === true && operationCount === 0 && treePaths.length > 0;
+    const isGapFillNoop = plan.gapFillOnly === true && operationCount === 0 && treePaths.length > 0;
 
     if (plan.operations.length === 0 && !isIncrementalNoop && !isGapFillNoop && fullResync !== true) {
       if (treePaths.length === 0) {
@@ -194,8 +196,8 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
             : '无内容变更，跳过写入'
           : fullResync
             ? overviewUpdated
-              ? `已查漏补缺 ${operationCount} 项，已更新同步文档总览`
-              : `已查漏补缺 ${operationCount} 项`
+              ? `已全库重建 ${operationCount} 项，已更新同步文档总览`
+              : `已全库重建 ${operationCount} 项`
             : overviewUpdated
               ? `已同步 ${operationCount} 项，已更新同步文档总览`
               : `已同步 ${operationCount} 项`,
@@ -371,7 +373,7 @@ async function executePlan(options: {
             docToken,
             markdown: contentMarkdown,
             previousContentSha: gapFillOnly ? undefined : existing?.contentSha,
-            forceWrite: gapFillOnly && (!remoteExists || contentNeverSynced),
+            forceWrite: operation.forceWrite || (gapFillOnly && (!remoteExists || contentNeverSynced)),
           });
         }
 

@@ -1,6 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { Binding, BotBroadcastTarget, FeishuTarget, RepoSourceType, SyncLogEntry, SyncMode } from '@feishu-md/shared';
+import type {
+  Binding,
+  BotBroadcastTarget,
+  FeishuTarget,
+  ForceUpdateMode,
+  RepoSourceType,
+  SyncLogEntry,
+  SyncMode,
+} from '@feishu-md/shared';
 import { BroadcastTargetEditor } from '@/components/BroadcastTargetEditor';
 import { defaultOptionsForMode, defaultTriggersForSourceType, DEFAULT_BOT_SETTINGS, DEFAULT_SCHEDULE_MINUTES } from '@feishu-md/shared';
 import { Alert } from '@/components/ui/Alert';
@@ -90,7 +98,7 @@ export function BindingsPage() {
       } else {
         setSyncNotice({
           tone: 'success',
-          title: fullResync ? '全量重建成功' : '同步成功',
+          title: fullResync ? '全库重建成功' : '同步成功',
           message: log.message ?? '已完成',
         });
       }
@@ -260,7 +268,7 @@ export function BindingsPage() {
                     disabled={syncMutation.isPending && syncingId === binding.id}
                     onClick={() => syncMutation.mutate({ id: binding.id, fullResync: true })}
                   >
-                    {syncingId === binding.id ? '重建中…' : '全量重建'}
+                    {syncingId === binding.id ? '重建中…' : '全库重建'}
                   </Button>
                   <Button
                     variant="danger"
@@ -310,6 +318,8 @@ function BindingForm(props: {
   const [wikiRootNodeToken, setWikiRootNodeToken] = useState('');
   const [driveRootFolderToken, setDriveRootFolderToken] = useState('');
   const [ignoreGlobsText, setIgnoreGlobsText] = useState('');
+  const [forceUpdateGlobsText, setForceUpdateGlobsText] = useState('');
+  const [forceUpdateMode, setForceUpdateMode] = useState<ForceUpdateMode>('all');
   const [bindingTargets, setBindingTargets] = useState<BotBroadcastTarget[]>([]);
   const [hasExplicitBindingTargets, setHasExplicitBindingTargets] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
@@ -329,6 +339,8 @@ function BindingForm(props: {
       setWikiRootNodeToken(binding.feishuTarget.wikiRootNodeToken ?? '');
       setDriveRootFolderToken(binding.feishuTarget.driveRootFolderToken ?? '');
       setIgnoreGlobsText(binding.options.ignoreGlobs.join('\n'));
+      setForceUpdateGlobsText((binding.options.forceUpdateGlobs ?? []).join('\n'));
+      setForceUpdateMode(binding.options.forceUpdateMode ?? 'all');
       const explicitTargets = binding.bindingSpecificBroadcastTargets;
       setHasExplicitBindingTargets(explicitTargets !== undefined);
       setBindingTargets(explicitTargets ?? []);
@@ -346,6 +358,8 @@ function BindingForm(props: {
       setWikiRootNodeToken('');
       setDriveRootFolderToken('');
       setIgnoreGlobsText(defaultOptionsForMode('workspace').ignoreGlobs.join('\n'));
+      setForceUpdateGlobsText((defaultOptionsForMode('workspace').forceUpdateGlobs ?? []).join('\n'));
+      setForceUpdateMode(defaultOptionsForMode('workspace').forceUpdateMode ?? 'all');
       setHasExplicitBindingTargets(false);
       setBindingTargets([]);
       const defaults = defaultTriggersForSourceType('local');
@@ -357,6 +371,8 @@ function BindingForm(props: {
   useEffect(() => {
     if (props.initial && props.initial.syncMode !== syncMode) {
       setIgnoreGlobsText(defaultOptionsForMode(syncMode).ignoreGlobs.join('\n'));
+      setForceUpdateGlobsText((defaultOptionsForMode(syncMode).forceUpdateGlobs ?? []).join('\n'));
+      setForceUpdateMode(defaultOptionsForMode(syncMode).forceUpdateMode ?? 'all');
     }
   }, [syncMode, props.initial]);
 
@@ -376,11 +392,15 @@ function BindingForm(props: {
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
+    const forceUpdateGlobs = forceUpdateGlobsText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
     const base =
       isEdit && props.initial && props.initial.syncMode === syncMode
         ? props.initial.options
         : defaultOptionsForMode(syncMode);
-    return { ...base, ignoreGlobs: customGlobs };
+    return { ...base, ignoreGlobs: customGlobs, forceUpdateGlobs, forceUpdateMode };
   }
 
   useEffect(() => {
@@ -407,7 +427,7 @@ function BindingForm(props: {
         title={isEdit ? `编辑绑定${props.initial ? `：${props.initial.name}` : ''}` : '新建绑定'}
         description={
           isEdit
-            ? '修改配置后保存即可；变更 Git 路径或飞书目标后，建议执行一次全量重建。'
+            ? '修改配置后保存即可；变更 Git 路径或飞书目标后，建议执行一次全库重建。'
             : '填写 Git 来源与飞书同步目标，创建后可立即触发同步。'
         }
       />
@@ -621,6 +641,36 @@ function BindingForm(props: {
             onChange={(e) => setIgnoreGlobsText(e.target.value)}
             placeholder={'**/dist/**\n**/.env*'}
           />
+        </Field>
+
+        <Field
+          label="强追踪文件"
+          className="form-grid-span-2"
+          hint="每行一条 glob。匹配到的 Markdown 文档会按下方更新方式强制重写，即使内容哈希未变化。"
+        >
+          <textarea
+            className="field-input"
+            rows={3}
+            value={forceUpdateGlobsText}
+            onChange={(e) => setForceUpdateGlobsText(e.target.value)}
+            placeholder={'docs/always-sync.md\n**/status.md'}
+          />
+        </Field>
+
+        <Field
+          label="强追踪更新方式"
+          className="form-grid-span-2"
+          hint="手动更新指页面手动同步；自动更新包含 Git 提交、定时检查与机器人指令。"
+        >
+          <select
+            className="field-input"
+            value={forceUpdateMode}
+            onChange={(e) => setForceUpdateMode(e.target.value as ForceUpdateMode)}
+          >
+            <option value="manual">手动更新</option>
+            <option value="automatic">自动更新</option>
+            <option value="all">都有效</option>
+          </select>
         </Field>
 
         <div className="form-grid-span-2">

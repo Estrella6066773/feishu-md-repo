@@ -32,7 +32,7 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(pattern);
 }
 
-export function matchesProjectIgnoreGlob(path: string, glob: string): boolean {
+export function matchesProjectPathGlob(path: string, glob: string): boolean {
   const normalized = normalizeRepoPath(path);
   const g = glob.replace(/\\/g, '/');
 
@@ -44,11 +44,17 @@ export function matchesProjectIgnoreGlob(path: string, glob: string): boolean {
   return segments.some((segment) => globToRegExp(g).test(segment)) || globToRegExp(`**/${g}`).test(normalized);
 }
 
+export function matchesProjectIgnoreGlob(path: string, glob: string): boolean {
+  return matchesProjectPathGlob(path, glob);
+}
+
+export function matchesAnyProjectPathGlob(path: string, globs: string[] | undefined): boolean {
+  return (globs ?? []).some((glob) => glob.trim() && matchesProjectPathGlob(path, glob.trim()));
+}
+
 export function filterPathsByProjectIgnoreGlobs(paths: string[], ignoreGlobs: string[]): string[] {
   if (ignoreGlobs.length === 0) return paths;
-  return paths.filter(
-    (path) => !ignoreGlobs.some((glob) => glob.trim() && matchesProjectIgnoreGlob(path, glob.trim())),
-  );
+  return paths.filter((path) => !matchesAnyProjectPathGlob(path, ignoreGlobs));
 }
 
 export const DEFAULT_PROJECT_IGNORE_GLOBS = ['**/node_modules/**', '**/.git/**'] as const;

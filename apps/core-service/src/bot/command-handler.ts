@@ -129,10 +129,10 @@ export class BotCommandHandler {
   private buildAckText(command: BotCommandAction): string {
     switch (command.type) {
       case 'sync_all':
-        return command.fullResync ? '已收到：开始全量同步…' : '已收到：开始同步…';
+        return command.fullResync ? '已收到：开始全库重建…' : '已收到：开始同步…';
       case 'sync_binding':
         return command.fullResync
-          ? `已收到：开始全量同步「${command.bindingName}」…`
+          ? `已收到：开始全库重建「${command.bindingName}」…`
           : `已收到：开始同步「${command.bindingName}」…`;
       default:
         return '已收到指令';
@@ -202,7 +202,7 @@ export class BotCommandHandler {
       throw new Error(`你没有权限同步绑定「${name}」`);
     }
     if (fullResync && role === 'member') {
-      throw new Error('成员权限不支持全量同步');
+      throw new Error('成员权限不支持全库重建');
     }
     this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync);
   }
@@ -218,7 +218,7 @@ function buildHelpText(role: EffectiveFeishuRole): string {
   ];
 
   if (role === 'admin' || role === 'manager') {
-    lines.splice(3, 0, '• 全量同步 / sync --full — 全量重建后同步');
+    lines.splice(3, 0, '• 全库重建 / sync --full — 强制重写全库文档');
   }
   if (role === 'member') {
     lines.push('', '当前权限：成员 — 仅可对「有云仓库」绑定发起普通同步。');

@@ -1,6 +1,11 @@
 import type { DbClient } from '@feishu-md/db';
 import { getBinding, insertSyncLog, updateSyncLog } from '@feishu-md/db';
-import type { SyncTriggerType } from '@feishu-md/shared';
+import {
+  shouldForceUpdateForTrigger,
+  type RepositoryOptions,
+  type SyncTriggerType,
+  type WorkspaceOptions,
+} from '@feishu-md/shared';
 import { randomUUID } from 'node:crypto';
 import { runSync } from '@feishu-md/core';
 import { createGitProvider, fetchRemoteForSync } from '@feishu-md/git';
@@ -23,7 +28,7 @@ export class SyncCoordinator {
       bindingId,
       trigger,
       status: 'pending',
-      message: fullResync ? '全量重建排队中' : '同步排队中',
+      message: fullResync ? '全库重建排队中' : '同步排队中',
       startedAt,
     });
 
@@ -59,7 +64,11 @@ export class SyncCoordinator {
           }
 
           const latestSha = await git.getHeadSha();
-          if (binding.lastSyncedSha && latestSha === binding.lastSyncedSha) {
+          if (
+            binding.lastSyncedSha &&
+            latestSha === binding.lastSyncedSha &&
+            !hasForceUpdateGlobs(binding, trigger)
+          ) {
             await updateSyncLog(this.db, {
               id: logId,
               bindingId,
@@ -101,4 +110,17 @@ export class SyncCoordinator {
 
     return logId;
   }
+}
+
+function hasForceUpdateGlobs(
+  binding: Awaited<ReturnType<typeof getBinding>>,
+  trigger: SyncTriggerType,
+): boolean {
+  if (!binding) return false;
+  const options =
+    binding.syncMode === 'workspace'
+      ? (binding.options as WorkspaceOptions)
+      : (binding.options as RepositoryOptions);
+  if (!shouldForceUpdateForTrigger(options.forceUpdateMode, trigger)) return false;
+  return (options.forceUpdateGlobs ?? []).some((glob) => glob.trim());
 }

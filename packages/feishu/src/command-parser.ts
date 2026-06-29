@@ -18,7 +18,7 @@ export function parseBotCommand(rawText: string): BotCommandAction | null {
     return { type: 'status' };
   }
 
-  const fullSyncMatch = normalized.match(/^(全量同步|sync\s+--full|同步\s+--full)(?:\s+(.+))?$/i);
+  const fullSyncMatch = normalized.match(/^(全库重建|全量同步|sync\s+--full|同步\s+--full)(?:\s+(.+))?$/i);
   if (fullSyncMatch) {
     const name = fullSyncMatch[2]?.trim();
     if (name) return { type: 'sync_binding', bindingName: name, fullResync: true };
@@ -38,7 +38,7 @@ export function parseBotCommand(rawText: string): BotCommandAction | null {
 export const BOT_HELP_TEXT = `Feishu MD Repo 指令：
 • 同步 / sync — 触发同步（未指定绑定时同步全部）
 • 同步 <绑定名> — 同步指定绑定
-• 全量同步 / sync --full — 全量重建后同步
+• 全库重建 / sync --full — 强制重写全库文档
 • 状态 / status — 查看绑定与最近同步
 • 帮助 / help — 显示本说明
 

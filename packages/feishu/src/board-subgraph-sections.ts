@@ -92,14 +92,16 @@ async function batchDeleteNodes(
 
   for (let index = 0; index < ids.length; index += 100) {
     const chunk = ids.slice(index, index + 100);
-    const response = await withRateLimit(() =>
-      (client as RequestableClient).request({
-        method: 'DELETE',
-        url: `/open-apis/board/v1/whiteboards/${encodeURIComponent(whiteboardId)}/nodes/batch_delete`,
-        data: { ids: chunk },
-      }),
-    );
-    assertFeishuResponse(response, 'Delete board nodes for subgraph sections');
+    await withWhiteboardRetry('Delete board nodes for subgraph sections', async () => {
+      const response = await withRateLimit(() =>
+        (client as RequestableClient).request({
+          method: 'DELETE',
+          url: `/open-apis/board/v1/whiteboards/${encodeURIComponent(whiteboardId)}/nodes/batch_delete`,
+          data: { ids: chunk },
+        }),
+      );
+      assertFeishuResponse(response, 'Delete board nodes for subgraph sections');
+    });
   }
 }
 
@@ -143,6 +145,24 @@ function nodeText(node: BoardNodeRecord): string {
   }
 
   return parts.join('\n').trim();
+}
+
+function fillColor(node: BoardNodeRecord): string {
+  const value = node.style?.fill_color;
+  return typeof value === 'string' ? value.toLowerCase() : '';
+}
+
+function isMermaidSubgraphFrameShape(
+  node: BoardNodeRecord,
+  subgraphTitles: Set<string>,
+): boolean {
+  return (
+    node.type === 'composite_shape' &&
+    Boolean(node.id) &&
+    !node.parent_id &&
+    subgraphTitles.has(nodeText(node)) &&
+    fillColor(node) === '#ffffde'
+  );
 }
 
 function shapeTextPayload(shape: BoardNodeRecord): UnknownRecord {
@@ -356,6 +376,31 @@ function connectorAnchorPosition(placement: BlockPlacement | undefined): { x: nu
   };
 }
 
+function connectorLayoutPosition(
+  conn: BoardNodeRecord,
+  placements: Map<string, BlockPlacement> | undefined,
+  startPlacement: BlockPlacement | undefined,
+  endPlacement: BlockPlacement | undefined,
+): { x: number; y: number; width: number; height: number } {
+  if (!placements || !startPlacement || !endPlacement) {
+    return {
+      x: conn.x ?? 0,
+      y: conn.y ?? 0,
+      width: conn.width ?? 0,
+      height: conn.height ?? 0,
+    };
+  }
+
+  const startAnchor = connectorAnchorPosition(startPlacement);
+  const endAnchor = connectorAnchorPosition(endPlacement);
+  return {
+    x: Math.min(startAnchor.x, endAnchor.x),
+    y: Math.min(startAnchor.y, endAnchor.y),
+    width: Math.abs(endAnchor.x - startAnchor.x),
+    height: Math.abs(endAnchor.y - startAnchor.y),
+  };
+}
+
 function buildConnectorPayload(
   conn: BoardNodeRecord,
   id: string,
@@ -400,16 +445,15 @@ function buildConnectorPayload(
           chooseConnectorSnap(startPlacement, endPlacement, false),
         )
       : endAttached;
-  const startAnchor = connectorAnchorPosition(startPlacement);
-  const endAnchor = connectorAnchorPosition(endPlacement);
+  const position = connectorLayoutPosition(conn, placements, startPlacement, endPlacement);
 
   const payload: UnknownRecord = {
     id,
     type: 'connector',
-    x: placements ? Math.min(startAnchor.x, endAnchor.x) : (conn.x ?? 0),
-    y: placements ? Math.min(startAnchor.y, endAnchor.y) : (conn.y ?? 0),
-    width: conn.width ?? 0,
-    height: conn.height ?? 0,
+    x: position.x,
+    y: position.y,
+    width: position.width,
+    height: position.height,
     angle: conn.angle ?? 0,
     style: conn.style ?? defaultConnectorStyle(),
     connector: {
@@ -433,8 +477,8 @@ function buildConnectorPayload(
 
   if (sectionId && sectionOrigin) {
     payload.parent_id = sectionId;
-    payload.x = toRelativeCoordinate(conn.x, sectionOrigin.x);
-    payload.y = toRelativeCoordinate(conn.y, sectionOrigin.y);
+    payload.x = toRelativeCoordinate(position.x, sectionOrigin.x);
+    payload.y = toRelativeCoordinate(position.y, sectionOrigin.y);
   }
 
   return payload;
@@ -694,22 +738,22 @@ function buildSectionBatch(
   const placementByShapeId = applyReadableLayout(plans);
   const shapeIdMap = new Map<string, string>();
   const shapeSectionMap = new Map<string, SectionBuildPlan>();
-  const sectionPayloads: UnknownRecord[] = [];
   const blockPayloads: UnknownRecord[] = [];
   const externalBlockPayloads: UnknownRecord[] = [];
   const deleteIds: string[] = [];
   const titleShapeIds = new Set<string>();
+  const subgraphTitles = new Set(plans.map((plan) => plan.subgraph.title));
+  const sectionConnectorCounts = new Map<string, number>();
+
+  for (const frameShape of boardNodes.filter((node) =>
+    isMermaidSubgraphFrameShape(node, subgraphTitles),
+  )) {
+    const id = String(frameShape.id);
+    titleShapeIds.add(id);
+    deleteIds.push(id);
+  }
 
   for (const plan of plans) {
-    sectionPayloads.push(
-      buildSectionPayload(
-        plan.sectionId,
-        plan.subgraph.title,
-        plan.bounds,
-        Math.max(0, plan.minZIndex - 1),
-      ),
-    );
-
     if (plan.titleShape?.id) {
       titleShapeIds.add(String(plan.titleShape.id));
       deleteIds.push(String(plan.titleShape.id));
@@ -779,7 +823,15 @@ function buildSectionBatch(
     const startSection = findSectionForShape(startId, shapeSectionMap);
     const endSection = findSectionForShape(endId, shapeSectionMap);
     const sameSection = startSection && endSection && startSection.sectionId === endSection.sectionId;
-    const connectorId = `sgc:${connectorPayloads.length + 1}`;
+    const connectorId = sameSection
+      ? `${startSection.sectionId.replace(':1', '')}:c${(sectionConnectorCounts.get(startSection.sectionId) ?? 0) + 1}`
+      : `sgc:${connectorPayloads.length + 1}`;
+    if (sameSection) {
+      sectionConnectorCounts.set(
+        startSection.sectionId,
+        (sectionConnectorCounts.get(startSection.sectionId) ?? 0) + 1,
+      );
+    }
 
     connectorPayloads.push(
       buildConnectorPayload(
@@ -792,6 +844,15 @@ function buildSectionBatch(
       ),
     );
   }
+
+  const sectionPayloads = plans.map((plan) => {
+    return buildSectionPayload(
+      plan.sectionId,
+      plan.subgraph.title,
+      plan.bounds,
+      Math.max(0, plan.minZIndex - 1),
+    );
+  });
 
   return {
     batch: [...sectionPayloads, ...blockPayloads, ...externalBlockPayloads, ...connectorPayloads],

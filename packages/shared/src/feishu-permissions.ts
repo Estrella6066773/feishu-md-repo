@@ -13,9 +13,9 @@ export const FEISHU_USER_ROLE_LABELS: Record<FeishuUserRole, string> = {
 };
 
 export const FEISHU_ROLE_DESCRIPTIONS: Record<FeishuUserRole | 'default', string> = {
-  admin: '可访问管理后台逻辑下的全部绑定与指令（含全量同步）',
+  admin: '可访问管理后台逻辑下的全部绑定与指令（含全库重建）',
   manager: '仅可对已指定的绑定使用全部可用指令',
-  member: '仅可对有云（云端）绑定发起普通同步，不可操作本地库、不可全量同步',
+  member: '仅可对有云（云端）绑定发起普通同步，不可操作本地库、不可全库重建',
   blacklist: '禁止使用一切机器人功能',
   default: '未在名单中配置的用户；不写入数据库，无法使用指令',
 };
@@ -93,7 +93,7 @@ export function authorizeBotCommand(options: {
   }
 
   if (commandKind === 'full_sync' && role === 'member') {
-    return { allowed: false, message: '成员权限不支持全量同步，请使用「同步」指令。' };
+    return { allowed: false, message: '成员权限不支持全库重建，请使用「同步」指令。' };
   }
 
   if (commandKind === 'help') {

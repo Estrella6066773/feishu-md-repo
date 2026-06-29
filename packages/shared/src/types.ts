@@ -2,6 +2,7 @@ export type RepoSourceType = 'local' | 'cloud';
 export type SyncMode = 'workspace' | 'repository';
 export type FeishuTargetType = 'wiki' | 'drive';
 export type SyncTriggerType = 'git' | 'schedule' | 'manual' | 'bot';
+export type ForceUpdateMode = 'manual' | 'automatic' | 'all';
 export type MissingReadmePolicy = 'skip' | 'placeholder' | 'empty_doc';
 export type FeishuNodeType = 'folder' | 'docx' | 'file';
 
@@ -37,12 +38,18 @@ export interface WorkspaceOptions {
   mdExtensions: string[];
   mirrorNonMdFiles: boolean;
   ignoreGlobs: string[];
+  /** 每次同步都强制重写的 Markdown 文件 glob */
+  forceUpdateGlobs?: string[];
+  forceUpdateMode?: ForceUpdateMode;
 }
 
 export interface RepositoryOptions {
   readmeNames: string[];
   missingReadmePolicy: MissingReadmePolicy;
   ignoreGlobs: string[];
+  /** 每次同步都强制重写的 Markdown 文件 glob */
+  forceUpdateGlobs?: string[];
+  forceUpdateMode?: ForceUpdateMode;
 }
 
 export interface BindingTriggers {
@@ -160,13 +167,27 @@ export const DEFAULT_WORKSPACE_OPTIONS: WorkspaceOptions = {
   mdExtensions: ['.md', '.markdown'],
   mirrorNonMdFiles: false,
   ignoreGlobs: ['**/node_modules/**', '**/.git/**'],
+  forceUpdateGlobs: [],
+  forceUpdateMode: 'all',
 };
 
 export const DEFAULT_REPOSITORY_OPTIONS: RepositoryOptions = {
   readmeNames: ['README.md', 'readme.md', 'Readme.md'],
   missingReadmePolicy: 'skip',
   ignoreGlobs: ['**/node_modules/**', '**/.git/**'],
+  forceUpdateGlobs: [],
+  forceUpdateMode: 'all',
 };
+
+export function shouldForceUpdateForTrigger(
+  mode: ForceUpdateMode | undefined,
+  trigger: SyncTriggerType,
+): boolean {
+  const normalized = mode ?? 'all';
+  if (normalized === 'all') return true;
+  if (normalized === 'manual') return trigger === 'manual';
+  return trigger !== 'manual';
+}
 
 /** 默认定时检查间隔（分钟） */
 export const DEFAULT_SCHEDULE_MINUTES = 10;

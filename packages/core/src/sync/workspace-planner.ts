@@ -1,5 +1,9 @@
 import { basename, dirname } from 'node:path';
-import { DEFAULT_WORKSPACE_OPTIONS } from '@feishu-md/shared';
+import {
+  DEFAULT_WORKSPACE_OPTIONS,
+  matchesAnyProjectPathGlob,
+  shouldForceUpdateForTrigger,
+} from '@feishu-md/shared';
 import { markdownReferencesChangedImages } from '@feishu-md/feishu';
 import type { SyncPlan, SyncPlanContext, SyncPlanner } from './planner.js';
 
@@ -27,18 +31,28 @@ export class WorkspacePlanner implements SyncPlanner {
   async buildPlan(context: SyncPlanContext): Promise<SyncPlan> {
     const options = context.workspaceOptions ?? DEFAULT_WORKSPACE_OPTIONS;
     const mdExtensions = options.mdExtensions;
+    const forceUpdateGlobs = shouldForceUpdateForTrigger(options.forceUpdateMode, context.trigger)
+      ? (options.forceUpdateGlobs ?? [])
+      : [];
     const normalizedTree = context.treePaths.map(normalizePath);
     const changedSet = new Set(context.changedPaths.map(normalizePath));
-    const gapFillOnly = context.fullResync === true;
-    const incremental = !gapFillOnly && context.fromSha != null && changedSet.size > 0;
+    const fullRebuild = context.fullResync === true;
+    const gapFillOnly = false;
+    const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
 
     const mdPaths = normalizedTree.filter((path) => isMarkdown(path, mdExtensions));
+    const forceUpdatePaths = mdPaths.filter((path) =>
+      matchesAnyProjectPathGlob(path, forceUpdateGlobs),
+    );
     const pathsToSync = incremental
-      ? await filterIncrementalMarkdownPaths({
-          mdPaths,
-          changedSet,
-          readMarkdown: context.readMarkdown,
-        })
+      ? mergePaths(
+          await filterIncrementalMarkdownPaths({
+            mdPaths,
+            changedSet,
+            readMarkdown: context.readMarkdown,
+          }),
+          forceUpdatePaths,
+        )
       : mdPaths;
 
     const folderSeedPaths = [...pathsToSync];
@@ -79,6 +93,7 @@ export class WorkspacePlanner implements SyncPlanner {
         title: basename(path, '.md'),
         parentGitPath: dirname(path) === '.' ? '' : dirname(path),
         contentMarkdown: content,
+        forceWrite: fullRebuild || matchesAnyProjectPathGlob(path, forceUpdateGlobs),
       });
     }
 
@@ -92,6 +107,14 @@ export class WorkspacePlanner implements SyncPlanner {
       operations,
     };
   }
+}
+
+function mergePaths(first: string[], second: string[]): string[] {
+  const merged = new Set(first);
+  for (const path of second) {
+    merged.add(path);
+  }
+  return [...merged];
 }
 
 async function filterIncrementalMarkdownPaths(options: {

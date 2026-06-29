@@ -1,4 +1,8 @@
-import { DEFAULT_REPOSITORY_OPTIONS } from '@feishu-md/shared';
+import {
+  DEFAULT_REPOSITORY_OPTIONS,
+  matchesAnyProjectPathGlob,
+  shouldForceUpdateForTrigger,
+} from '@feishu-md/shared';
 import type { SyncPlan, SyncPlanContext, SyncPlanner } from './planner.js';
 import {
   discoverRepositoryContainers,
@@ -18,10 +22,14 @@ function normalizePath(path: string): string {
 export class RepositoryPlanner implements SyncPlanner {
   async buildPlan(context: SyncPlanContext): Promise<SyncPlan> {
     const options = context.repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS;
+    const forceUpdateGlobs = shouldForceUpdateForTrigger(options.forceUpdateMode, context.trigger)
+      ? (options.forceUpdateGlobs ?? [])
+      : [];
     const normalizedTree = context.treePaths.map(normalizePath);
     const changedSet = new Set(context.changedPaths.map(normalizePath));
-    const gapFillOnly = context.fullResync === true;
-    const incremental = !gapFillOnly && context.fromSha != null && changedSet.size > 0;
+    const fullRebuild = context.fullResync === true;
+    const gapFillOnly = false;
+    const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
     const rootTitle = context.bindingName?.trim() || context.bindingId;
 
     const containers = discoverRepositoryContainers(normalizedTree, options.readmeNames);
@@ -30,7 +38,8 @@ export class RepositoryPlanner implements SyncPlanner {
     const operations = [];
 
     for (const container of containers) {
-      if (!gapFillOnly && !isRepositoryContainerDirty(container, changedSet, incremental)) continue;
+      const forceWrite = fullRebuild || isForceUpdatedContainer(container, forceUpdateGlobs);
+      if (!gapFillOnly && !forceWrite && !isRepositoryContainerDirty(container, changedSet, incremental)) continue;
 
       if (gapFillOnly) {
         operations.push({
@@ -53,6 +62,7 @@ export class RepositoryPlanner implements SyncPlanner {
         title: repositoryContainerTitle(container.logicalPath, rootTitle),
         parentGitPath: resolveRepositoryParentLogicalPath(container.logicalPath, containerPaths),
         contentMarkdown: content,
+        forceWrite,
       });
     }
 
@@ -75,7 +85,8 @@ export class RepositoryPlanner implements SyncPlanner {
       const content = await context.readMarkdown(filePath);
       if (content == null) continue;
 
-      if (!isStandaloneFileDirty(filePath, changedSet, incremental, content)) continue;
+      const forceWrite = fullRebuild || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
+      if (!forceWrite && !isStandaloneFileDirty(filePath, changedSet, incremental, content)) continue;
 
       operations.push({
         type: 'update_doc' as const,
@@ -84,6 +95,7 @@ export class RepositoryPlanner implements SyncPlanner {
         title: standaloneMarkdownTitle(filePath),
         parentGitPath: resolveParentForStandaloneFile(filePath, containerPaths),
         contentMarkdown: content,
+        forceWrite,
       });
     }
 
@@ -97,4 +109,12 @@ export class RepositoryPlanner implements SyncPlanner {
       operations,
     };
   }
+}
+
+function isForceUpdatedContainer(
+  container: { logicalPath: string; sourcePath: string },
+  forceUpdateGlobs: string[],
+): boolean {
+  if (matchesAnyProjectPathGlob(container.sourcePath, forceUpdateGlobs)) return true;
+  return Boolean(container.logicalPath) && matchesAnyProjectPathGlob(container.logicalPath, forceUpdateGlobs);
 }
