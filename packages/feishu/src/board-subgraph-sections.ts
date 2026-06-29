@@ -1,6 +1,10 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
-import { parseMermaidGraph, type ParsedMermaidSubgraph } from './mermaid-subgraph.js';
+import {
+  parseMermaidGraph,
+  type ParsedMermaidEdge,
+  type ParsedMermaidSubgraph,
+} from './mermaid-subgraph.js';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -204,6 +208,29 @@ function computeSectionBounds(nodes: BoardNodeRecord[]): {
   return { x, y, width, height };
 }
 
+function computeBoundsFromRects(
+  rects: Array<{ x?: number; y?: number; width?: number; height?: number }>,
+): { x: number; y: number; width: number; height: number } | null {
+  if (rects.length === 0) return null;
+
+  const xs = rects.map((rect) => Number(rect.x ?? 0));
+  const ys = rects.map((rect) => Number(rect.y ?? 0));
+  const ws = rects.map((rect) => Number(rect.width ?? 0));
+  const hs = rects.map((rect) => Number(rect.height ?? 0));
+  const rawX = Math.min(...xs) - SECTION_PADDING;
+  const rawY = Math.min(...ys) - SECTION_PADDING - SECTION_TITLE_HEIGHT;
+  const rawRight = Math.max(...xs.map((value, index) => value + ws[index]!)) + SECTION_PADDING;
+  const rawBottom = Math.max(...ys.map((value, index) => value + hs[index]!)) + SECTION_PADDING;
+  const x = snapFloor(rawX);
+  const y = snapFloor(rawY);
+  return {
+    x,
+    y,
+    width: Math.max(SECTION_MIN_WIDTH, snapCeil(rawRight) - x),
+    height: Math.max(SECTION_MIN_HEIGHT, snapCeil(rawBottom) - y),
+  };
+}
+
 function toRelativeCoordinate(global: number | undefined, sectionOrigin: number): number {
   return Number(global ?? 0) - sectionOrigin;
 }
@@ -295,34 +322,6 @@ function defaultConnectorStyle(): UnknownRecord {
   };
 }
 
-function getConnectorEndpointIds(conn: BoardNodeRecord): { startId: string; endId: string } {
-  const connector = conn.connector ?? {};
-  const startId = String(
-    (connector.start_object as UnknownRecord | undefined)?.id ??
-      ((connector.start as UnknownRecord | undefined)?.attached_object as UnknownRecord | undefined)?.id ??
-      '',
-  );
-  const endId = String(
-    (connector.end_object as UnknownRecord | undefined)?.id ??
-      ((connector.end as UnknownRecord | undefined)?.attached_object as UnknownRecord | undefined)?.id ??
-      '',
-  );
-  return { startId, endId };
-}
-
-function remapEndpoint(
-  endpoint: UnknownRecord | undefined,
-  idMap: Map<string, string>,
-): UnknownRecord | undefined {
-  if (!endpoint) return undefined;
-  const oldId = String(endpoint.id ?? '');
-  return {
-    id: idMap.get(oldId) ?? oldId,
-    snap_to: endpoint.snap_to,
-    position: endpoint.position,
-  };
-}
-
 function connectorEndpoint(
   id: string | undefined,
   snapTo: 'left' | 'right' | 'top' | 'bottom',
@@ -337,35 +336,6 @@ function connectorEndpoint(
           ? { x: 0.5, y: 0 }
           : { x: 0.5, y: 1 };
   return { id, snap_to: snapTo, position };
-}
-
-function chooseConnectorSnap(
-  from: BlockPlacement | undefined,
-  to: BlockPlacement | undefined,
-  isStart: boolean,
-): 'left' | 'right' | 'top' | 'bottom' {
-  if (!from || !to) return isStart ? 'right' : 'left';
-
-  if (from.rank != null && to.rank != null && from.rank !== to.rank) {
-    const forward = to.rank > from.rank;
-    if (isStart) return forward ? 'right' : 'left';
-    return forward ? 'left' : 'right';
-  }
-
-  const fromCenterX = from.x + from.width / 2;
-  const fromCenterY = from.y + from.height / 2;
-  const toCenterX = to.x + to.width / 2;
-  const toCenterY = to.y + to.height / 2;
-  const dx = toCenterX - fromCenterX;
-  const dy = toCenterY - fromCenterY;
-
-  if (Math.abs(dx) > Math.abs(dy)) {
-    if (isStart) return dx >= 0 ? 'right' : 'left';
-    return dx >= 0 ? 'left' : 'right';
-  }
-
-  if (isStart) return dy >= 0 ? 'bottom' : 'top';
-  return dy >= 0 ? 'top' : 'bottom';
 }
 
 function connectorAnchorPosition(placement: BlockPlacement | undefined): { x: number; y: number } {
@@ -401,52 +371,24 @@ function connectorLayoutPosition(
   };
 }
 
-function buildConnectorPayload(
-  conn: BoardNodeRecord,
+function buildGeneratedConnectorPayload(
   id: string,
-  idMap: Map<string, string>,
+  startObjectId: string,
+  endObjectId: string,
+  startPlacement: BlockPlacement,
+  endPlacement: BlockPlacement,
   sectionId?: string,
   sectionOrigin?: { x: number; y: number },
-  placements?: Map<string, BlockPlacement>,
 ): UnknownRecord {
-  const connector = conn.connector ?? {};
-  const { startId, endId } = getConnectorEndpointIds(conn);
-  const startBlock = (connector.start as UnknownRecord | undefined) ?? {
-    arrow_style: 'none',
-    attached_object: connector.start_object,
-  };
-  const endBlock = (connector.end as UnknownRecord | undefined) ?? {
-    arrow_style: 'triangle_arrow',
-    attached_object: connector.end_object,
-  };
-  const startAttached = remapEndpoint(
-    (startBlock.attached_object as UnknownRecord | undefined) ??
-      (connector.start_object as UnknownRecord | undefined),
-    idMap,
+  const position = connectorLayoutPosition(
+    {},
+    new Map<string, BlockPlacement>([
+      ['start', startPlacement],
+      ['end', endPlacement],
+    ]),
+    startPlacement,
+    endPlacement,
   );
-  const endAttached = remapEndpoint(
-    (endBlock.attached_object as UnknownRecord | undefined) ??
-      (connector.end_object as UnknownRecord | undefined),
-    idMap,
-  );
-  const startPlacement = placements?.get(startId);
-  const endPlacement = placements?.get(endId);
-  const readableStartAttached =
-    placements && startPlacement && endPlacement
-      ? connectorEndpoint(
-          idMap.get(startId) ?? startId,
-          chooseConnectorSnap(startPlacement, endPlacement, true),
-        )
-      : startAttached;
-  const readableEndAttached =
-    placements && startPlacement && endPlacement
-      ? connectorEndpoint(
-          idMap.get(endId) ?? endId,
-          chooseConnectorSnap(startPlacement, endPlacement, false),
-        )
-      : endAttached;
-  const position = connectorLayoutPosition(conn, placements, startPlacement, endPlacement);
-
   const payload: UnknownRecord = {
     id,
     type: 'connector',
@@ -454,25 +396,25 @@ function buildConnectorPayload(
     y: position.y,
     width: position.width,
     height: position.height,
-    angle: conn.angle ?? 0,
-    style: conn.style ?? defaultConnectorStyle(),
+    angle: 0,
+    style: defaultConnectorStyle(),
     connector: {
       shape: 'straight',
-      specified_coordinate: connector.specified_coordinate ?? true,
-      caption_auto_direction: connector.caption_auto_direction ?? false,
+      specified_coordinate: true,
+      caption_auto_direction: false,
       turning_points: [],
       start: {
-        arrow_style: startBlock.arrow_style ?? 'none',
-        attached_object: readableStartAttached,
+        arrow_style: 'none',
+        attached_object: connectorEndpoint(startObjectId, 'right'),
       },
       end: {
-        arrow_style: endBlock.arrow_style ?? 'triangle_arrow',
-        attached_object: readableEndAttached,
+        arrow_style: 'triangle_arrow',
+        attached_object: connectorEndpoint(endObjectId, 'left'),
       },
-      start_object: readableStartAttached,
-      end_object: readableEndAttached,
+      start_object: connectorEndpoint(startObjectId, 'right'),
+      end_object: connectorEndpoint(endObjectId, 'left'),
     },
-    z_index: Number(conn.z_index ?? 1),
+    z_index: 1,
   };
 
   if (sectionId && sectionOrigin) {
@@ -512,6 +454,31 @@ function findSubgraphTitleShape(
   );
 }
 
+function nodeArea(node: BoardNodeRecord): number {
+  return Number(node.width ?? 0) * Number(node.height ?? 0);
+}
+
+function findMemberShapeByLabel(
+  boardNodes: BoardNodeRecord[],
+  label: string,
+  consumedShapeIds: Set<string>,
+): BoardNodeRecord | undefined {
+  const matches = boardNodes.filter(
+    (node) =>
+      node.type === 'composite_shape' &&
+      node.id &&
+      !node.parent_id &&
+      !consumedShapeIds.has(node.id) &&
+      nodeText(node) === label.trim(),
+  );
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return matches[0];
+
+  const normalMatches = matches.filter((node) => fillColor(node) !== '#ffffde');
+  const candidates = normalMatches.length > 0 ? normalMatches : matches;
+  return [...candidates].sort((left, right) => nodeArea(left) - nodeArea(right))[0];
+}
+
 interface SectionBuildPlan {
   subgraph: ParsedMermaidSubgraph;
   sectionId: string;
@@ -546,16 +513,9 @@ function planSubgraphSections(
       const label = nodeLabels.get(memberId);
       if (!label?.trim()) continue;
 
-      const matches = boardNodes.filter(
-        (node) =>
-          node.type === 'composite_shape' &&
-          node.id &&
-          !node.parent_id &&
-          !consumedShapeIds.has(node.id) &&
-          nodeText(node) === label.trim(),
-      );
-      if (matches.length === 1) {
-        memberPairs.push({ memberId, shape: matches[0]! });
+      const shape = findMemberShapeByLabel(boardNodes, label, consumedShapeIds);
+      if (shape) {
+        memberPairs.push({ memberId, shape });
       }
     }
 
@@ -721,23 +681,57 @@ function applyReadableLayout(
     cursorX += plan.bounds.width + SECTION_GAP_X;
   }
 
+  expandParentSections(plans);
   return placementByShapeId;
 }
 
-function findSectionForShape(
-  shapeId: string,
-  shapeSectionMap: Map<string, SectionBuildPlan>,
-): SectionBuildPlan | undefined {
-  return shapeSectionMap.get(shapeId);
+function expandParentSections(plans: SectionBuildPlan[]): void {
+  const plansByParent = new Map<string, SectionBuildPlan[]>();
+  for (const plan of plans) {
+    const parentId = plan.subgraph.parentId;
+    if (!parentId) continue;
+    const siblings = plansByParent.get(parentId) ?? [];
+    siblings.push(plan);
+    plansByParent.set(parentId, siblings);
+  }
+
+  const bySubgraphId = new Map(plans.map((plan) => [plan.subgraph.id, plan]));
+  const sortedParents = [...plans]
+    .filter((plan) => plansByParent.has(plan.subgraph.id))
+    .sort((left, right) => right.subgraph.depth - left.subgraph.depth);
+
+  for (const parent of sortedParents) {
+    const children = plansByParent.get(parent.subgraph.id) ?? [];
+    const rects = [
+      ...parent.memberShapes,
+      ...children.map((child) => child.bounds),
+    ];
+    const bounds = computeBoundsFromRects(rects);
+    if (bounds) {
+      parent.bounds = bounds;
+    }
+
+    const grandParent = parent.subgraph.parentId ? bySubgraphId.get(parent.subgraph.parentId) : undefined;
+    if (grandParent) {
+      const siblings = plansByParent.get(grandParent.subgraph.id) ?? [];
+      if (!siblings.includes(parent)) {
+        siblings.push(parent);
+      }
+    }
+  }
 }
 
 function buildSectionBatch(
   boardNodes: BoardNodeRecord[],
   plans: SectionBuildPlan[],
+  nodeLabels: Map<string, string>,
+  edges: ParsedMermaidEdge[],
 ): { batch: UnknownRecord[]; deleteIds: string[] } {
   const placementByShapeId = applyReadableLayout(plans);
   const shapeIdMap = new Map<string, string>();
-  const shapeSectionMap = new Map<string, SectionBuildPlan>();
+  const mermaidIdMap = new Map<string, string>();
+  const mermaidSectionMap = new Map<string, SectionBuildPlan>();
+  const mermaidPlacementMap = new Map<string, BlockPlacement>();
   const blockPayloads: UnknownRecord[] = [];
   const externalBlockPayloads: UnknownRecord[] = [];
   const deleteIds: string[] = [];
@@ -762,66 +756,75 @@ function buildSectionBatch(
     plan.memberShapes.forEach((shape, index) => {
       if (!shape.id) return;
       const oldId = String(shape.id);
+      const memberId = plan.memberIds[index]!;
       const newId = `${plan.sectionId.replace(':1', '')}:${index + 2}`;
       shapeIdMap.set(oldId, newId);
-      shapeSectionMap.set(oldId, plan);
+      mermaidIdMap.set(memberId, newId);
+      mermaidSectionMap.set(memberId, plan);
+      const placement = placementByShapeId.get(oldId);
+      if (placement) {
+        mermaidPlacementMap.set(memberId, placement);
+      }
       deleteIds.push(oldId);
       blockPayloads.push(buildBlockPayload(newId, plan.sectionId, shape, index + 1, plan.bounds));
     });
   }
 
-  const mapExternalBlock = (shapeId: string): boolean => {
-    if (shapeIdMap.has(shapeId)) return true;
-    if (titleShapeIds.has(shapeId)) return false;
-
+  const mapExternalMermaidNode = (nodeId: string): boolean => {
+    if (mermaidIdMap.has(nodeId)) return true;
+    const label = nodeLabels.get(nodeId);
+    if (!label?.trim()) return false;
     const block = boardNodes.find(
-      (node) => node.id === shapeId && node.type === 'composite_shape' && !node.parent_id,
+      (node) =>
+        node.type === 'composite_shape' &&
+        node.id &&
+        !node.parent_id &&
+        !titleShapeIds.has(String(node.id)) &&
+        !shapeIdMap.has(String(node.id)) &&
+        nodeText(node) === label.trim(),
     );
     if (!block?.id) return false;
 
     const newId = `sgo:${externalBlockPayloads.length + 1}`;
     block.x = snapCeil(Number(block.x ?? 0));
     block.y = snapCeil(Number(block.y ?? 0));
-    shapeIdMap.set(shapeId, newId);
-    placementByShapeId.set(shapeId, {
+    const oldId = String(block.id);
+    shapeIdMap.set(oldId, newId);
+    mermaidIdMap.set(nodeId, newId);
+    const placement = {
       x: Number(block.x ?? 0),
       y: Number(block.y ?? 0),
       width: Number(block.width ?? 120),
       height: Number(block.height ?? 56),
-    });
-    deleteIds.push(shapeId);
+    };
+    placementByShapeId.set(oldId, placement);
+    mermaidPlacementMap.set(nodeId, placement);
+    deleteIds.push(oldId);
     externalBlockPayloads.push(buildTopLevelBlockPayload(newId, block));
     return true;
   };
 
-  let mappedMore = true;
-  while (mappedMore) {
-    mappedMore = false;
-    for (const conn of boardNodes) {
-      if (conn.type !== 'connector' || !conn.id || conn.parent_id) continue;
-      const { startId, endId } = getConnectorEndpointIds(conn);
-      const startMapped = shapeIdMap.has(startId);
-      const endMapped = shapeIdMap.has(endId);
-      if (!startMapped && !endMapped) continue;
+  for (const edge of edges) {
+    mapExternalMermaidNode(edge.from);
+    mapExternalMermaidNode(edge.to);
+  }
 
-      if (!startMapped && mapExternalBlock(startId)) mappedMore = true;
-      if (!endMapped && mapExternalBlock(endId)) mappedMore = true;
+  for (const conn of boardNodes) {
+    if (conn.type === 'connector' && conn.id && !conn.parent_id) {
+      deleteIds.push(String(conn.id));
     }
   }
 
   const connectorPayloads: UnknownRecord[] = [];
-  for (const conn of boardNodes) {
-    if (conn.type !== 'connector' || !conn.id || conn.parent_id) continue;
-    const { startId, endId } = getConnectorEndpointIds(conn);
-    const startMapped = shapeIdMap.has(startId);
-    const endMapped = shapeIdMap.has(endId);
-    if (!startMapped && !endMapped) continue;
+  for (const edge of edges) {
+    const startObjectId = mermaidIdMap.get(edge.from);
+    const endObjectId = mermaidIdMap.get(edge.to);
+    const startPlacement = mermaidPlacementMap.get(edge.from);
+    const endPlacement = mermaidPlacementMap.get(edge.to);
+    if (!startObjectId || !endObjectId || !startPlacement || !endPlacement) continue;
 
-    deleteIds.push(String(conn.id));
-    if (!startMapped || !endMapped) continue;
-
-    const startSection = findSectionForShape(startId, shapeSectionMap);
-    const endSection = findSectionForShape(endId, shapeSectionMap);
+    const startSection = mermaidSectionMap.get(edge.from);
+    const endSection = mermaidSectionMap.get(edge.to);
     const sameSection = startSection && endSection && startSection.sectionId === endSection.sectionId;
     const connectorId = sameSection
       ? `${startSection.sectionId.replace(':1', '')}:c${(sectionConnectorCounts.get(startSection.sectionId) ?? 0) + 1}`
@@ -834,13 +837,14 @@ function buildSectionBatch(
     }
 
     connectorPayloads.push(
-      buildConnectorPayload(
-        conn,
+      buildGeneratedConnectorPayload(
         connectorId,
-        shapeIdMap,
+        startObjectId,
+        endObjectId,
+        startPlacement,
+        endPlacement,
         sameSection ? startSection.sectionId : undefined,
         sameSection ? startSection.bounds : undefined,
-        placementByShapeId,
       ),
     );
   }
@@ -916,7 +920,7 @@ export async function applyMermaidSubgraphSections(
     return;
   }
 
-  const { batch, deleteIds } = buildSectionBatch(boardNodes, plans);
+  const { batch, deleteIds } = buildSectionBatch(boardNodes, plans, parsed.nodeLabels, parsed.edges);
   await batchDeleteNodes(client, whiteboardId, deleteIds);
   await createBoardNodes(client, whiteboardId, batch);
 
