@@ -1,4 +1,4 @@
-import type { Binding, BotSettings, FeishuCredentials, FeishuUserPermission, SyncLogEntry } from '@feishu-md/shared';
+import type { Binding, BotSettings, CommentImportLogEntry, FeishuCredentials, FeishuUserPermission, SyncLogEntry } from '@feishu-md/shared';
 import { apiFetch } from './api';
 
 export interface SettingsResponse {
@@ -96,6 +96,42 @@ export async function triggerSyncAndWait(id: string, fullResync = false) {
 export function fetchSyncLogs(bindingId?: string) {
   const query = bindingId ? `?bindingId=${encodeURIComponent(bindingId)}` : '';
   return apiFetch<SyncLogEntry[]>(`/api/sync-logs${query}`);
+}
+
+export function triggerCommentImport(id: string) {
+  return apiFetch<{ ok: boolean; logId: string }>(`/api/bindings/${id}/import-comments`, {
+    method: 'POST',
+    body: JSON.stringify({ trigger: 'manual' }),
+  });
+}
+
+export function fetchCommentImportLog(id: string) {
+  return apiFetch<CommentImportLogEntry>(`/api/comment-import-logs/${id}`);
+}
+
+export async function waitForCommentImportLog(
+  logId: string,
+  timeoutMs = 300_000,
+): Promise<CommentImportLogEntry> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const log = await fetchCommentImportLog(logId);
+    if (log.status === 'success' || log.status === 'failed') {
+      return log;
+    }
+    await sleep(1000);
+  }
+  throw new Error('评论导入等待超时，请到日志查看详情');
+}
+
+export async function triggerCommentImportAndWait(id: string) {
+  const { logId } = await triggerCommentImport(id);
+  return waitForCommentImportLog(logId);
+}
+
+export function fetchCommentImportLogs(bindingId?: string) {
+  const query = bindingId ? `?bindingId=${encodeURIComponent(bindingId)}` : '';
+  return apiFetch<CommentImportLogEntry[]>(`/api/comment-import-logs${query}`);
 }
 
 export function exportDocumentToMarkdown(documentUrl: string) {

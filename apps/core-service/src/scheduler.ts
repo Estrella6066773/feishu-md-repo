@@ -3,6 +3,7 @@ import { listBindings } from '@feishu-md/db';
 import type { SyncTriggerType } from '@feishu-md/shared';
 import { normalizeBindingTriggers } from '@feishu-md/shared';
 import type { SyncCoordinator } from './sync-coordinator.js';
+import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 
 export class SyncQueue {
   private running = false;
@@ -32,11 +33,19 @@ export class SyncQueue {
 export class Scheduler {
   private timers = new Map<string, ReturnType<typeof setInterval>>();
 
-  start(db: DbClient, syncCoordinator: SyncCoordinator): void {
-    void this.refresh(db, syncCoordinator);
+  start(
+    db: DbClient,
+    syncCoordinator: SyncCoordinator,
+    commentImportCoordinator: CommentImportCoordinator,
+  ): void {
+    void this.refresh(db, syncCoordinator, commentImportCoordinator);
   }
 
-  async refresh(db: DbClient, syncCoordinator: SyncCoordinator): Promise<void> {
+  async refresh(
+    db: DbClient,
+    syncCoordinator: SyncCoordinator,
+    commentImportCoordinator: CommentImportCoordinator,
+  ): Promise<void> {
     this.stopAll();
     const bindings = await listBindings(db);
     for (const binding of bindings) {
@@ -45,6 +54,9 @@ export class Scheduler {
       const timer = setInterval(
         () => {
           syncCoordinator.enqueueBindingSync(binding.id, 'schedule');
+          if (triggers.commentImportOnSchedule) {
+            commentImportCoordinator.enqueueCommentImport(binding.id, 'schedule');
+          }
         },
         triggers.scheduleMinutes * 60 * 1000,
       );

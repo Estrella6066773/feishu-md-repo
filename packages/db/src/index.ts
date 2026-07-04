@@ -13,6 +13,7 @@ import type {
   BindingTriggers,
   NodeMapping,
   SyncLogEntry,
+  CommentImportLogEntry,
   WorkspaceOptions,
   RepositoryOptions,
   BotSettings,
@@ -392,6 +393,124 @@ export async function setFeishuUserPermissions(
   permissions: FeishuUserPermission[],
 ): Promise<void> {
   await setAppSetting(db, 'feishu_user_permissions', permissions);
+}
+
+export async function listCommentImportLogs(
+  db: DbClient,
+  bindingId?: string,
+): Promise<CommentImportLogEntry[]> {
+  const query = db.select().from(schema.commentImportLogs).orderBy(schema.commentImportLogs.startedAt);
+  const rows = bindingId
+    ? await query.where(eq(schema.commentImportLogs.bindingId, bindingId))
+    : await query;
+
+  return rows.map((row) => ({
+    id: row.id,
+    bindingId: row.bindingId,
+    trigger: row.trigger,
+    status: row.status,
+    message: row.message ?? undefined,
+    documentCount: row.documentCount ?? undefined,
+    commentCount: row.commentCount ?? undefined,
+    replyCount: row.replyCount ?? undefined,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt ?? undefined,
+  }));
+}
+
+export async function getCommentImportLog(
+  db: DbClient,
+  id: string,
+): Promise<CommentImportLogEntry | null> {
+  const rows = await db
+    .select()
+    .from(schema.commentImportLogs)
+    .where(eq(schema.commentImportLogs.id, id))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    bindingId: row.bindingId,
+    trigger: row.trigger,
+    status: row.status,
+    message: row.message ?? undefined,
+    documentCount: row.documentCount ?? undefined,
+    commentCount: row.commentCount ?? undefined,
+    replyCount: row.replyCount ?? undefined,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt ?? undefined,
+  };
+}
+
+export async function insertCommentImportLog(
+  db: DbClient,
+  entry: CommentImportLogEntry,
+): Promise<void> {
+  await db.insert(schema.commentImportLogs).values({
+    id: entry.id,
+    bindingId: entry.bindingId,
+    trigger: entry.trigger,
+    status: entry.status,
+    message: entry.message,
+    documentCount: entry.documentCount,
+    commentCount: entry.commentCount,
+    replyCount: entry.replyCount,
+    startedAt: entry.startedAt,
+    finishedAt: entry.finishedAt,
+  });
+}
+
+export async function updateCommentImportLog(
+  db: DbClient,
+  entry: CommentImportLogEntry,
+): Promise<void> {
+  await db
+    .update(schema.commentImportLogs)
+    .set({
+      status: entry.status,
+      message: entry.message,
+      documentCount: entry.documentCount,
+      commentCount: entry.commentCount,
+      replyCount: entry.replyCount,
+      finishedAt: entry.finishedAt,
+    })
+    .where(eq(schema.commentImportLogs.id, entry.id));
+}
+
+/** 启动时兜底：将历史未完成评论导入日志统一标记失败 */
+export async function failUnfinishedCommentImportLogs(
+  db: DbClient,
+  message = '服务重启，未完成任务已放弃',
+): Promise<number> {
+  const runningRows = await db
+    .select({
+      id: schema.commentImportLogs.id,
+      bindingId: schema.commentImportLogs.bindingId,
+      trigger: schema.commentImportLogs.trigger,
+      startedAt: schema.commentImportLogs.startedAt,
+    })
+    .from(schema.commentImportLogs)
+    .where(
+      or(
+        eq(schema.commentImportLogs.status, 'pending'),
+        eq(schema.commentImportLogs.status, 'running'),
+      ),
+    );
+
+  const finishedAt = new Date().toISOString();
+  for (const row of runningRows) {
+    await db
+      .update(schema.commentImportLogs)
+      .set({
+        status: 'failed',
+        message,
+        finishedAt,
+      })
+      .where(eq(schema.commentImportLogs.id, row.id));
+  }
+  return runningRows.length;
 }
 
 export { schema };

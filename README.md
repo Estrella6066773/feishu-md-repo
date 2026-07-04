@@ -84,6 +84,7 @@ pnpm dev:desktop
 | 新版文档读写 | `docx:document` |
 | Markdown 转换（官方 convert 接口） | `docx:document` |
 | 文档内图片上传 | `docs:document.media:upload` |
+| 文档评论读取（导入到本地） | `docs:document.comment:read` 或 `docs:doc:readonly` |
 | 画板节点（同步文档总览思维导图） | `board:whiteboard:node:read`、`board:whiteboard:node:create`、`board:whiteboard:node:delete` |
 | 机器人消息 | `im:message` |
 | 接收消息事件 | 订阅 `im.message.receive_v1`，订阅方式选 **长连接** |
@@ -101,7 +102,8 @@ pnpm dev:desktop
 - 节点映射持久化（避免重复创建）
 - **同步文档总览**：每次同步在飞书根级创建/更新「同步文档总览」文档，内含画板思维导图，展示当前已同步的文档树结构
 - **同步播报**：向配置的群/用户推送成功/失败消息（主消息摘要 + 话题内 commit 与文件详情，见下文）
-- **飞书指令**：长连接监听 `同步` / `status` 等指令并触发同步
+- **飞书指令**：长连接监听 `同步` / `status` / `导入评论` 等指令
+- **评论导入**：从飞书拉取已同步文档的全部评论（含回复、划词引用、表情），写入仓库 `.feishu/comments/`；支持定时检查联动与面板手动触发
 
 ## 数据目录
 

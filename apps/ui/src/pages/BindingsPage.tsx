@@ -27,6 +27,7 @@ import {
   fetchSettings,
   fetchSyncLogs,
   triggerSyncAndWait,
+  triggerCommentImportAndWait,
   updateBinding,
 } from '@/lib/queries';
 
@@ -52,6 +53,7 @@ export function BindingsPage() {
     message: string;
   } | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [importingCommentsId, setImportingCommentsId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   const createMutation = useMutation({
@@ -110,6 +112,34 @@ export function BindingsPage() {
         tone: 'danger',
         title: '同步失败',
         message: error instanceof Error ? error.message : '触发同步失败',
+      });
+    },
+  });
+
+  const commentImportMutation = useMutation({
+    mutationFn: (id: string) => triggerCommentImportAndWait(id),
+    onMutate: (id) => setImportingCommentsId(id),
+    onSettled: () => setImportingCommentsId(null),
+    onSuccess: (log) => {
+      if (log.status === 'failed') {
+        setSyncNotice({
+          tone: 'danger',
+          title: '评论导入失败',
+          message: log.message ?? '未知错误',
+        });
+      } else {
+        setSyncNotice({
+          tone: 'success',
+          title: '评论导入成功',
+          message: log.message ?? '已完成',
+        });
+      }
+    },
+    onError: (error) => {
+      setSyncNotice({
+        tone: 'danger',
+        title: '评论导入失败',
+        message: error instanceof Error ? error.message : '触发评论导入失败',
       });
     },
   });
@@ -227,7 +257,7 @@ export function BindingsPage() {
                   <div className="binding-meta">
                     分支 {binding.branch}
                     {binding.triggers.scheduleEnabled
-                      ? ` · 每 ${binding.triggers.scheduleMinutes} 分钟检查`
+                      ? ` · 每 ${binding.triggers.scheduleMinutes} 分钟检查${binding.triggers.commentImportOnSchedule ? '（含评论导入）' : ''}`
                       : binding.sourceType === 'local'
                         ? ' · 提交时同步'
                         : ' · 未启用定时检查'}
@@ -261,6 +291,17 @@ export function BindingsPage() {
                     onClick={() => syncMutation.mutate({ id: binding.id })}
                   >
                     {syncingId === binding.id ? '同步中…' : '立即同步'}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={
+                      (commentImportMutation.isPending && importingCommentsId === binding.id)
+                      || (syncMutation.isPending && syncingId === binding.id)
+                    }
+                    onClick={() => commentImportMutation.mutate(binding.id)}
+                  >
+                    {importingCommentsId === binding.id ? '导入中…' : '导入评论'}
                   </Button>
                   <Button
                     variant="secondary"
@@ -324,6 +365,7 @@ function BindingForm(props: {
   const [hasExplicitBindingTargets, setHasExplicitBindingTargets] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleMinutes, setScheduleMinutes] = useState(DEFAULT_SCHEDULE_MINUTES);
+  const [commentImportOnSchedule, setCommentImportOnSchedule] = useState(false);
 
   useEffect(() => {
     const binding = props.initial;
@@ -346,6 +388,7 @@ function BindingForm(props: {
       setBindingTargets(explicitTargets ?? []);
       setScheduleEnabled(binding.triggers.scheduleEnabled);
       setScheduleMinutes(binding.triggers.scheduleMinutes);
+      setCommentImportOnSchedule(binding.triggers.commentImportOnSchedule ?? binding.triggers.scheduleEnabled);
     } else {
       setName('');
       setSourceType('local');
@@ -365,6 +408,7 @@ function BindingForm(props: {
       const defaults = defaultTriggersForSourceType('local');
       setScheduleEnabled(defaults.scheduleEnabled);
       setScheduleMinutes(defaults.scheduleMinutes);
+      setCommentImportOnSchedule(defaults.scheduleEnabled);
     }
   }, [props.initial, props.mode]);
 
@@ -384,6 +428,7 @@ function BindingForm(props: {
       onGitCommit: keepExistingCommitHook ? props.initial!.triggers.onGitCommit : defaults.onGitCommit,
       scheduleEnabled,
       scheduleMinutes: Math.max(1, Math.round(Number(scheduleMinutes) || DEFAULT_SCHEDULE_MINUTES)),
+      commentImportOnSchedule: scheduleEnabled ? commentImportOnSchedule : false,
     };
   }
 
@@ -483,6 +528,7 @@ function BindingForm(props: {
               if (next !== sourceType) {
                 const defaults = defaultTriggersForSourceType(next);
                 setScheduleEnabled(defaults.scheduleEnabled);
+                setCommentImportOnSchedule(defaults.scheduleEnabled);
                 if (!isEdit) {
                   setScheduleMinutes(defaults.scheduleMinutes);
                 }
@@ -524,6 +570,15 @@ function BindingForm(props: {
             />
             <span className="text-sm text-fg-secondary">分钟（默认 {DEFAULT_SCHEDULE_MINUTES} 分钟）</span>
           </div>
+          <label className="mt-3 flex items-center gap-2 text-sm text-fg-primary">
+            <input
+              type="checkbox"
+              checked={commentImportOnSchedule}
+              disabled={!scheduleEnabled}
+              onChange={(e) => setCommentImportOnSchedule(e.target.checked)}
+            />
+            定时检查时同时从飞书导入文档评论到 `.feishu/comments/`
+          </label>
         </Field>
 
         <Field label="本机仓库路径" className="form-grid-span-2" hint="本机 Git 仓库的绝对路径">

@@ -48,8 +48,9 @@ desktop.ini
 .vscode/*
 !.vscode/extensions.json
 
-# Drizzle Kit 本地 meta（迁移 SQL 需提交，meta 为生成物）
-packages/db/drizzle/meta/
+# Drizzle Kit 本地 meta（迁移 SQL 与 _journal.json 需提交；snapshot 为生成物）
+packages/db/drizzle/meta/*
+!packages/db/drizzle/meta/_journal.json
 
 # Cursor 本地规则（不纳入版本库）
 .cursor/

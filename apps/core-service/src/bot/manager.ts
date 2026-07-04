@@ -5,6 +5,7 @@ import { BotBroadcaster } from './broadcaster.js';
 import { BotCommandHandler } from './command-handler.js';
 import { BotWsListener } from './ws-listener.js';
 import type { SyncCoordinator } from '../sync-coordinator.js';
+import type { CommentImportCoordinator } from '../comment-import-coordinator.js';
 
 export class BotManager {
   private broadcaster: BotBroadcaster;
@@ -13,6 +14,7 @@ export class BotManager {
   constructor(
     private db: DbClient,
     private syncCoordinator: SyncCoordinator,
+    private commentImportCoordinator: CommentImportCoordinator,
   ) {
     this.broadcaster = new BotBroadcaster(db);
     this.wsListener = new BotWsListener(db);
@@ -36,7 +38,7 @@ export class BotManager {
     }
 
     const client = createFeishuClient(credentials);
-    const handler = new BotCommandHandler(this.db, client, this.syncCoordinator);
+    const handler = new BotCommandHandler(this.db, client, this.syncCoordinator, this.commentImportCoordinator);
     await this.wsListener.start(handler);
   }
 

@@ -46,6 +46,21 @@ export const syncLogs = sqliteTable('sync_logs', {
   finishedAt: text('finished_at'),
 });
 
+export const commentImportLogs = sqliteTable('comment_import_logs', {
+  id: text('id').primaryKey(),
+  bindingId: text('binding_id')
+    .notNull()
+    .references(() => bindings.id, { onDelete: 'cascade' }),
+  trigger: text('trigger', { enum: ['schedule', 'manual', 'bot'] }).notNull(),
+  status: text('status', { enum: ['pending', 'running', 'success', 'failed'] }).notNull(),
+  message: text('message'),
+  documentCount: integer('document_count'),
+  commentCount: integer('comment_count'),
+  replyCount: integer('reply_count'),
+  startedAt: text('started_at').notNull(),
+  finishedAt: text('finished_at'),
+});
+
 export const appSettings = sqliteTable('app_settings', {
   key: text('key').primaryKey(),
   valueJson: text('value_json').notNull(),

@@ -18,12 +18,14 @@ import {
   type FeishuClient,
 } from '@feishu-md/feishu';
 import type { SyncCoordinator } from '../sync-coordinator.js';
+import type { CommentImportCoordinator } from '../comment-import-coordinator.js';
 
 export class BotCommandHandler {
   constructor(
     private db: DbClient,
     private client: FeishuClient,
     private syncCoordinator: SyncCoordinator,
+    private commentImportCoordinator: CommentImportCoordinator,
   ) {}
 
   async handleIncomingMessage(data: {
@@ -134,6 +136,10 @@ export class BotCommandHandler {
         return command.fullResync
           ? `已收到：开始全库重建「${command.bindingName}」…`
           : `已收到：开始同步「${command.bindingName}」…`;
+      case 'import_comments_all':
+        return '已收到：开始导入全部绑定评论…';
+      case 'import_comments_binding':
+        return `已收到：开始导入「${command.bindingName}」评论…`;
       default:
         return '已收到指令';
     }
@@ -154,6 +160,12 @@ export class BotCommandHandler {
         return;
       case 'sync_binding':
         await this.syncByName(command.bindingName, command.fullResync ?? false, role, managerBindingIds);
+        return;
+      case 'import_comments_all':
+        await this.importCommentsAll(settings, role, managerBindingIds);
+        return;
+      case 'import_comments_binding':
+        await this.importCommentsByName(command.bindingName, role, managerBindingIds);
         return;
     }
   }
@@ -206,6 +218,43 @@ export class BotCommandHandler {
     }
     this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync);
   }
+
+  private async importCommentsAll(
+    settings: BotSettings,
+    role: EffectiveFeishuRole,
+    managerBindingIds?: string[],
+  ): Promise<void> {
+    const bindings = await listBindings(this.db);
+    let targets = filterBindingsForRole(bindings, role, managerBindingIds);
+
+    if (role === 'admin' && settings.defaultBindingId) {
+      targets = targets.filter((item) => item.id === settings.defaultBindingId);
+    }
+
+    if (targets.length === 0) {
+      throw new Error('没有你可导入评论的绑定');
+    }
+
+    for (const binding of targets) {
+      this.commentImportCoordinator.enqueueCommentImport(binding.id, 'bot');
+    }
+  }
+
+  private async importCommentsByName(
+    name: string,
+    role: EffectiveFeishuRole,
+    managerBindingIds?: string[],
+  ): Promise<void> {
+    const bindings = await listBindings(this.db);
+    const binding = bindings.find((item) => item.name === name);
+    if (!binding) {
+      throw new Error(`未找到绑定「${name}」`);
+    }
+    if (!canAccessBinding(binding, role, managerBindingIds)) {
+      throw new Error(`你没有权限为绑定「${name}」导入评论`);
+    }
+    this.commentImportCoordinator.enqueueCommentImport(binding.id, 'bot');
+  }
 }
 
 function buildHelpText(role: EffectiveFeishuRole): string {
@@ -213,6 +262,8 @@ function buildHelpText(role: EffectiveFeishuRole): string {
     'Feishu MD Repo 指令：',
     '• 同步 / sync — 触发同步',
     '• 同步 <绑定名> — 同步指定绑定',
+    '• 导入评论 / import-comments — 从飞书拉取评论到本地',
+    '• 导入评论 <绑定名> — 为指定绑定导入评论',
     '• 状态 / status — 查看绑定状态',
     '• 帮助 / help — 显示本说明',
   ];

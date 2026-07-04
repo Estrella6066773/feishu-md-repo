@@ -7,9 +7,11 @@ import {
   getAppSettings,
   getBinding,
   getBotSettings,
+  getCommentImportLog,
   getFeishuUserPermissions,
   insertBinding,
   listBindings,
+  listCommentImportLogs,
   listSyncLogs,
   getSyncLog,
   setBotSettings,
@@ -17,7 +19,14 @@ import {
   setFeishuUserPermissions,
   updateBinding,
 } from '@feishu-md/db';
-import type { Binding, BotSettings, FeishuCredentials, FeishuUserPermission, SyncRequest } from '@feishu-md/shared';
+import type {
+  Binding,
+  BotSettings,
+  CommentImportRequest,
+  FeishuCredentials,
+  FeishuUserPermission,
+  SyncRequest,
+} from '@feishu-md/shared';
 import {
   defaultOptionsForMode,
   defaultTriggersForSourceType,
@@ -27,6 +36,7 @@ import {
 import { installLocalHook, removeLocalHook } from '@feishu-md/git';
 import { createFeishuClient, exportDocumentToMarkdown, formatExportError } from '@feishu-md/feishu';
 import type { Scheduler, SyncQueue } from './scheduler.js';
+import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
 import type { BotManager } from './bot/manager.js';
 import type { ServiceConfig } from './config.js';
@@ -52,7 +62,7 @@ function applyLocalGitHook(binding: Binding, coreServiceUrl: string, previous?: 
 }
 
 /** 递增此版本号以提示 UI 重启 core-service（旧进程可能缺少新路由） */
-export const CORE_API_VERSION = 2;
+export const CORE_API_VERSION = 3;
 
 export const CORE_API_FEATURES = [
   'settings-feishu',
@@ -61,6 +71,8 @@ export const CORE_API_FEATURES = [
   'bindings-crud',
   'sync-log-detail',
   'export-markdown',
+  'import-comments',
+  'comment-import-log-detail',
 ] as const;
 
 export function createApp(options: {
@@ -69,10 +81,11 @@ export function createApp(options: {
   queue: SyncQueue;
   scheduler: Scheduler;
   syncCoordinator: SyncCoordinator;
+  commentImportCoordinator: CommentImportCoordinator;
   botManager: BotManager;
 }) {
   const app = new Hono();
-  const { db, config, scheduler, syncCoordinator, botManager } = options;
+  const { db, config, scheduler, syncCoordinator, commentImportCoordinator, botManager } = options;
 
   app.use(
     '*',
@@ -190,7 +203,7 @@ export function createApp(options: {
     await insertBinding(db, binding);
     applyLocalGitHook(binding, getPublicBaseUrl(config));
 
-    await scheduler.refresh(db, syncCoordinator);
+    await scheduler.refresh(db, syncCoordinator, commentImportCoordinator);
     return c.json(binding, 201);
   });
 
@@ -213,7 +226,7 @@ export function createApp(options: {
     await updateBinding(db, updated);
     applyLocalGitHook(updated, getPublicBaseUrl(config), existing);
 
-    await scheduler.refresh(db, syncCoordinator);
+    await scheduler.refresh(db, syncCoordinator, commentImportCoordinator);
     return c.json(updated);
   });
 
@@ -223,7 +236,7 @@ export function createApp(options: {
       removeLocalHook(existing.repoPath);
     }
     await deleteBinding(db, c.req.param('id'));
-    await scheduler.refresh(db, syncCoordinator);
+    await scheduler.refresh(db, syncCoordinator, commentImportCoordinator);
     return c.json({ ok: true });
   });
 
@@ -238,6 +251,30 @@ export function createApp(options: {
       body.fullResync ?? false,
     );
     return c.json({ ok: true, queued: true, logId });
+  });
+
+  app.post('/api/bindings/:id/import-comments', async (c) => {
+    const binding = await getBinding(db, c.req.param('id'));
+    if (!binding) return c.json({ error: 'Not found' }, 404);
+
+    const body = (await c.req.json().catch(() => ({}))) as CommentImportRequest;
+    const logId = commentImportCoordinator.enqueueCommentImport(
+      binding.id,
+      body.trigger ?? 'manual',
+    );
+    return c.json({ ok: true, queued: true, logId });
+  });
+
+  app.get('/api/comment-import-logs/:id', async (c) => {
+    const log = await getCommentImportLog(db, c.req.param('id'));
+    if (!log) return c.json({ error: 'Not found' }, 404);
+    return c.json(log);
+  });
+
+  app.get('/api/comment-import-logs', async (c) => {
+    const bindingId = c.req.query('bindingId');
+    const logs = await listCommentImportLogs(db, bindingId ?? undefined);
+    return c.json(logs.slice(-100).reverse());
   });
 
   app.get('/api/sync-logs/:id', async (c) => {

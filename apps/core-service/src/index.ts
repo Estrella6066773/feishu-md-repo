@@ -1,9 +1,10 @@
 import { serve } from '@hono/node-server';
-import { createDb, failUnfinishedSyncLogs } from '@feishu-md/db';
+import { createDb, failUnfinishedCommentImportLogs, failUnfinishedSyncLogs } from '@feishu-md/db';
 import { loadConfig } from './config.js';
 import { createApp } from './app.js';
 import { Scheduler, SyncQueue } from './scheduler.js';
 import { SyncCoordinator } from './sync-coordinator.js';
+import { CommentImportCoordinator } from './comment-import-coordinator.js';
 import { BotBroadcaster } from './bot/broadcaster.js';
 import { BotManager } from './bot/manager.js';
 
@@ -13,14 +14,27 @@ const queue = new SyncQueue();
 const scheduler = new Scheduler();
 const broadcaster = new BotBroadcaster(db);
 const syncCoordinator = new SyncCoordinator(db, queue, broadcaster);
-const botManager = new BotManager(db, syncCoordinator);
+const commentImportCoordinator = new CommentImportCoordinator(db, queue);
+const botManager = new BotManager(db, syncCoordinator, commentImportCoordinator);
 
-const app = createApp({ db, config, queue, scheduler, syncCoordinator, botManager });
+const app = createApp({
+  db,
+  config,
+  queue,
+  scheduler,
+  syncCoordinator,
+  commentImportCoordinator,
+  botManager,
+});
 const abandoned = await failUnfinishedSyncLogs(db);
 if (abandoned > 0) {
   console.log(`[core-service] 已将 ${abandoned} 条未完成同步标记为失败（服务重启放弃）`);
 }
-scheduler.start(db, syncCoordinator);
+const abandonedComments = await failUnfinishedCommentImportLogs(db);
+if (abandonedComments > 0) {
+  console.log(`[core-service] 已将 ${abandonedComments} 条未完成评论导入标记为失败（服务重启放弃）`);
+}
+scheduler.start(db, syncCoordinator, commentImportCoordinator);
 await botManager.refresh();
 
 const server = serve(

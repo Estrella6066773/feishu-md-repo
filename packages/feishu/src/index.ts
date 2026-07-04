@@ -1,5 +1,5 @@
 export * from './client.js';
-export { FeishuApiError, formatFeishuErrorMessage } from './api-error.js';
+export { FeishuApiError, formatFeishuErrorMessage, assertFeishuResponse, withRateLimit } from './api-error.js';
 export { formatSyncLog, syncContextFromOptions, type SyncLogContext } from './sync-log.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';
 export { getWikiNodeByToken, type ResolvedWikiNode } from './wiki-service.js';
@@ -74,3 +74,26 @@ export {
   type DocxImagePayload,
   type DocxImageResolver,
 } from './image-service.js';
+export {
+  listAllDocumentComments,
+  type FeishuCommentRecord,
+  type FeishuCommentReplyRecord,
+  type FeishuCommentContentElement,
+} from './comment-service.js';
+export {
+  FEISHU_COMMENTS_ROOT_DIR,
+  FEISHU_COMMENTS_DOCS_SUBDIR,
+  FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
+  commentStorageFileName,
+  commentDocsDirectory,
+  commentManifestPath,
+  countCommentReplies,
+  writeDocCommentExport,
+  writeCommentImportManifest,
+  deleteDocCommentExport,
+  removeStaleDocCommentExports,
+  removeCommentImportManifest,
+  docCommentExportPath,
+  type FeishuDocCommentExport,
+  type FeishuCommentImportManifest,
+} from './comment-export.js';

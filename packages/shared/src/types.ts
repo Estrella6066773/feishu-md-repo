@@ -2,6 +2,7 @@ export type RepoSourceType = 'local' | 'cloud';
 export type SyncMode = 'workspace' | 'repository';
 export type FeishuTargetType = 'wiki' | 'drive';
 export type SyncTriggerType = 'git' | 'schedule' | 'manual' | 'bot';
+export type CommentImportTriggerType = 'schedule' | 'manual' | 'bot';
 export type ForceUpdateMode = 'manual' | 'automatic' | 'all';
 export type MissingReadmePolicy = 'skip' | 'placeholder' | 'empty_doc';
 export type FeishuNodeType = 'folder' | 'docx' | 'file';
@@ -56,6 +57,8 @@ export interface BindingTriggers {
   onGitCommit: boolean;
   scheduleEnabled: boolean;
   scheduleMinutes: number;
+  /** 定时检查时同时从飞书导入文档评论到本地 `.feishu/comments/` */
+  commentImportOnSchedule?: boolean;
 }
 
 export interface Binding {
@@ -99,6 +102,23 @@ export interface SyncLogEntry {
   message?: string;
   startedAt: string;
   finishedAt?: string;
+}
+
+export interface CommentImportLogEntry {
+  id: string;
+  bindingId: string;
+  trigger: CommentImportTriggerType;
+  status: SyncJobStatus;
+  message?: string;
+  documentCount?: number;
+  commentCount?: number;
+  replyCount?: number;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+export interface CommentImportRequest {
+  trigger?: CommentImportTriggerType;
 }
 
 export interface SyncRequest {
@@ -224,12 +244,17 @@ export function normalizeBindingTriggers(
   const defaults = defaultTriggersForSourceType(sourceType);
   const merged = { ...defaults, ...triggers };
   const minutes = Number(merged.scheduleMinutes);
+  const scheduleEnabled = Boolean(merged.scheduleEnabled);
   return {
     onGitCommit: Boolean(merged.onGitCommit),
-    scheduleEnabled: Boolean(merged.scheduleEnabled),
+    scheduleEnabled,
     scheduleMinutes: Number.isFinite(minutes)
       ? Math.min(MAX_SCHEDULE_MINUTES, Math.max(MIN_SCHEDULE_MINUTES, Math.round(minutes)))
       : DEFAULT_SCHEDULE_MINUTES,
+    commentImportOnSchedule:
+      merged.commentImportOnSchedule != null
+        ? Boolean(merged.commentImportOnSchedule)
+        : scheduleEnabled,
   };
 }
 
