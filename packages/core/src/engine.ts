@@ -309,89 +309,95 @@ async function executePlan(options: {
   for (const operation of operations) {
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
 
-    switch (operation.type) {
-      case 'ensure_folder': {
-        const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
-        if (existing && (await adapter.nodeExists(mappingToNodeRef(existing)))) {
-          break;
-        }
+    try {
+      switch (operation.type) {
+        case 'ensure_folder': {
+          const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
+          if (existing && (await adapter.nodeExists(mappingToNodeRef(existing)))) {
+            break;
+          }
 
-        const folder = await adapter.ensureFolder(
-          operation.gitPath,
-          parentToken,
-          operation.title ?? operation.gitPath,
-        );
+          const folder = await adapter.ensureFolder(
+            operation.gitPath,
+            parentToken,
+            operation.title ?? operation.gitPath,
+          );
 
-        await upsertNodeMapping(db, {
-          id: existing?.id ?? randomUUID(),
-          bindingId: binding.id,
-          gitPath: operation.gitPath,
-          feishuTargetType: resolved.target.type,
-          feishuNodeToken: folder.nodeToken ?? folder.token,
-          feishuDocToken: folder.docToken,
-          feishuNodeType: 'folder',
-          feishuParentToken: parentToken,
-        });
-        count += 1;
-        break;
-      }
-      case 'update_doc':
-      case 'ensure_doc': {
-        const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
-        const existingRef = existing ? mappingToNodeRef(existing) : undefined;
-        const remoteExists = existingRef ? await adapter.nodeExists(existingRef) : false;
-        const contentNeverSynced = !existing?.contentSha;
-
-        if (gapFillOnly && remoteExists && !contentNeverSynced) {
-          break;
-        }
-
-        const useConfiguredRootDoc =
-          operation.gitPath === '' && rootDocumentRef != null && existingRef == null;
-        const doc = useConfiguredRootDoc
-          ? rootDocumentRef
-          : await adapter.ensureDocument(
-              operation.gitPath,
-              parentToken,
-              operation.title ?? operation.gitPath,
-              remoteExists ? existingRef : undefined,
-            );
-
-        const docToken = doc.docToken ?? doc.token;
-        const sourcePath = operation.sourcePath ?? operation.gitPath;
-        const shouldWriteContent = !gapFillOnly || !remoteExists || contentNeverSynced;
-        let contentMarkdown = operation.contentMarkdown;
-
-        if (shouldWriteContent && !contentMarkdown) {
-          contentMarkdown = (await readMarkdown(sourcePath)) ?? undefined;
-        }
-
-        if (shouldWriteContent && contentMarkdown) {
-          pendingDocUpdates.push({
+          await upsertNodeMapping(db, {
+            id: existing?.id ?? randomUUID(),
+            bindingId: binding.id,
             gitPath: operation.gitPath,
-            sourcePath,
-            docToken,
-            markdown: contentMarkdown,
-            previousContentSha: gapFillOnly ? undefined : existing?.contentSha,
-            forceWrite: operation.forceWrite || (gapFillOnly && (!remoteExists || contentNeverSynced)),
+            feishuTargetType: resolved.target.type,
+            feishuNodeToken: folder.nodeToken ?? folder.token,
+            feishuDocToken: folder.docToken,
+            feishuNodeType: 'folder',
+            feishuParentToken: parentToken,
           });
+          count += 1;
+          break;
         }
+        case 'update_doc':
+        case 'ensure_doc': {
+          const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
+          const existingRef = existing ? mappingToNodeRef(existing) : undefined;
+          const remoteExists = existingRef ? await adapter.nodeExists(existingRef) : false;
+          const contentNeverSynced = !existing?.contentSha;
 
-        await upsertNodeMapping(db, {
-          id: existing?.id ?? randomUUID(),
-          bindingId: binding.id,
-          gitPath: operation.gitPath,
-          feishuTargetType: resolved.target.type,
-          feishuNodeToken: doc.nodeToken ?? doc.token,
-          feishuDocToken: docToken,
-          feishuNodeType: 'docx',
-          feishuParentToken: parentToken,
-        });
-        count += 1;
-        break;
+          if (gapFillOnly && remoteExists && !contentNeverSynced) {
+            break;
+          }
+
+          const useConfiguredRootDoc =
+            operation.gitPath === '' && rootDocumentRef != null && existingRef == null;
+          const doc = useConfiguredRootDoc
+            ? rootDocumentRef
+            : await adapter.ensureDocument(
+                operation.gitPath,
+                parentToken,
+                operation.title ?? operation.gitPath,
+                remoteExists ? existingRef : undefined,
+              );
+
+          const docToken = doc.docToken ?? doc.token;
+          const sourcePath = operation.sourcePath ?? operation.gitPath;
+          const shouldWriteContent = !gapFillOnly || !remoteExists || contentNeverSynced;
+          let contentMarkdown = operation.contentMarkdown;
+
+          if (shouldWriteContent && !contentMarkdown) {
+            contentMarkdown = (await readMarkdown(sourcePath)) ?? undefined;
+          }
+
+          if (shouldWriteContent && contentMarkdown) {
+            pendingDocUpdates.push({
+              gitPath: operation.gitPath,
+              sourcePath,
+              docToken,
+              markdown: contentMarkdown,
+              previousContentSha: gapFillOnly ? undefined : existing?.contentSha,
+              forceWrite: operation.forceWrite || (gapFillOnly && (!remoteExists || contentNeverSynced)),
+            });
+          }
+
+          await upsertNodeMapping(db, {
+            id: existing?.id ?? randomUUID(),
+            bindingId: binding.id,
+            gitPath: operation.gitPath,
+            feishuTargetType: resolved.target.type,
+            feishuNodeToken: doc.nodeToken ?? doc.token,
+            feishuDocToken: docToken,
+            feishuNodeType: 'docx',
+            feishuParentToken: parentToken,
+          });
+          count += 1;
+          break;
+        }
+        default:
+          break;
       }
-      default:
-        break;
+    } catch (error) {
+      const detail = formatFeishuErrorMessage(error);
+      const gitPath = operation.gitPath || '(根)';
+      throw new Error(`同步失败 file=${gitPath} operation=${operation.type}: ${detail}`, { cause: error });
     }
   }
 
@@ -420,9 +426,15 @@ async function executePlan(options: {
         readBinaryFile,
       );
       if (pending.forceWrite || pending.previousContentSha !== rewrittenSha) {
-        await adapter.updateDocumentContent(pending.docToken, rewritten, {
-          resolveImage: createMarkdownImageResolver(pending.sourcePath, readBinaryFile),
-        });
+        try {
+          await adapter.updateDocumentContent(pending.docToken, rewritten, {
+            sourcePath: pending.sourcePath,
+            resolveImage: createMarkdownImageResolver(pending.sourcePath, readBinaryFile),
+          });
+        } catch (error) {
+          const detail = formatFeishuErrorMessage(error);
+          throw new Error(`同步文档失败 file=${pending.gitPath}: ${detail}`, { cause: error });
+        }
 
         const latest = await getNodeMappingByGitPath(db, binding.id, pending.gitPath);
         if (latest) {
@@ -526,7 +538,7 @@ function mappingToNodeRef(mapping: Awaited<ReturnType<typeof getNodeMappingByGit
 }
 
 /** 正文哈希叠加本地图片 blob；含版本号以便图片上传逻辑变更后触发重同步 */
-const DOCUMENT_SYNC_HASH_VERSION = 'image-sync-v11';
+const DOCUMENT_SYNC_HASH_VERSION = 'image-sync-v12';
 
 async function hashDocumentSyncContent(
   markdown: string,

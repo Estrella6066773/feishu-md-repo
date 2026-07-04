@@ -42,6 +42,9 @@ const SECTION_MIN_WIDTH = 220;
 const SECTION_MIN_HEIGHT = 160;
 const LAYOUT_GRID_SIZE = 8;
 const SECTION_GAP_X = 180;
+const SECTION_GAP_Y = 120;
+const LAYOUT_ASPECT_WIDTH = 16;
+const LAYOUT_ASPECT_HEIGHT = 9;
 const BLOCK_GAP_X = 240;
 const BLOCK_GAP_Y = 120;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
@@ -608,84 +611,236 @@ function computeNodeRanks(
   return ranks;
 }
 
+function computePlanDimensions(plan: SectionBuildPlan): { width: number; height: number } {
+  const columns = new Map<number, BoardNodeRecord[]>();
+  plan.memberShapes.forEach((shape, index) => {
+    const memberId = plan.memberIds[index]!;
+    const rank = plan.ranks.get(memberId) ?? 0;
+    const column = columns.get(rank) ?? [];
+    column.push(shape);
+    columns.set(rank, column);
+  });
+
+  const sortedRanks = [...columns.keys()].sort((left, right) => left - right);
+  const maxRows = Math.max(1, ...[...columns.values()].map((column) => column.length));
+  const maxBlockWidth = Math.max(
+    120,
+    ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
+  );
+  const maxBlockHeight = Math.max(
+    56,
+    ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
+  );
+
+  const contentWidth =
+    sortedRanks.length <= 1
+      ? maxBlockWidth
+      : (sortedRanks.length - 1) * BLOCK_GAP_X + maxBlockWidth;
+  const contentHeight =
+    maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
+
+  return {
+    width: snapCeil(Math.max(SECTION_MIN_WIDTH, SECTION_PADDING * 2 + contentWidth)),
+    height: snapCeil(
+      Math.max(
+        SECTION_MIN_HEIGHT,
+        SECTION_TITLE_HEIGHT + SECTION_PADDING * 2 + contentHeight,
+      ),
+    ),
+  };
+}
+
+function computeTargetRowWidth(plans: SectionBuildPlan[]): number {
+  const totalArea = plans.reduce((sum, plan) => sum + plan.bounds.width * plan.bounds.height, 0);
+  const aspect = LAYOUT_ASPECT_WIDTH / LAYOUT_ASPECT_HEIGHT;
+  return Math.sqrt(totalArea * aspect);
+}
+
+function rowWidthForRange(plans: SectionBuildPlan[], start: number, end: number): number {
+  let width = 0;
+  for (let index = start; index <= end; index += 1) {
+    if (index > start) width += SECTION_GAP_X;
+    width += plans[index]!.bounds.width;
+  }
+  return width;
+}
+
+function rowHeightForRange(plans: SectionBuildPlan[], start: number, end: number): number {
+  let height = 0;
+  for (let index = start; index <= end; index += 1) {
+    height = Math.max(height, plans[index]!.bounds.height);
+  }
+  return height;
+}
+
+function partitionPlansIntoRows(plans: SectionBuildPlan[], targetRowWidth: number): SectionBuildPlan[][] {
+  if (plans.length === 0) return [];
+  if (plans.length === 1) return [plans];
+
+  const count = plans.length;
+  const dp = Array.from({ length: count + 1 }, () => Number.POSITIVE_INFINITY);
+  const breakAt = Array.from({ length: count + 1 }, () => 0);
+  dp[0] = 0;
+
+  for (let end = 1; end <= count; end += 1) {
+    for (let start = 0; start < end; start += 1) {
+      const width = rowWidthForRange(plans, start, end - 1);
+      const height = rowHeightForRange(plans, start, end - 1);
+      const widthPenalty = (width - targetRowWidth) ** 2;
+      const cost = dp[start]! + widthPenalty + width * height;
+      if (cost < dp[end]!) {
+        dp[end] = cost;
+        breakAt[end] = start;
+      }
+    }
+  }
+
+  const rows: SectionBuildPlan[][] = [];
+  let end = count;
+  while (end > 0) {
+    const start = breakAt[end]!;
+    rows.unshift(plans.slice(start, end));
+    end = start;
+  }
+  return rows;
+}
+
+function placeSiblingSectionGroup(
+  plans: SectionBuildPlan[],
+  originX: number,
+  originY: number,
+): void {
+  if (plans.length === 0) return;
+
+  const targetRowWidth = computeTargetRowWidth(plans);
+  const rows = partitionPlansIntoRows(plans, targetRowWidth);
+  let cursorY = originY;
+
+  for (const row of rows) {
+    const rowHeight = Math.max(...row.map((plan) => plan.bounds.height));
+    let cursorX = originX;
+
+    for (const plan of row) {
+      plan.bounds = {
+        ...plan.bounds,
+        x: snapCeil(cursorX),
+        y: snapCeil(cursorY + Math.max(0, (rowHeight - plan.bounds.height) / 2)),
+      };
+      cursorX += plan.bounds.width + SECTION_GAP_X;
+    }
+
+    cursorY += rowHeight + SECTION_GAP_Y;
+  }
+}
+
+function layoutPlanInternalBlocks(
+  plan: SectionBuildPlan,
+  placementByShapeId: Map<string, BlockPlacement>,
+): void {
+  const columns = new Map<number, BoardNodeRecord[]>();
+  plan.memberShapes.forEach((shape, index) => {
+    const memberId = plan.memberIds[index]!;
+    const rank = plan.ranks.get(memberId) ?? 0;
+    const column = columns.get(rank) ?? [];
+    column.push(shape);
+    columns.set(rank, column);
+  });
+
+  const sortedRanks = [...columns.keys()].sort((left, right) => left - right);
+  const maxRows = Math.max(1, ...[...columns.values()].map((column) => column.length));
+  const maxBlockWidth = Math.max(
+    120,
+    ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
+  );
+  const maxBlockHeight = Math.max(
+    56,
+    ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
+  );
+  const contentWidth =
+    sortedRanks.length <= 1
+      ? maxBlockWidth
+      : (sortedRanks.length - 1) * BLOCK_GAP_X + maxBlockWidth;
+  const contentHeight =
+    maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
+
+  for (const rank of sortedRanks) {
+    const column = columns.get(rank) ?? [];
+    const columnHeight =
+      column.length <= 1
+        ? maxBlockHeight
+        : (column.length - 1) * BLOCK_GAP_Y + maxBlockHeight;
+    const startY =
+      plan.bounds.y +
+      SECTION_TITLE_HEIGHT +
+      SECTION_PADDING +
+      Math.max(0, (contentHeight - columnHeight) / 2);
+
+    column.forEach((shape, rowIndex) => {
+      if (!shape.id) return;
+      const x = plan.bounds.x + SECTION_PADDING + rank * BLOCK_GAP_X;
+      const y = startY + rowIndex * BLOCK_GAP_Y;
+      shape.x = snapCeil(x);
+      shape.y = snapCeil(y);
+      placementByShapeId.set(String(shape.id), {
+        x: Number(shape.x),
+        y: Number(shape.y),
+        width: Number(shape.width ?? maxBlockWidth),
+        height: Number(shape.height ?? maxBlockHeight),
+        rank,
+      });
+    });
+  }
+}
+
+function groupPlansByParentId(plans: SectionBuildPlan[]): Map<string | undefined, SectionBuildPlan[]> {
+  const groups = new Map<string | undefined, SectionBuildPlan[]>();
+  for (const plan of plans) {
+    const parentId = plan.subgraph.parentId;
+    const siblings = groups.get(parentId) ?? [];
+    siblings.push(plan);
+    groups.set(parentId, siblings);
+  }
+  return groups;
+}
+
 function applyReadableLayout(
   plans: SectionBuildPlan[],
 ): Map<string, BlockPlacement> {
   const placementByShapeId = new Map<string, BlockPlacement>();
+  if (plans.length === 0) return placementByShapeId;
+
   const allShapes = plans.flatMap((plan) => plan.memberShapes);
   const baseX = snapFloor(Math.min(...allShapes.map((shape) => Number(shape.x ?? 0))));
   const baseY = snapFloor(Math.min(...allShapes.map((shape) => Number(shape.y ?? 0))));
-  let cursorX = baseX;
 
   for (const plan of plans) {
-    const columns = new Map<number, BoardNodeRecord[]>();
-    plan.memberShapes.forEach((shape, index) => {
-      const memberId = plan.memberIds[index]!;
-      const rank = plan.ranks.get(memberId) ?? 0;
-      const column = columns.get(rank) ?? [];
-      column.push(shape);
-      columns.set(rank, column);
-    });
+    const dimensions = computePlanDimensions(plan);
+    plan.bounds = { x: 0, y: 0, ...dimensions };
+  }
 
-    const sortedRanks = [...columns.keys()].sort((left, right) => left - right);
-    const maxRows = Math.max(1, ...[...columns.values()].map((column) => column.length));
-    const maxBlockWidth = Math.max(
-      120,
-      ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
+  const groupsByParent = groupPlansByParentId(plans);
+  const planBySubgraphId = new Map(plans.map((plan) => [plan.subgraph.id, plan]));
+
+  placeSiblingSectionGroup(groupsByParent.get(undefined) ?? [], baseX, baseY);
+
+  const parentsWithChildren = [...groupsByParent.keys()]
+    .filter((parentId): parentId is string => Boolean(parentId))
+    .map((parentId) => planBySubgraphId.get(parentId))
+    .filter((plan): plan is SectionBuildPlan => Boolean(plan))
+    .sort((left, right) => left.subgraph.depth - right.subgraph.depth);
+
+  for (const parent of parentsWithChildren) {
+    const children = groupsByParent.get(parent.subgraph.id) ?? [];
+    if (children.length === 0) continue;
+    placeSiblingSectionGroup(
+      children,
+      parent.bounds.x + SECTION_PADDING,
+      parent.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING,
     );
-    const maxBlockHeight = Math.max(
-      56,
-      ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
-    );
+  }
 
-    const contentWidth =
-      sortedRanks.length <= 1
-        ? maxBlockWidth
-        : (sortedRanks.length - 1) * BLOCK_GAP_X + maxBlockWidth;
-    const contentHeight =
-      maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
-    const width = Math.max(SECTION_MIN_WIDTH, SECTION_PADDING * 2 + contentWidth);
-    const height = Math.max(
-      SECTION_MIN_HEIGHT,
-      SECTION_TITLE_HEIGHT + SECTION_PADDING * 2 + contentHeight,
-    );
-
-    plan.bounds = {
-      x: cursorX,
-      y: baseY,
-      width: snapCeil(width),
-      height: snapCeil(height),
-    };
-
-    for (const rank of sortedRanks) {
-      const column = columns.get(rank) ?? [];
-      const columnHeight =
-        column.length <= 1
-          ? maxBlockHeight
-          : (column.length - 1) * BLOCK_GAP_Y + maxBlockHeight;
-      const startY =
-        plan.bounds.y +
-        SECTION_TITLE_HEIGHT +
-        SECTION_PADDING +
-        Math.max(0, (contentHeight - columnHeight) / 2);
-
-      column.forEach((shape, rowIndex) => {
-        if (!shape.id) return;
-        const x = plan.bounds.x + SECTION_PADDING + rank * BLOCK_GAP_X;
-        const y = startY + rowIndex * BLOCK_GAP_Y;
-        shape.x = snapCeil(x);
-        shape.y = snapCeil(y);
-        placementByShapeId.set(String(shape.id), {
-          x: Number(shape.x),
-          y: Number(shape.y),
-          width: Number(shape.width ?? maxBlockWidth),
-          height: Number(shape.height ?? maxBlockHeight),
-          rank,
-        });
-      });
-    }
-
-    cursorX += plan.bounds.width + SECTION_GAP_X;
+  for (const plan of plans) {
+    layoutPlanInternalBlocks(plan, placementByShapeId);
   }
 
   expandParentSections(plans);

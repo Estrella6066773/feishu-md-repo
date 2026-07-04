@@ -12,6 +12,7 @@ import {
   type ConvertBlockLike,
 } from './docx-block-service.js';
 import { extractMarkdownImageRefs } from './markdown-images.js';
+import { formatSyncLog, type SyncLogContext } from './sync-log.js';
 
 const IMAGE_BLOCK_TYPE = 27;
 const ALLOWED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
@@ -44,7 +45,10 @@ function extractUploadFileToken(response: unknown, action: string): string {
     throw new FeishuApiError(`${action} failed: ${payload.msg ?? 'unknown error'}`, payload.code);
   }
 
-  const token = payload.data?.file_token;
+  // Lark SDK uploadAll 可能返回完整 envelope，也可能只返回 data 层 { file_token }
+  const token =
+    payload.data?.file_token
+    ?? (payload as { file_token?: string }).file_token;
   if (!token) {
     throw new FeishuApiError(`${action} returned empty file_token`);
   }
@@ -100,6 +104,7 @@ export async function uploadAndBindDocxImageBlock(
   documentId: string,
   imageBlockId: string,
   options: DocxImagePayload,
+  context?: SyncLogContext,
 ): Promise<void> {
   if (!options.data || options.data.byteLength === 0) {
     throw new FeishuApiError('Docx image payload has no binary data');
@@ -122,7 +127,7 @@ export async function uploadAndBindDocxImageBlock(
   );
   const fileToken = extractUploadFileToken(uploadResponse, 'Upload docx image media');
 
-  await replaceDocxImageToken(client, documentId, imageBlockId, fileToken);
+  await replaceDocxImageToken(client, documentId, imageBlockId, fileToken, context);
 }
 
 /** 插入 convert 块后，解析 Image Block 的真实 block_id（优先 block_id_relations） */
@@ -162,6 +167,7 @@ async function replaceDocxImageToken(
   documentId: string,
   imageBlockId: string,
   fileToken: string,
+  context?: SyncLogContext,
 ): Promise<void> {
   try {
     const patchResponse = await withRateLimit(() =>
@@ -197,7 +203,10 @@ async function replaceDocxImageToken(
     );
     assertFeishuResponse(bindResponse, 'Bind docx image block');
     if (patchError instanceof FeishuApiError) {
-      console.warn(`[sync] replace_image patch 失败，已改用 batchUpdate: ${patchError.message}`);
+      console.warn(formatSyncLog(
+        `replace_image patch 失败，已改用 batchUpdate: ${patchError.message}`,
+        context,
+      ));
     }
   }
 }
@@ -213,35 +222,39 @@ export async function bindConvertedImageBlocks(
   imageBlockIds: string[],
   markdown: string,
   resolveImage: DocxImageResolver,
+  context?: SyncLogContext,
 ): Promise<void> {
   const imageRefs = extractMarkdownImageRefs(markdown);
   if (imageRefs.length === 0) return;
   if (imageBlockIds.length === 0) {
-    console.warn('[sync] Markdown 含图片但插入后未找到 Image Block');
+    console.warn(formatSyncLog('Markdown 含图片但插入后未找到 Image Block', context));
     return;
   }
 
   if (imageBlockIds.length !== imageRefs.length) {
-    console.warn(
-      `[sync] 图片块数量(${imageBlockIds.length})与 Markdown 引用(${imageRefs.length})不一致，按顺序对齐前 ${Math.min(imageBlockIds.length, imageRefs.length)} 张`,
-    );
+    console.warn(formatSyncLog(
+      `图片块数量(${imageBlockIds.length})与 Markdown 引用(${imageRefs.length})不一致，按顺序对齐前 ${Math.min(imageBlockIds.length, imageRefs.length)} 张`,
+      context,
+    ));
   }
 
   const pairCount = Math.min(imageBlockIds.length, imageRefs.length);
   for (let i = 0; i < pairCount; i += 1) {
     const ref = imageRefs[i]!;
     const blockId = imageBlockIds[i]!;
+    const itemContext: SyncLogContext = { ...context, imageSrc: ref.src };
     try {
       const resolved = await resolveImage(ref.src, ref.alt);
       if (!resolved) {
-        console.warn(`[sync] 图片无法解析，保留空图片块: ${ref.src}`);
+        console.warn(formatSyncLog('图片无法解析，保留空图片块', itemContext));
         continue;
       }
-      await uploadAndBindDocxImageBlock(client, documentId, blockId, resolved);
+      await uploadAndBindDocxImageBlock(client, documentId, blockId, resolved, itemContext);
     } catch (error) {
-      console.warn(
-        `[sync] 图片上传失败，保留空图片块: ${ref.src} (${formatFeishuErrorMessage(error)})`,
-      );
+      console.warn(formatSyncLog(
+        `图片上传失败，保留空图片块: ${formatFeishuErrorMessage(error)}`,
+        itemContext,
+      ));
     }
   }
 }
@@ -252,9 +265,10 @@ export async function insertDocxImageAt(
   documentId: string,
   index: number,
   options: DocxImagePayload,
+  context?: SyncLogContext,
 ): Promise<string> {
   const imageBlockId = await createEmptyImageBlockAt(client, documentId, index);
-  await uploadAndBindDocxImageBlock(client, documentId, imageBlockId, options);
+  await uploadAndBindDocxImageBlock(client, documentId, imageBlockId, options, context);
   return imageBlockId;
 }
 

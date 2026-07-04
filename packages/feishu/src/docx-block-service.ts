@@ -24,20 +24,33 @@ export interface BlockIdRelation {
 
 type BlockChildPayload = Array<Record<string, unknown>>;
 
-/** 列出文档内全部块（含 Page 与子块） */
+/** 列出文档内全部块（含 Page 与子块），自动翻页 */
 export async function listDocumentBlocks(
   client: FeishuClient,
   documentId: string,
   action = 'List docx blocks',
 ): Promise<DocxBlockListItem[]> {
-  const listResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlock.list({
-      path: { document_id: documentId },
-      params: { page_size: DOCX_PAGE_BLOCK_LIST_SIZE },
-    }),
-  );
-  assertFeishuResponse(listResponse, action);
-  return (listResponse.data?.items ?? []) as DocxBlockListItem[];
+  const items: DocxBlockListItem[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const listResponse = await withRateLimit(() =>
+      client.docx.v1.documentBlock.list({
+        path: { document_id: documentId },
+        params: {
+          page_size: DOCX_PAGE_BLOCK_LIST_SIZE,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      }),
+    );
+    assertFeishuResponse(listResponse, action);
+    items.push(...((listResponse.data?.items ?? []) as DocxBlockListItem[]));
+
+    if (!listResponse.data?.has_more) break;
+    pageToken = listResponse.data?.page_token;
+  } while (pageToken);
+
+  return items;
 }
 
 export function findDocumentPageBlock(
