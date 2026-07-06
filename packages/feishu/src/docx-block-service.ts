@@ -140,19 +140,33 @@ export function collectImageBlockIdsFromConvertBlocks(
   return imageBlockIds;
 }
 
-/** 将 descendant.create 返回的临时 ID 映射为真实 block_id */
+/**
+ * 将 descendant.create 返回的临时 ID 映射为真实 block_id。
+ * 任一临时 ID 无法映射时返回 null（避免过滤后顺序错位）。
+ */
 export function mapTemporaryBlockIdsToReal(
   temporaryIds: string[],
   relations: BlockIdRelation[],
-): string[] {
+): string[] | null {
+  if (temporaryIds.length === 0) {
+    return [];
+  }
+
   const relationMap = new Map(
     relations
       .filter((item) => item.temporary_block_id && item.block_id)
       .map((item) => [item.temporary_block_id!, item.block_id!]),
   );
-  return temporaryIds
-    .map((temporaryId) => relationMap.get(temporaryId))
-    .filter((blockId): blockId is string => Boolean(blockId));
+
+  const mapped: string[] = [];
+  for (const temporaryId of temporaryIds) {
+    const realId = relationMap.get(temporaryId);
+    if (!realId) {
+      return null;
+    }
+    mapped.push(realId);
+  }
+  return mapped;
 }
 
 export async function getChildBlockAtIndex(

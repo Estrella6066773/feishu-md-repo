@@ -32,7 +32,7 @@ export interface SyncPlanContext {
   trigger: SyncTriggerType;
   fromSha?: string;
   toSha: string;
-  /** 全库重建：对全库可同步文档强制重写正文。 */
+  /** 完全重新搭建：对全库可同步文档强制重写正文。 */
   fullResync?: boolean;
   treePaths: string[];
   changedPaths: string[];

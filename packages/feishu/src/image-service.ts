@@ -148,8 +148,15 @@ export async function resolveImageBlockIdsAfterConvertInsert(
     IMAGE_BLOCK_TYPE,
   );
   const mapped = mapTemporaryBlockIdsToReal(tempImageIds, options.blockIdRelations);
-  if (mapped.length > 0) {
+  if (mapped !== null) {
     return mapped;
+  }
+
+  if (tempImageIds.length > 0) {
+    console.warn(formatSyncLog(
+      `Image Block 临时 ID 映射不完整(${tempImageIds.length} 个)，改从文档块列表解析`,
+      { documentId },
+    ));
   }
 
   const items = await listDocumentBlocks(client, documentId, 'List docx blocks for image bind');

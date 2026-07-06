@@ -277,7 +277,7 @@ export function SettingsPage() {
             </Field>
 
             <div className="help-box">
-              支持指令：同步 / sync、同步 &lt;绑定名&gt;、全库重建、状态 / status、帮助 / help。
+              支持指令：同步 / sync、同步 &lt;绑定名&gt;、完全重新搭建、状态 / status、帮助 / help。
               需在飞书开发者后台订阅「接收消息 im.message.receive_v1」，并选择「使用长连接接收事件」；保存订阅前请确保本机 core-service 已运行。
             </div>
           </div>

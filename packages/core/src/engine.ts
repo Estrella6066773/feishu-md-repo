@@ -196,8 +196,8 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
             : '无内容变更，跳过写入'
           : fullResync
             ? overviewUpdated
-              ? `已全库重建 ${operationCount} 项，已更新同步文档总览`
-              : `已全库重建 ${operationCount} 项`
+              ? `已完全重新搭建 ${operationCount} 项，已更新同步文档总览`
+              : `已完全重新搭建 ${operationCount} 项`
             : overviewUpdated
               ? `已同步 ${operationCount} 项，已更新同步文档总览`
               : `已同步 ${operationCount} 项`,
@@ -538,7 +538,7 @@ function mappingToNodeRef(mapping: Awaited<ReturnType<typeof getNodeMappingByGit
 }
 
 /** 正文哈希叠加本地图片 blob；含版本号以便图片上传逻辑变更后触发重同步 */
-const DOCUMENT_SYNC_HASH_VERSION = 'image-sync-v12';
+const DOCUMENT_SYNC_HASH_VERSION = 'image-sync-v13';
 
 async function hashDocumentSyncContent(
   markdown: string,

@@ -100,7 +100,7 @@ export function BindingsPage() {
       } else {
         setSyncNotice({
           tone: 'success',
-          title: fullResync ? '全库重建成功' : '同步成功',
+          title: fullResync ? '完全重新搭建成功' : '同步成功',
           message: log.message ?? '已完成',
         });
       }
@@ -309,7 +309,7 @@ export function BindingsPage() {
                     disabled={syncMutation.isPending && syncingId === binding.id}
                     onClick={() => syncMutation.mutate({ id: binding.id, fullResync: true })}
                   >
-                    {syncingId === binding.id ? '重建中…' : '全库重建'}
+                    {syncingId === binding.id ? '重新搭建中…' : '完全重新搭建'}
                   </Button>
                   <Button
                     variant="danger"
@@ -472,7 +472,7 @@ function BindingForm(props: {
         title={isEdit ? `编辑绑定${props.initial ? `：${props.initial.name}` : ''}` : '新建绑定'}
         description={
           isEdit
-            ? '修改配置后保存即可；变更 Git 路径或飞书目标后，建议执行一次全库重建。'
+            ? '修改配置后保存即可；变更 Git 路径或飞书目标后，建议执行一次完全重新搭建。'
             : '填写 Git 来源与飞书同步目标，创建后可立即触发同步。'
         }
       />

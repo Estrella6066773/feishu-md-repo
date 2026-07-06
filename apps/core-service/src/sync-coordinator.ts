@@ -28,7 +28,7 @@ export class SyncCoordinator {
       bindingId,
       trigger,
       status: 'pending',
-      message: fullResync ? '全库重建排队中' : '同步排队中',
+      message: fullResync ? '完全重新搭建排队中' : '同步排队中',
       startedAt,
     });
 

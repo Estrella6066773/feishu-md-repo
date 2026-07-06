@@ -20,7 +20,7 @@ export function parseBotCommand(rawText: string): BotCommandAction | null {
     return { type: 'status' };
   }
 
-  const fullSyncMatch = normalized.match(/^(全库重建|全量同步|sync\s+--full|同步\s+--full)(?:\s+(.+))?$/i);
+  const fullSyncMatch = normalized.match(/^(完全重新搭建|全库重建|全量同步|全量重建|sync\s+--full|同步\s+--full)(?:\s+(.+))?$/i);
   if (fullSyncMatch) {
     const name = fullSyncMatch[2]?.trim();
     if (name) return { type: 'sync_binding', bindingName: name, fullResync: true };
@@ -49,7 +49,7 @@ export const BOT_HELP_TEXT = `Feishu MD Repo 指令：
 • 同步 <绑定名> — 同步指定绑定
 • 导入评论 / import-comments — 从飞书拉取评论到本地 .feishu/comments/
 • 导入评论 <绑定名> — 为指定绑定导入评论
-• 全库重建 / sync --full — 强制重写全库文档
+• 完全重新搭建 / sync --full — 强制重写全库文档
 • 状态 / status — 查看绑定与最近同步
 • 帮助 / help — 显示本说明
 

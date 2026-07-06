@@ -11,9 +11,22 @@ export interface MarkdownImageRef {
   src: string;
 }
 
+/**
+ * 屏蔽代码块与行内代码，避免其中的 `![](...)` 被当作真实图片引用。
+ * 长度不变，便于用 match.index 回指原文。
+ */
+function maskNonImageMarkdownRegions(markdown: string): string {
+  let masked = markdown;
+  masked = masked.replace(/```[\s\S]*?```/g, (match) => ' '.repeat(match.length));
+  masked = masked.replace(/`[^`\n]+`/g, (match) => ' '.repeat(match.length));
+  return masked;
+}
+
 export function extractMarkdownImageRefs(markdown: string): MarkdownImageRef[] {
+  const masked = maskNonImageMarkdownRegions(markdown);
   const refs: MarkdownImageRef[] = [];
-  for (const match of markdown.matchAll(MARKDOWN_IMAGE_RE)) {
+  MARKDOWN_IMAGE_RE.lastIndex = 0;
+  for (const match of masked.matchAll(MARKDOWN_IMAGE_RE)) {
     refs.push({
       alt: match[1] ?? '',
       src: (match[2] ?? '').trim(),
@@ -26,10 +39,12 @@ export function extractMarkdownImageRefs(markdown: string): MarkdownImageRef[] {
  * 将 Markdown 拆成普通正文与图片引用段（含图片时按段插入文档）。
  */
 export function splitMarkdownByImages(markdown: string): MarkdownImageSegment[] {
+  const masked = maskNonImageMarkdownRegions(markdown);
   const segments: MarkdownImageSegment[] = [];
   let lastIndex = 0;
 
-  for (const match of markdown.matchAll(MARKDOWN_IMAGE_RE)) {
+  MARKDOWN_IMAGE_RE.lastIndex = 0;
+  for (const match of masked.matchAll(MARKDOWN_IMAGE_RE)) {
     const matchIndex = match.index ?? 0;
     const before = markdown.slice(lastIndex, matchIndex);
     if (before) {
@@ -58,8 +73,9 @@ export function splitMarkdownByImages(markdown: string): MarkdownImageSegment[] 
 }
 
 export function markdownContainsImages(markdown: string): boolean {
+  const masked = maskNonImageMarkdownRegions(markdown);
   MARKDOWN_IMAGE_RE.lastIndex = 0;
-  return MARKDOWN_IMAGE_RE.test(markdown);
+  return MARKDOWN_IMAGE_RE.test(masked);
 }
 
 /** 无法上传图片时，用可读文本替代，避免 convert 生成无效 Image Block */
