@@ -1,18 +1,19 @@
 import { basename, dirname } from 'node:path';
 import {
   DEFAULT_WORKSPACE_OPTIONS,
+  allSyncDocExtensions,
+  isSyncableDocPath,
   matchesAnyProjectPathGlob,
+  pathEndsWithExtension,
   shouldForceUpdateForTrigger,
+  syncDocTitleFromPath,
 } from '@feishu-md/shared';
 import { markdownReferencesChangedImages } from '@feishu-md/feishu';
 import type { SyncPlan, SyncPlanContext, SyncPlanner } from './planner.js';
+import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync-content.js';
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
-}
-
-function isMarkdown(path: string, extensions: string[]): boolean {
-  return extensions.some((ext) => path.toLowerCase().endsWith(ext.toLowerCase()));
 }
 
 function collectAncestorDirs(paths: string[]): string[] {
@@ -29,8 +30,10 @@ function collectAncestorDirs(paths: string[]): string[] {
 
 export class WorkspacePlanner implements SyncPlanner {
   async buildPlan(context: SyncPlanContext): Promise<SyncPlan> {
-    const options = context.workspaceOptions ?? DEFAULT_WORKSPACE_OPTIONS;
-    const mdExtensions = options.mdExtensions;
+    const options = { ...DEFAULT_WORKSPACE_OPTIONS, ...context.workspaceOptions };
+    const docExtensions = resolveSyncDocExtensions(options);
+    const { mdExtensions, tabularExtensions } = docExtensions;
+    const allExtensions = allSyncDocExtensions(mdExtensions, tabularExtensions);
     const forceUpdateGlobs = shouldForceUpdateForTrigger(options.forceUpdateMode, context.trigger)
       ? (options.forceUpdateGlobs ?? [])
       : [];
@@ -40,24 +43,30 @@ export class WorkspacePlanner implements SyncPlanner {
     const gapFillOnly = false;
     const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
 
-    const mdPaths = normalizedTree.filter((path) => isMarkdown(path, mdExtensions));
-    const forceUpdatePaths = mdPaths.filter((path) =>
+    const docPaths = normalizedTree.filter((path) =>
+      isSyncableDocPath(path, mdExtensions, tabularExtensions),
+    );
+    const forceUpdatePaths = docPaths.filter((path) =>
       matchesAnyProjectPathGlob(path, forceUpdateGlobs),
     );
     const pathsToSync = incremental
       ? mergePaths(
-          await filterIncrementalMarkdownPaths({
-            mdPaths,
+          await filterIncrementalDocPaths({
+            docPaths,
             changedSet,
+            mdExtensions,
+            tabularExtensions,
             readMarkdown: context.readMarkdown,
           }),
           forceUpdatePaths,
         )
-      : mdPaths;
+      : docPaths;
 
     const folderSeedPaths = [...pathsToSync];
     if (options.mirrorNonMdFiles) {
-      folderSeedPaths.push(...normalizedTree.filter((path) => !isMarkdown(path, mdExtensions)));
+      folderSeedPaths.push(
+        ...normalizedTree.filter((path) => !isSyncableDocPath(path, mdExtensions, tabularExtensions)),
+      );
     }
 
     const operations = [];
@@ -72,26 +81,29 @@ export class WorkspacePlanner implements SyncPlanner {
     }
 
     for (const path of pathsToSync) {
+      const title = syncDocTitleFromPath(path, allExtensions);
+      const parentGitPath = dirname(path) === '.' ? '' : dirname(path);
+
       if (gapFillOnly) {
         operations.push({
           type: 'ensure_doc' as const,
           gitPath: path,
           sourcePath: path,
-          title: basename(path, '.md'),
-          parentGitPath: dirname(path) === '.' ? '' : dirname(path),
+          title,
+          parentGitPath,
         });
         continue;
       }
 
-      const content = await context.readMarkdown(path);
+      const content = await readSyncableDocumentContent(path, context.readMarkdown, docExtensions);
       if (content == null) continue;
 
       operations.push({
         type: 'update_doc' as const,
         gitPath: path,
         sourcePath: path,
-        title: basename(path, '.md'),
-        parentGitPath: dirname(path) === '.' ? '' : dirname(path),
+        title,
+        parentGitPath,
         contentMarkdown: content,
         forceWrite: fullRebuild || matchesAnyProjectPathGlob(path, forceUpdateGlobs),
       });
@@ -117,26 +129,31 @@ function mergePaths(first: string[], second: string[]): string[] {
   return [...merged];
 }
 
-async function filterIncrementalMarkdownPaths(options: {
-  mdPaths: string[];
+async function filterIncrementalDocPaths(options: {
+  docPaths: string[];
   changedSet: Set<string>;
+  mdExtensions: string[];
+  tabularExtensions: string[];
   readMarkdown: SyncPlanContext['readMarkdown'];
 }): Promise<string[]> {
-  const { mdPaths, changedSet, readMarkdown } = options;
-  const directChanges = mdPaths.filter((path) => changedSet.has(path));
-  if (directChanges.length === mdPaths.length) {
+  const { docPaths, changedSet, mdExtensions, tabularExtensions, readMarkdown } = options;
+  const directChanges = docPaths.filter((path) => changedSet.has(path));
+  if (directChanges.length === docPaths.length) {
     return directChanges;
   }
 
   const selected = new Set(directChanges);
-  const hasNonMarkdownChanges = [...changedSet].some((path) => !isMarkdown(path, ['.md', '.markdown']));
+  const hasNonDocChanges = [...changedSet].some(
+    (path) => !isSyncableDocPath(path, mdExtensions, tabularExtensions),
+  );
 
-  if (!hasNonMarkdownChanges) {
+  if (!hasNonDocChanges) {
     return directChanges;
   }
 
-  for (const path of mdPaths) {
+  for (const path of docPaths) {
     if (selected.has(path)) continue;
+    if (!pathEndsWithExtension(path, mdExtensions)) continue;
     const content = await readMarkdown(path);
     if (content == null) continue;
     if (markdownReferencesChangedImages(content, path, changedSet)) {
@@ -144,5 +161,5 @@ async function filterIncrementalMarkdownPaths(options: {
     }
   }
 
-  return mdPaths.filter((path) => selected.has(path));
+  return docPaths.filter((path) => selected.has(path));
 }

@@ -1,5 +1,6 @@
 import { basename, dirname } from 'node:path';
 import { markdownReferencesChangedImages } from '@feishu-md/feishu';
+import { pathEndsWithExtension, syncDocTitleFromPath } from '@feishu-md/shared';
 
 const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
 
@@ -139,13 +140,30 @@ export function discoverStandaloneMarkdownFiles(
 }
 
 export function standaloneMarkdownTitle(filePath: string): string {
-  const base = basename(filePath);
-  for (const ext of MARKDOWN_EXTENSIONS) {
-    if (base.toLowerCase().endsWith(ext)) {
-      return base.slice(0, -ext.length);
-    }
-  }
-  return base;
+  return syncDocTitleFromPath(filePath, MARKDOWN_EXTENSIONS);
+}
+
+function isTabularFile(path: string, tabularExtensions: string[]): boolean {
+  return pathEndsWithExtension(path, tabularExtensions);
+}
+
+/** 独立表格文件（如 CSV，非目录 README 正文） */
+export function discoverStandaloneTabularFiles(
+  treePaths: string[],
+  tabularExtensions: string[],
+  readmeNames: string[],
+  containerSourcePaths: Set<string>,
+): string[] {
+  return treePaths
+    .map(normalizePath)
+    .filter((path) => isTabularFile(path, tabularExtensions))
+    .filter((path) => !containerSourcePaths.has(path))
+    .filter((path) => !isReadmeBasename(basename(path), readmeNames))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+export function standaloneTabularTitle(filePath: string, tabularExtensions: string[]): string {
+  return syncDocTitleFromPath(filePath, tabularExtensions);
 }
 
 /** 独立文档的父容器：优先所在目录，否则向上找最近含 README 的目录 */

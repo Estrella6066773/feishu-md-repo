@@ -34,6 +34,7 @@ import {
   sortSyncOperations,
 } from './sync/repair-missing-nodes.js';
 import { syncOverviewWhiteboard } from './sync/overview-whiteboard.js';
+import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync/sync-content.js';
 import type { SyncOperation, SyncPlan } from './sync/planner.js';
 
 export interface RunSyncOptions {
@@ -129,6 +130,9 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       binding.syncMode === 'workspace' ? (binding.options as WorkspaceOptions) : undefined;
     const repositoryOptions =
       binding.syncMode === 'repository' ? (binding.options as RepositoryOptions) : undefined;
+    const docExtensions = resolveSyncDocExtensions(workspaceOptions, repositoryOptions);
+    const readSyncContent = (path: string) =>
+      readSyncableDocumentContent(path, readMarkdown, docExtensions);
 
     const planner = createPlanner(binding.syncMode);
     const plan = await planner.buildPlan({
@@ -140,7 +144,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       fullResync,
       treePaths,
       changedPaths,
-      readMarkdown,
+      readMarkdown: readSyncContent,
       workspaceOptions,
       repositoryOptions,
     });
@@ -151,7 +155,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       db,
       credentials,
       syncMode: binding.syncMode,
-      readMarkdown,
+      readMarkdown: readSyncContent,
       readBinaryFile,
       workspaceOptions,
       repositoryOptions,
@@ -167,7 +171,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
         throw new Error('无可同步文件：请确认仓库路径、分支正确，且存在 Git 已跟踪的文件');
       }
       throw new Error(
-        '未写入任何内容：仓库模式下各目录需含 README；独立的非 README Markdown 文件也会同步',
+        '未写入任何内容：仓库模式下各目录需含 README；独立的 Markdown 与 CSV 文件也会同步',
       );
     }
 

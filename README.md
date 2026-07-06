@@ -194,9 +194,9 @@ git commit -m "chore: 初始化项目"
 1. **Git 规则（一重）**：以目标 commit 为准，用 `git ls-files --with-tree` 取 Git 已跟踪路径，并排除 `.gitattributes` 中标记了 `export-ignore` 的文件。本地库与有云库均走同一套 Git 语义。
 2. **项目规则（二重）**：在转移步骤再按绑定配置的 `ignoreGlobs` 过滤（管理面板「项目忽略规则」，每行一条 glob）。系统默认还会额外排除 `node_modules` 与 `.git`。
 
-**工作区模式**默认只同步 Markdown 及其目录层级（`mirrorNonMdFiles: false`），不会因非 Markdown 文件而镜像整棵目录树。
+**工作区模式**默认同步 Markdown（`.md` / `.markdown`）与 CSV（`.csv`）文件；CSV 会转为表格写入云文档。其它非 Markdown 文件默认不同步（`mirrorNonMdFiles: false`），不会因非 Markdown 文件而镜像整棵目录树。
 
-**仓库模式**：每个含 README 的目录对应飞书里的一篇**文档**；正文来自 README，标题为目录名（根目录取绑定名称）。子文档通过 Wiki **父 node_token** 嵌套（文档可作容器，**不是**云空间 folder）。
+**仓库模式**：每个含 README 的目录对应飞书里的一篇**文档**；正文来自 README，标题为目录名（根目录取绑定名称）。独立的 Markdown 与 CSV 文件也会作为单独文档同步。子文档通过 Wiki **父 node_token** 嵌套（文档可作容器，**不是**云空间 folder）。
 
 **目标类型**：
 - **Wiki（推荐，尤其仓库模式）**：填写 `space_id`，可选 **父 node_token**（某篇文档或节点的 token，如 `Dunxd…`），同步结果挂在其下。

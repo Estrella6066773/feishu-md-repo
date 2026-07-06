@@ -3,6 +3,8 @@ import type { Binding, NodeMapping, RepositoryOptions, SyncMode, WorkspaceOption
 import {
   DEFAULT_REPOSITORY_OPTIONS,
   isReservedSyncGitPath,
+  allSyncDocExtensions,
+  syncDocTitleFromPath,
 } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import { deleteNodeMapping, listNodeMappings } from '@feishu-md/db';
@@ -11,11 +13,14 @@ import type { SyncOperation, SyncPlan } from './planner.js';
 import {
   discoverRepositoryContainers,
   discoverStandaloneMarkdownFiles,
+  discoverStandaloneTabularFiles,
   repositoryContainerTitle,
   resolveParentForStandaloneFile,
   resolveRepositoryParentLogicalPath,
   standaloneMarkdownTitle,
+  standaloneTabularTitle,
 } from './repository-paths.js';
+import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync-content.js';
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -61,15 +66,16 @@ function sortSyncOperations(operations: SyncOperation[]): SyncOperation[] {
 async function buildRepositoryDocRepair(
   mapping: NodeMapping,
   treePaths: string[],
-  readmeNames: string[],
+  repositoryOptions: RepositoryOptions,
   bindingName: string,
   readMarkdown: (path: string) => Promise<string | null>,
   gapFillOnly: boolean,
 ): Promise<SyncOperation | null> {
   const gitPath = normalizePath(mapping.gitPath);
-  const containers = discoverRepositoryContainers(treePaths, readmeNames);
+  const containers = discoverRepositoryContainers(treePaths, repositoryOptions.readmeNames);
   const containerPaths = new Set(containers.map((item) => item.logicalPath));
   const container = containers.find((item) => item.logicalPath === gitPath);
+  const docExtensions = resolveSyncDocExtensions(undefined, repositoryOptions);
 
   if (container) {
     if (gapFillOnly) {
@@ -82,7 +88,11 @@ async function buildRepositoryDocRepair(
       };
     }
 
-    const content = await readMarkdown(container.sourcePath);
+    const content = await readSyncableDocumentContent(
+      container.sourcePath,
+      readMarkdown,
+      docExtensions,
+    );
     if (content == null) return null;
     return {
       type: 'update_doc',
@@ -95,31 +105,42 @@ async function buildRepositoryDocRepair(
   }
 
   const containerSourcePaths = new Set(containers.map((item) => item.sourcePath));
-  const standalonePaths = discoverStandaloneMarkdownFiles(
+  const standaloneMarkdownPaths = discoverStandaloneMarkdownFiles(
     treePaths,
-    readmeNames,
+    repositoryOptions.readmeNames,
     containerSourcePaths,
   );
+  const standaloneTabularPaths = discoverStandaloneTabularFiles(
+    treePaths,
+    repositoryOptions.tabularExtensions,
+    repositoryOptions.readmeNames,
+    containerSourcePaths,
+  );
+  const standalonePaths = [...standaloneMarkdownPaths, ...standaloneTabularPaths];
   if (!standalonePaths.includes(gitPath)) return null;
+
+  const title = standaloneMarkdownPaths.includes(gitPath)
+    ? standaloneMarkdownTitle(gitPath)
+    : standaloneTabularTitle(gitPath, docExtensions.tabularExtensions);
 
   if (gapFillOnly) {
     return {
       type: 'ensure_doc',
       gitPath,
       sourcePath: gitPath,
-      title: standaloneMarkdownTitle(gitPath),
+      title,
       parentGitPath: resolveParentForStandaloneFile(gitPath, containerPaths),
     };
   }
 
-  const content = await readMarkdown(gitPath);
+  const content = await readSyncableDocumentContent(gitPath, readMarkdown, docExtensions);
   if (content == null) return null;
 
   return {
     type: 'update_doc',
     gitPath,
     sourcePath: gitPath,
-    title: standaloneMarkdownTitle(gitPath),
+    title,
     parentGitPath: resolveParentForStandaloneFile(gitPath, containerPaths),
     contentMarkdown: content,
   };
@@ -129,33 +150,40 @@ async function buildWorkspaceDocRepair(
   mapping: NodeMapping,
   treePaths: string[],
   readMarkdown: (path: string) => Promise<string | null>,
+  workspaceOptions: WorkspaceOptions | undefined,
   gapFillOnly: boolean,
 ): Promise<SyncOperation | null> {
   const gitPath = normalizePath(mapping.gitPath);
   const treeSet = new Set(treePaths.map(normalizePath));
   if (!treeSet.has(gitPath)) return null;
 
+  const docExtensions = resolveSyncDocExtensions(workspaceOptions);
+  const title = syncDocTitleFromPath(
+    gitPath,
+    allSyncDocExtensions(docExtensions.mdExtensions, docExtensions.tabularExtensions),
+  );
+  const parentDir = dirname(gitPath);
+  const parentGitPath = parentDir === '.' ? '' : parentDir;
+
   if (gapFillOnly) {
-    const parentDir = dirname(gitPath);
     return {
       type: 'ensure_doc',
       gitPath,
       sourcePath: gitPath,
-      title: basename(gitPath, '.md'),
-      parentGitPath: parentDir === '.' ? '' : parentDir,
+      title,
+      parentGitPath,
     };
   }
 
-  const content = await readMarkdown(gitPath);
+  const content = await readSyncableDocumentContent(gitPath, readMarkdown, docExtensions);
   if (content == null) return null;
 
-  const parentDir = dirname(gitPath);
   return {
     type: 'update_doc',
     gitPath,
     sourcePath: gitPath,
-    title: basename(gitPath, '.md'),
-    parentGitPath: parentDir === '.' ? '' : parentDir,
+    title,
+    parentGitPath,
     contentMarkdown: content,
   };
 }
@@ -240,12 +268,18 @@ export async function buildRepairOperationsForMissingRemote(options: {
         ? await buildRepositoryDocRepair(
             mapping,
             plan.allTrackedPaths,
-            (repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS).readmeNames,
+            repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS,
             bindingName,
             readMarkdown,
             gapFillOnly,
           )
-        : await buildWorkspaceDocRepair(mapping, plan.allTrackedPaths, readMarkdown, gapFillOnly);
+        : await buildWorkspaceDocRepair(
+            mapping,
+            plan.allTrackedPaths,
+            readMarkdown,
+            workspaceOptions,
+            gapFillOnly,
+          );
 
     if (repair) {
       repairs.push(repair);

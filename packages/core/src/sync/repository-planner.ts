@@ -7,13 +7,16 @@ import type { SyncPlan, SyncPlanContext, SyncPlanner } from './planner.js';
 import {
   discoverRepositoryContainers,
   discoverStandaloneMarkdownFiles,
+  discoverStandaloneTabularFiles,
   isRepositoryContainerDirty,
   isStandaloneFileDirty,
   repositoryContainerTitle,
   resolveParentForStandaloneFile,
   resolveRepositoryParentLogicalPath,
   standaloneMarkdownTitle,
+  standaloneTabularTitle,
 } from './repository-paths.js';
+import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync-content.js';
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -21,7 +24,8 @@ function normalizePath(path: string): string {
 
 export class RepositoryPlanner implements SyncPlanner {
   async buildPlan(context: SyncPlanContext): Promise<SyncPlan> {
-    const options = context.repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS;
+    const options = { ...DEFAULT_REPOSITORY_OPTIONS, ...context.repositoryOptions };
+    const docExtensions = resolveSyncDocExtensions(undefined, options);
     const forceUpdateGlobs = shouldForceUpdateForTrigger(options.forceUpdateMode, context.trigger)
       ? (options.forceUpdateGlobs ?? [])
       : [];
@@ -52,7 +56,11 @@ export class RepositoryPlanner implements SyncPlanner {
         continue;
       }
 
-      const content = await context.readMarkdown(container.sourcePath);
+      const content = await readSyncableDocumentContent(
+        container.sourcePath,
+        context.readMarkdown,
+        docExtensions,
+      );
       if (content == null) continue;
 
       operations.push({
@@ -82,7 +90,7 @@ export class RepositoryPlanner implements SyncPlanner {
         continue;
       }
 
-      const content = await context.readMarkdown(filePath);
+      const content = await readSyncableDocumentContent(filePath, context.readMarkdown, docExtensions);
       if (content == null) continue;
 
       const forceWrite = fullRebuild || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
@@ -93,6 +101,40 @@ export class RepositoryPlanner implements SyncPlanner {
         gitPath: filePath,
         sourcePath: filePath,
         title: standaloneMarkdownTitle(filePath),
+        parentGitPath: resolveParentForStandaloneFile(filePath, containerPaths),
+        contentMarkdown: content,
+        forceWrite,
+      });
+    }
+
+    for (const filePath of discoverStandaloneTabularFiles(
+      normalizedTree,
+      options.tabularExtensions,
+      options.readmeNames,
+      containerSourcePaths,
+    )) {
+      if (gapFillOnly) {
+        operations.push({
+          type: 'ensure_doc' as const,
+          gitPath: filePath,
+          sourcePath: filePath,
+          title: standaloneTabularTitle(filePath, options.tabularExtensions),
+          parentGitPath: resolveParentForStandaloneFile(filePath, containerPaths),
+        });
+        continue;
+      }
+
+      const content = await readSyncableDocumentContent(filePath, context.readMarkdown, docExtensions);
+      if (content == null) continue;
+
+      const forceWrite = fullRebuild || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
+      if (!forceWrite && !isStandaloneFileDirty(filePath, changedSet, incremental)) continue;
+
+      operations.push({
+        type: 'update_doc' as const,
+        gitPath: filePath,
+        sourcePath: filePath,
+        title: standaloneTabularTitle(filePath, options.tabularExtensions),
         parentGitPath: resolveParentForStandaloneFile(filePath, containerPaths),
         contentMarkdown: content,
         forceWrite,
