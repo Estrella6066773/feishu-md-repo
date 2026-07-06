@@ -4,13 +4,17 @@ import type { DbClient } from '@feishu-md/db';
 import { getFeishuCredentials, listNodeMappings, updateCommentImportLog } from '@feishu-md/db';
 import {
   assertFeishuResponse,
+  commentStorageFileName,
   countCommentReplies,
   createFeishuClient,
   deleteDocCommentExport,
   FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
   formatFeishuErrorMessage,
   formatSyncLog,
+  isDocumentCommentExportUnchanged,
   listAllDocumentComments,
+  readCommentImportManifest,
+  readDocCommentExport,
   removeCommentImportManifest,
   removeStaleDocCommentExports,
   toFeishuDocumentUrl,
@@ -32,6 +36,7 @@ export interface CommentImportResult {
   commentCount: number;
   replyCount: number;
   skippedNoCommentCount: number;
+  skippedUnchangedCount: number;
   removedStaleFileCount: number;
   failedDocuments: Array<{ gitPath: string; error: string }>;
 }
@@ -52,11 +57,14 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       && Boolean(mapping.feishuDocToken ?? mapping.feishuNodeToken),
   );
 
-  const importedAt = new Date().toISOString();
+  const runStartedAt = new Date().toISOString();
+  const existingManifest = await readCommentImportManifest(binding.repoPath);
   const manifestDocuments: FeishuCommentImportManifest['documents'] = [];
   let commentCount = 0;
   let replyCount = 0;
   let skippedNoCommentCount = 0;
+  let skippedUnchangedCount = 0;
+  let folderChanged = false;
   const failedDocuments: Array<{ gitPath: string; error: string }> = [];
 
   for (const mapping of docMappings) {
@@ -73,7 +81,31 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       const comments = await listAllDocumentComments(client, feishuDocToken, 'docx');
       if (comments.length === 0) {
         skippedNoCommentCount += 1;
-        await deleteDocCommentExport(binding.repoPath, gitPath);
+        const removed = await deleteDocCommentExport(binding.repoPath, gitPath);
+        if (removed) {
+          folderChanged = true;
+        }
+        continue;
+      }
+
+      const docReplyCount = countCommentReplies(comments);
+      const existing = await readDocCommentExport(binding.repoPath, gitPath);
+      if (existing && isDocumentCommentExportUnchanged(existing, comments)) {
+        skippedUnchangedCount += 1;
+        const storageFile = commentStorageFileName(gitPath);
+        manifestDocuments.push({
+          gitPath,
+          storageFile,
+          feishuDocToken,
+          feishuNodeToken: mapping.feishuNodeToken,
+          documentTitle: existing.documentTitle,
+          documentUrl: existing.documentUrl || documentUrl,
+          commentCount: comments.length,
+          replyCount: docReplyCount,
+          updatedAt: existing.updatedAt ?? existing.importedAt,
+        });
+        commentCount += comments.length;
+        replyCount += docReplyCount;
         continue;
       }
 
@@ -93,7 +125,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         ));
       }
 
-      const docReplyCount = countCommentReplies(comments);
+      const updatedAt = new Date().toISOString();
       const storageFile = await writeDocCommentExport(binding.repoPath, {
         schemaVersion: FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
         bindingId: binding.id,
@@ -103,7 +135,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         feishuNodeToken: mapping.feishuNodeToken,
         documentTitle,
         documentUrl,
-        importedAt,
+        updatedAt,
         trigger,
         source: {
           listApi: 'drive.v1.fileComment.list',
@@ -116,6 +148,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         replyCount: docReplyCount,
         comments,
       });
+      folderChanged = true;
 
       manifestDocuments.push({
         gitPath,
@@ -126,6 +159,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         documentUrl,
         commentCount: comments.length,
         replyCount: docReplyCount,
+        updatedAt,
       });
       commentCount += comments.length;
       replyCount += docReplyCount;
@@ -144,21 +178,28 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     binding.repoPath,
     activeStorageFiles,
   );
+  if (removedStaleFileCount > 0) {
+    folderChanged = true;
+  }
 
   if (manifestDocuments.length > 0) {
-    await writeCommentImportManifest(binding.repoPath, {
-      schemaVersion: FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
-      bindingId: binding.id,
-      bindingName: binding.name,
-      importedAt,
-      trigger,
-      documentCount: manifestDocuments.length,
-      commentCount,
-      replyCount,
-      documents: manifestDocuments,
-    });
-  } else {
+    if (folderChanged) {
+      const manifestUpdatedAt = new Date().toISOString();
+      await writeCommentImportManifest(binding.repoPath, {
+        schemaVersion: FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
+        bindingId: binding.id,
+        bindingName: binding.name,
+        updatedAt: manifestUpdatedAt,
+        trigger,
+        documentCount: manifestDocuments.length,
+        commentCount,
+        replyCount,
+        documents: manifestDocuments,
+      });
+    }
+  } else if (existingManifest) {
     await removeCommentImportManifest(binding.repoPath);
+    folderChanged = true;
   }
 
   const message = buildCommentImportMessage({
@@ -166,7 +207,9 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     commentCount,
     replyCount,
     skippedNoCommentCount,
+    skippedUnchangedCount,
     removedStaleFileCount,
+    folderChanged,
     failedDocuments,
   });
 
@@ -179,7 +222,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     documentCount: manifestDocuments.length,
     commentCount,
     replyCount,
-    startedAt: importedAt,
+    startedAt: runStartedAt,
     finishedAt: new Date().toISOString(),
   });
 
@@ -192,6 +235,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     commentCount,
     replyCount,
     skippedNoCommentCount,
+    skippedUnchangedCount,
     removedStaleFileCount,
     failedDocuments,
   };
@@ -202,14 +246,30 @@ function buildCommentImportMessage(options: {
   commentCount: number;
   replyCount: number;
   skippedNoCommentCount: number;
+  skippedUnchangedCount: number;
   removedStaleFileCount: number;
+  folderChanged: boolean;
   failedDocuments: Array<{ gitPath: string; error: string }>;
 }): string {
+  if (
+    !options.folderChanged
+    && options.failedDocuments.length === 0
+    && options.documentCount > 0
+  ) {
+    return `评论无变化，未更新项目文件（${options.documentCount} 篇有评论）`;
+  }
+
+  const updatedDocCount = options.documentCount - options.skippedUnchangedCount;
   const parts = [
-    `已导入 ${options.documentCount} 篇有评论的文档`,
+    updatedDocCount > 0
+      ? `已更新 ${updatedDocCount} 篇有评论的文档`
+      : `已导入 ${options.documentCount} 篇有评论的文档`,
     `${options.commentCount} 条评论`,
     `${options.replyCount} 条回复`,
   ];
+  if (options.skippedUnchangedCount > 0) {
+    parts.push(`${options.skippedUnchangedCount} 篇无变化已跳过`);
+  }
   if (options.skippedNoCommentCount > 0) {
     parts.push(`${options.skippedNoCommentCount} 篇无评论已跳过`);
   }

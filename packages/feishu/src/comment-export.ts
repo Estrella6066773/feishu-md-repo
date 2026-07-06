@@ -1,4 +1,5 @@
-import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FeishuCommentRecord } from './comment-service.js';
 
@@ -15,7 +16,10 @@ export interface FeishuDocCommentExport {
   feishuNodeToken: string;
   documentTitle?: string;
   documentUrl: string;
-  importedAt: string;
+  /** 本文件评论内容最近写入仓库的时间 */
+  updatedAt: string;
+  /** @deprecated 旧版字段，读取时兼容 */
+  importedAt?: string;
   trigger: string;
   source: {
     listApi: 'drive.v1.fileComment.list';
@@ -33,7 +37,10 @@ export interface FeishuCommentImportManifest {
   schemaVersion: typeof FEISHU_COMMENT_EXPORT_SCHEMA_VERSION;
   bindingId: string;
   bindingName: string;
-  importedAt: string;
+  /** 评论导出目录最近发生写入的时间 */
+  updatedAt: string;
+  /** @deprecated 旧版字段，读取时兼容 */
+  importedAt?: string;
   trigger: string;
   documentCount: number;
   commentCount: number;
@@ -47,6 +54,7 @@ export interface FeishuCommentImportManifest {
     documentUrl: string;
     commentCount: number;
     replyCount: number;
+    updatedAt?: string;
   }>;
 }
 
@@ -66,6 +74,71 @@ export function commentManifestPath(repoPath: string): string {
 
 export function countCommentReplies(comments: FeishuCommentRecord[]): number {
   return comments.reduce((sum, comment) => sum + comment.replies.length, 0);
+}
+
+/** 评论正文指纹，用于判断飞书侧评论是否与本地导出一致 */
+export function fingerprintDocumentComments(comments: FeishuCommentRecord[]): string {
+  const normalized = normalizeCommentsForFingerprint(comments);
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+
+function normalizeCommentsForFingerprint(comments: FeishuCommentRecord[]): unknown[] {
+  return [...comments]
+    .sort((a, b) => a.comment_id.localeCompare(b.comment_id))
+    .map((comment) => ({
+      comment_id: comment.comment_id,
+      user_id: comment.user_id,
+      create_time: comment.create_time,
+      update_time: comment.update_time,
+      is_solved: comment.is_solved,
+      solved_time: comment.solved_time,
+      solver_user_id: comment.solver_user_id,
+      is_whole: comment.is_whole,
+      quote: comment.quote,
+      replies: [...comment.replies]
+        .sort((a, b) => (a.reply_id ?? '').localeCompare(b.reply_id ?? ''))
+        .map((reply) => ({
+          reply_id: reply.reply_id,
+          user_id: reply.user_id,
+          create_time: reply.create_time,
+          update_time: reply.update_time,
+          content: reply.content,
+          extra: reply.extra,
+          reactions: reply.reactions,
+        })),
+    }));
+}
+
+export function isDocumentCommentExportUnchanged(
+  existing: FeishuDocCommentExport,
+  comments: FeishuCommentRecord[],
+): boolean {
+  return fingerprintDocumentComments(existing.comments) === fingerprintDocumentComments(comments);
+}
+
+export async function readDocCommentExport(
+  repoPath: string,
+  gitPath: string,
+): Promise<FeishuDocCommentExport | null> {
+  try {
+    const raw = await readFile(docCommentExportPath(repoPath, gitPath), 'utf-8');
+    return JSON.parse(raw) as FeishuDocCommentExport;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+export async function readCommentImportManifest(
+  repoPath: string,
+): Promise<FeishuCommentImportManifest | null> {
+  try {
+    const raw = await readFile(commentManifestPath(repoPath), 'utf-8');
+    return JSON.parse(raw) as FeishuCommentImportManifest;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 export async function writeDocCommentExport(
