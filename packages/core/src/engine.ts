@@ -1,7 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
-import { isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs } from '@feishu-md/shared';
+import { createLogger, isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs, pathEndsWithExtension } from '@feishu-md/shared';
+import type { Logger } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
   deleteNodeMapping,
@@ -31,7 +32,9 @@ import {
 import { createPlanner } from './sync/factory.js';
 import {
   buildRepairOperationsForMissingRemote,
+  mappingPresentInRemoteCache,
   sortSyncOperations,
+  type RemoteChildrenCache,
 } from './sync/repair-missing-nodes.js';
 import { syncOverviewWhiteboard } from './sync/overview-whiteboard.js';
 import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync/sync-content.js';
@@ -42,6 +45,8 @@ export interface RunSyncOptions {
   db: DbClient;
   trigger: SyncTriggerType;
   fullResync?: boolean;
+  /** 立即同步 / 机器人同步时按父节点子数量检测飞书缺失并补建 */
+  repairMissingRemote?: boolean;
   /** 由队列预先创建的日志 ID */
   logId?: string;
 }
@@ -56,9 +61,13 @@ export interface RunSyncResult {
 }
 
 export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
-  const { binding, db, trigger, fullResync } = options;
+  const { binding, db, trigger, fullResync, repairMissingRemote } = options;
   const logId = options.logId ?? randomUUID();
   const startedAt = new Date().toISOString();
+  const startMs = Date.now();
+  const log = createLogger('sync').child({ bindingId: binding.id, logId, trigger });
+
+  log.info('开始执行同步', { fullResync: fullResync === true });
 
   if (options.logId) {
     await updateSyncLog(db, {
@@ -149,7 +158,12 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       repositoryOptions,
     });
 
-    const { operationCount, overviewUpdated } = await executePlan({
+    log.info('同步规划完成', {
+      operationCount: plan.operations.length,
+      changedPaths: changedPaths.length,
+    });
+
+    const { operationCount, overviewUpdated, repairedMissingCount } = await executePlan({
       plan,
       binding,
       db,
@@ -159,14 +173,26 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       readBinaryFile,
       workspaceOptions,
       repositoryOptions,
+      repairMissingRemote: repairMissingRemote === true,
+      log,
     });
 
     const isIncrementalNoop =
-      plan.operations.length === 0 && fromSha != null && !fullResync && treePaths.length > 0;
+      plan.operations.length === 0 &&
+      fromSha != null &&
+      !fullResync &&
+      treePaths.length > 0 &&
+      repairedMissingCount === 0;
 
     const isGapFillNoop = plan.gapFillOnly === true && operationCount === 0 && treePaths.length > 0;
 
-    if (plan.operations.length === 0 && !isIncrementalNoop && !isGapFillNoop && fullResync !== true) {
+    if (
+      plan.operations.length === 0 &&
+      repairedMissingCount === 0 &&
+      !isIncrementalNoop &&
+      !isGapFillNoop &&
+      fullResync !== true
+    ) {
       if (treePaths.length === 0) {
         throw new Error('无可同步文件：请确认仓库路径、分支正确，且存在 Git 已跟踪的文件');
       }
@@ -202,11 +228,21 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
             ? overviewUpdated
               ? `已完全重新搭建 ${operationCount} 项，已更新同步文档总览`
               : `已完全重新搭建 ${operationCount} 项`
-            : overviewUpdated
-              ? `已同步 ${operationCount} 项，已更新同步文档总览`
-              : `已同步 ${operationCount} 项`,
+            : repairedMissingCount > 0
+              ? overviewUpdated
+                ? `已补建飞书侧缺失节点 ${repairedMissingCount} 项，已更新同步文档总览`
+                : `已补建飞书侧缺失节点 ${repairedMissingCount} 项`
+              : overviewUpdated
+                ? `已同步 ${operationCount} 项，已更新同步文档总览`
+                : `已同步 ${operationCount} 项`,
       startedAt,
       finishedAt: new Date().toISOString(),
+    });
+
+    log.info('同步完成', {
+      toSha,
+      operationCount,
+      durationMs: Date.now() - startMs,
     });
 
     return {
@@ -219,6 +255,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    log.error('同步失败', { durationMs: Date.now() - startMs }, error);
     await updateSyncLog(db, {
       id: logId,
       bindingId: binding.id,
@@ -243,7 +280,9 @@ async function executePlan(options: {
   readBinaryFile: (path: string) => Promise<Uint8Array | null>;
   workspaceOptions?: WorkspaceOptions;
   repositoryOptions?: RepositoryOptions;
-}): Promise<{ operationCount: number; overviewUpdated: boolean }> {
+  repairMissingRemote?: boolean;
+  log?: Logger;
+}): Promise<{ operationCount: number; overviewUpdated: boolean; repairedMissingCount: number }> {
   const {
     plan,
     binding,
@@ -254,7 +293,10 @@ async function executePlan(options: {
     readBinaryFile,
     workspaceOptions,
     repositoryOptions,
+    repairMissingRemote = false,
+    log: parentLog,
   } = options;
+  const log = parentLog ?? createLogger('sync').child({ bindingId: binding.id });
   const gapFillOnly = plan.gapFillOnly === true;
   const client = createFeishuClient(credentials);
 
@@ -287,8 +329,11 @@ async function executePlan(options: {
   const existingMappings = await listNodeMappings(db, binding.id);
 
   let operations: SyncOperation[] = [...plan.operations];
-  if (gapFillOnly) {
-    const repairs = await buildRepairOperationsForMissingRemote({
+  let repairedMissingCount = 0;
+  let remoteChildrenCache: RemoteChildrenCache | undefined;
+  const shouldRepairMissing = gapFillOnly || repairMissingRemote;
+  if (shouldRepairMissing) {
+    const repairResult = await buildRepairOperationsForMissingRemote({
       binding,
       db,
       adapter,
@@ -298,27 +343,37 @@ async function executePlan(options: {
       readMarkdown,
       workspaceOptions,
       repositoryOptions,
-      gapFillOnly: true,
+      gapFillOnly,
     });
+    remoteChildrenCache = repairResult.remoteChildrenCache;
     const plannedPaths = new Set(operations.map((operation) => normalizePath(operation.gitPath)));
-    for (const repair of repairs) {
+    for (const repair of repairResult.repairs) {
       const gitPath = normalizePath(repair.gitPath);
       if (plannedPaths.has(gitPath)) continue;
       operations.push(repair);
       plannedPaths.add(gitPath);
+      if (repairMissingRemote) {
+        repairedMissingCount += 1;
+      }
     }
     operations = sortSyncOperations(operations);
   }
 
   for (const operation of operations) {
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
+    const gitPath = operation.gitPath || '(根)';
+
+    log.debug('执行同步操作', { gitPath, operation: operation.type });
 
     try {
       switch (operation.type) {
         case 'ensure_folder': {
           const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
-          if (existing && (await adapter.nodeExists(mappingToNodeRef(existing)))) {
-            break;
+          if (existing) {
+            const stillPresent = remoteChildrenCache
+              ? mappingPresentInRemoteCache(existing, parentToken, remoteChildrenCache)
+              : await adapter.nodeExists(mappingToNodeRef(existing));
+            if (stillPresent) break;
           }
 
           const folder = await adapter.ensureFolder(
@@ -344,7 +399,13 @@ async function executePlan(options: {
         case 'ensure_doc': {
           const existing = await getNodeMappingByGitPath(db, binding.id, operation.gitPath);
           const existingRef = existing ? mappingToNodeRef(existing) : undefined;
-          const remoteExists = existingRef ? await adapter.nodeExists(existingRef) : false;
+          const remoteExists = existing
+            ? remoteChildrenCache
+              ? mappingPresentInRemoteCache(existing, parentToken, remoteChildrenCache)
+              : existingRef
+                ? await adapter.nodeExists(existingRef)
+                : false
+            : false;
           const contentNeverSynced = !existing?.contentSha;
 
           if (gapFillOnly && remoteExists && !contentNeverSynced) {
@@ -411,8 +472,11 @@ async function executePlan(options: {
     adapter,
     treePaths: plan.allTrackedPaths,
     existingMappings,
+    log,
   });
   count += deletedCount;
+
+  const docExtensions = resolveSyncDocExtensions(workspaceOptions, repositoryOptions);
 
   if (pendingDocUpdates.length > 0) {
     const mappings = await listNodeMappings(db, binding.id);
@@ -428,12 +492,14 @@ async function executePlan(options: {
         rewritten,
         pending.sourcePath,
         readBinaryFile,
+        docExtensions.tabularExtensions,
       );
       if (pending.forceWrite || pending.previousContentSha !== rewrittenSha) {
         try {
           await adapter.updateDocumentContent(pending.docToken, rewritten, {
             sourcePath: pending.sourcePath,
             resolveImage: createMarkdownImageResolver(pending.sourcePath, readBinaryFile),
+            tabularExtensions: docExtensions.tabularExtensions,
           });
         } catch (error) {
           const detail = formatFeishuErrorMessage(error);
@@ -462,10 +528,10 @@ async function executePlan(options: {
       syncMode,
     });
   } catch (error) {
-    console.warn(`[sync] 同步文档总览更新失败: ${formatFeishuErrorMessage(error)}`);
+    log.warn(`同步文档总览更新失败: ${formatFeishuErrorMessage(error)}`);
   }
 
-  return { operationCount: count, overviewUpdated };
+  return { operationCount: count, overviewUpdated, repairedMissingCount };
 }
 
 async function deleteRemovedNodes(options: {
@@ -474,8 +540,10 @@ async function deleteRemovedNodes(options: {
   adapter: ReturnType<typeof createTargetAdapter>;
   treePaths: string[];
   existingMappings: Awaited<ReturnType<typeof listNodeMappings>>;
+  log?: Logger;
 }): Promise<number> {
-  const { db, binding, adapter, treePaths, existingMappings } = options;
+  const { db, binding, adapter, treePaths, existingMappings, log: parentLog } = options;
+  const log = parentLog ?? createLogger('sync').child({ bindingId: binding.id });
   const normalizedTree = treePaths.map((path) => path.replace(/\\/g, '/'));
   const treeSet = new Set(normalizedTree);
 
@@ -496,11 +564,11 @@ async function deleteRemovedNodes(options: {
       count += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[sync] 删除节点失败，视为已删除并清理本地映射: ${message}`, {
+      log.warn('删除节点失败，视为已删除并清理本地映射', {
         gitPath: mapping.gitPath,
         nodeType: mapping.feishuNodeType,
         nodeToken: mapping.feishuNodeToken,
-      });
+      }, error);
     }
     await deleteNodeMappingsByBindingAndPrefix(db, binding.id, mapping.gitPath);
     await deleteNodeMapping(db, mapping.id);
@@ -543,16 +611,25 @@ function mappingToNodeRef(mapping: Awaited<ReturnType<typeof getNodeMappingByGit
 
 /** 正文哈希叠加本地图片 blob；含版本号以便图片上传逻辑变更后触发重同步 */
 const DOCUMENT_SYNC_HASH_VERSION = 'image-sync-v13';
+const TABULAR_SYNC_HASH_VERSION = 'feishu-native-table-v2';
 
 async function hashDocumentSyncContent(
   markdown: string,
   sourcePath: string,
   readBinaryFile: (path: string) => Promise<Uint8Array | null>,
+  tabularExtensions: string[] = ['.csv'],
 ): Promise<string> {
   const hash = createHash('sha256');
   hash.update(DOCUMENT_SYNC_HASH_VERSION);
+  if (pathEndsWithExtension(sourcePath, tabularExtensions)) {
+    hash.update(TABULAR_SYNC_HASH_VERSION);
+  }
   hash.update('\0');
   hash.update(markdown);
+
+  if (pathEndsWithExtension(sourcePath, tabularExtensions)) {
+    return hash.digest('hex');
+  }
 
   const refs = extractMarkdownImageRefs(markdown);
   const sortedRefs = [...refs].sort((a, b) => a.src.localeCompare(b.src));

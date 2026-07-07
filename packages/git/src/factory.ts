@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createLogger } from '@feishu-md/shared';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type {
   GitProvider,
@@ -257,6 +258,8 @@ export function createGitProvider(options: GitProviderOptions, sourceType: 'loca
 }
 
 /** 有云库同步前拉取远程；网络失败时降级使用本地已有 origin 快照，避免整次同步中断 */
+const gitLog = createLogger('git');
+
 export async function fetchRemoteForSync(git: GitProvider): Promise<void> {
   if (!git.fetchLatest) return;
 
@@ -264,6 +267,6 @@ export async function fetchRemoteForSync(git: GitProvider): Promise<void> {
     await git.fetchLatest();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[sync] git fetch 失败，使用本地已有远程分支快照继续: ${message}`);
+    gitLog.warn(`git fetch 失败，使用本地已有远程分支快照继续: ${message}`);
   }
 }

@@ -29,6 +29,13 @@
       "when": 1740000003000,
       "tag": "0003_comment_import_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1740000004000,
+      "tag": "0004_feishu_deletion_events",
+      "breakpoints": true
     }
   ]
 }

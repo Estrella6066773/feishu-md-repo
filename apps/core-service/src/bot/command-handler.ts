@@ -5,6 +5,7 @@ import {
   authorizeBotCommand,
   canAccessBinding,
   classifyBotCommand,
+  createLogger,
   filterBindingsForRole,
   getManagerBindingIds,
   resolveFeishuUserRole,
@@ -19,6 +20,8 @@ import {
 } from '@feishu-md/feishu';
 import type { SyncCoordinator } from '../sync-coordinator.js';
 import type { CommentImportCoordinator } from '../comment-import-coordinator.js';
+
+const botCmdLog = createLogger('bot-command');
 
 export class BotCommandHandler {
   constructor(
@@ -49,6 +52,7 @@ export class BotCommandHandler {
     const text = parseMessageText(data.message.content, data.message.message_type);
     const command = parseBotCommand(text);
     if (!command) return;
+    botCmdLog.info('收到机器人指令', { commandType: command.type, chatId: data.message.chat_id });
     if (!this.isChatAllowed(settings, data)) return;
     if (!this.isMentionAllowed(settings, data, text)) return;
 
@@ -59,6 +63,7 @@ export class BotCommandHandler {
 
     const auth = authorizeBotCommand({ role, commandKind: classifyBotCommand(command) });
     if (!auth.allowed) {
+      botCmdLog.warn('指令鉴权拒绝', { commandType: command.type, role });
       await replyTextMessage(this.client, data.message.message_id, auth.message ?? '权限不足。');
       return;
     }
@@ -192,6 +197,7 @@ export class BotCommandHandler {
     }
 
     for (const binding of targets) {
+      botCmdLog.info('机器人指令入队同步', { bindingId: binding.id, bindingName: binding.name });
       this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync);
     }
   }
@@ -217,6 +223,7 @@ export class BotCommandHandler {
       throw new Error('成员权限不支持完全重新搭建');
     }
     this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync);
+    botCmdLog.info('机器人指令入队同步', { bindingId: binding.id, bindingName: binding.name });
   }
 
   private async importCommentsAll(
@@ -236,6 +243,7 @@ export class BotCommandHandler {
     }
 
     for (const binding of targets) {
+      botCmdLog.info('机器人指令入队评论导入', { bindingId: binding.id, bindingName: binding.name });
       this.commentImportCoordinator.enqueueCommentImport(binding.id, 'bot');
     }
   }
@@ -254,6 +262,7 @@ export class BotCommandHandler {
       throw new Error(`你没有权限为绑定「${name}」导入评论`);
     }
     this.commentImportCoordinator.enqueueCommentImport(binding.id, 'bot');
+    botCmdLog.info('机器人指令入队评论导入', { bindingId: binding.id, bindingName: binding.name });
   }
 }
 

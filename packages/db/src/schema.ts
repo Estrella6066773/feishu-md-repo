@@ -61,6 +61,18 @@ export const commentImportLogs = sqliteTable('comment_import_logs', {
   finishedAt: text('finished_at'),
 });
 
+export const feishuDeletionEvents = sqliteTable('feishu_deletion_events', {
+  id: text('id').primaryKey(),
+  fileToken: text('file_token').notNull(),
+  fileType: text('file_type').notNull(),
+  eventType: text('event_type').notNull(),
+  bindingId: text('binding_id').references(() => bindings.id, { onDelete: 'cascade' }),
+  gitPath: text('git_path'),
+  mappingId: text('mapping_id'),
+  receivedAt: text('received_at').notNull(),
+  processedAt: text('processed_at'),
+});
+
 export const appSettings = sqliteTable('app_settings', {
   key: text('key').primaryKey(),
   valueJson: text('value_json').notNull(),

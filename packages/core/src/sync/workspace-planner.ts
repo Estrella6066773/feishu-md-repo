@@ -2,6 +2,7 @@ import { basename, dirname } from 'node:path';
 import {
   DEFAULT_WORKSPACE_OPTIONS,
   allSyncDocExtensions,
+  createLogger,
   isSyncableDocPath,
   matchesAnyProjectPathGlob,
   pathEndsWithExtension,
@@ -11,6 +12,8 @@ import {
 import { markdownReferencesChangedImages } from '@feishu-md/feishu';
 import type { SyncPlan, SyncPlanContext, SyncPlanner } from './planner.js';
 import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync-content.js';
+
+const plannerLog = createLogger('sync-planner');
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -109,6 +112,8 @@ export class WorkspacePlanner implements SyncPlanner {
       });
     }
 
+    logPlanSummary('workspace', operations);
+
     return {
       bindingId: context.bindingId,
       trigger: context.trigger,
@@ -119,6 +124,14 @@ export class WorkspacePlanner implements SyncPlanner {
       operations,
     };
   }
+}
+
+function logPlanSummary(syncMode: string, operations: SyncPlan['operations']): void {
+  const counts = operations.reduce<Record<string, number>>((acc, op) => {
+    acc[op.type] = (acc[op.type] ?? 0) + 1;
+    return acc;
+  }, {});
+  plannerLog.debug('同步规划摘要', { syncMode, ...counts, total: operations.length });
 }
 
 function mergePaths(first: string[], second: string[]): string[] {

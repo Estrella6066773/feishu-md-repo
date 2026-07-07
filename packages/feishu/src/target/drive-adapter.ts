@@ -1,14 +1,18 @@
-import type { FeishuClient, FeishuTargetAdapter, NodeRef } from '../client.js';
+import type { FeishuClient, FeishuTargetAdapter, NodeRef, DirectChildRef } from '../client.js';
 import type { FeishuTarget } from '@feishu-md/shared';
+import { createLogger } from '@feishu-md/shared';
 import {
   createDriveDocument,
   createDriveFolder,
   deleteDriveFile,
   findDriveChildByName,
+  listDriveFolderChildren,
   moveDriveFile,
   replaceDocumentMarkdown,
 } from '../drive-service.js';
 import { driveNodeExists } from '../node-exists.js';
+
+const adapterLog = createLogger('drive-adapter');
 
 export class DriveAdapter implements FeishuTargetAdapter {
   readonly type = 'drive' as const;
@@ -28,12 +32,22 @@ export class DriveAdapter implements FeishuTargetAdapter {
     return this.rootFolderToken;
   }
 
+  async listDirectChildren(parentToken: string | undefined): Promise<DirectChildRef[]> {
+    const folderToken = parentToken ?? this.rootFolderToken;
+    adapterLog.debug('列出 Drive 子项', { parentToken: folderToken });
+    const items = await listDriveFolderChildren(this.client, folderToken);
+    return items
+      .filter((item) => item.token)
+      .map((item) => ({ tokens: [item.token] }));
+  }
+
   async ensureFolder(
-    _gitPath: string,
+    gitPath: string,
     parentToken: string | undefined,
     title: string,
   ): Promise<NodeRef> {
     const parentFolderToken = parentToken ?? this.rootFolderToken;
+    adapterLog.debug('确保 Drive 文件夹', { gitPath, operation: 'ensure_folder' });
     const existing = await findDriveChildByName(this.client, parentFolderToken, title);
     if (existing?.nodeType === 'folder') return existing;
 
@@ -48,11 +62,16 @@ export class DriveAdapter implements FeishuTargetAdapter {
   }
 
   async ensureDocument(
-    _gitPath: string,
+    gitPath: string,
     parentToken: string | undefined,
     title: string,
     existing?: NodeRef,
   ): Promise<NodeRef> {
+    adapterLog.debug('确保 Drive 文档', { gitPath, operation: 'ensure_doc' });
+    if (existing?.docToken && (await this.nodeExists(existing))) {
+      return existing;
+    }
+
     if (existing && (await this.nodeExists(existing))) {
       return existing;
     }
@@ -74,10 +93,16 @@ export class DriveAdapter implements FeishuTargetAdapter {
     markdown: string,
     options?: import('../docx-content.js').ReplaceDocumentMarkdownOptions,
   ): Promise<void> {
+    adapterLog.debug('更新 Drive 文档正文', {
+      documentId: docToken,
+      sourcePath: options?.sourcePath,
+      operation: 'write_content',
+    });
     await replaceDocumentMarkdown(this.client, docToken, markdown, options);
   }
 
   async moveNode(token: string, newParentToken: string | undefined): Promise<void> {
+    adapterLog.debug('移动 Drive 文件', { nodeToken: token, operation: 'move' });
     await moveDriveFile(this.client, {
       fileToken: token,
       type: 'docx',
@@ -86,7 +111,7 @@ export class DriveAdapter implements FeishuTargetAdapter {
   }
 
   async deleteNode(token: string, nodeType: 'folder' | 'docx' | 'file'): Promise<void> {
+    adapterLog.debug('删除 Drive 文件', { nodeToken: token, operation: 'delete', nodeType });
     await deleteDriveFile(this.client, { fileToken: token, type: nodeType });
   }
 }
-

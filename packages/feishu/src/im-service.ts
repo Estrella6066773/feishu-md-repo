@@ -1,5 +1,8 @@
 import type { FeishuClient } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 import { FeishuApiError, assertFeishuResponse, withRateLimit } from './api-error.js';
+
+const imLog = createLogger('im');
 
 export type ImReceiveIdType = 'chat_id' | 'open_id' | 'user_id' | 'union_id' | 'email' | 'thread_id';
 
@@ -94,18 +97,23 @@ export async function sendPostMarkdownMessage(
   markdown: string | string[],
   title = '',
 ): Promise<ImMessageSendResult> {
-  const response = await withRateLimit(() =>
-    client.im.v1.message.create({
-      params: { receive_id_type: receiveIdType as 'chat_id' },
-      data: {
-        receive_id: receiveId,
-        msg_type: 'post',
-        content: buildPostMarkdownContent(markdown, title),
-      },
-    }),
-  );
-  assertFeishuResponse(response, 'Send IM post message');
-  return extractMessageSendResult(response);
+  try {
+    const response = await withRateLimit(() =>
+      client.im.v1.message.create({
+        params: { receive_id_type: receiveIdType as 'chat_id' },
+        data: {
+          receive_id: receiveId,
+          msg_type: 'post',
+          content: buildPostMarkdownContent(markdown, title),
+        },
+      }),
+    );
+    assertFeishuResponse(response, 'Send IM post message');
+    return extractMessageSendResult(response);
+  } catch (error) {
+    imLog.warn('发送 IM 富文本消息失败', { receiveId }, error);
+    throw error;
+  }
 }
 
 export async function sendTextMessage(
@@ -114,18 +122,23 @@ export async function sendTextMessage(
   receiveId: string,
   text: string,
 ): Promise<ImMessageSendResult> {
-  const response = await withRateLimit(() =>
-    client.im.v1.message.create({
-      params: { receive_id_type: receiveIdType as 'chat_id' },
-      data: {
-        receive_id: receiveId,
-        msg_type: 'text',
-        content: JSON.stringify({ text: text.slice(0, FEISHU_POST_MD_MAX_LENGTH) }),
-      },
-    }),
-  );
-  assertFeishuResponse(response, 'Send IM message');
-  return extractMessageSendResult(response);
+  try {
+    const response = await withRateLimit(() =>
+      client.im.v1.message.create({
+        params: { receive_id_type: receiveIdType as 'chat_id' },
+        data: {
+          receive_id: receiveId,
+          msg_type: 'text',
+          content: JSON.stringify({ text: text.slice(0, FEISHU_POST_MD_MAX_LENGTH) }),
+        },
+      }),
+    );
+    assertFeishuResponse(response, 'Send IM message');
+    return extractMessageSendResult(response);
+  } catch (error) {
+    imLog.warn('发送 IM 文本消息失败', { receiveId }, error);
+    throw error;
+  }
 }
 
 export async function replyPostMarkdownMessage(

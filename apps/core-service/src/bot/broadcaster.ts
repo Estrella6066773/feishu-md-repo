@@ -4,6 +4,7 @@ import type { Binding, BotBroadcastTarget, BotSettings, SyncTriggerType } from '
 import {
   buildQuietBroadcastMessages,
   buildSyncBroadcastThreadPlan,
+  createLogger,
   findNodeMappingForGitPath,
   formatSyncBroadcastSummary,
   hasSyncBroadcastThreadDetails,
@@ -29,6 +30,8 @@ import {
   isQuietThreadInvalidError,
   type QuietBroadcastThread,
 } from './quiet-thread.js';
+
+const botLog = createLogger('bot');
 
 export interface SyncBroadcastContext {
   binding: Binding;
@@ -70,7 +73,7 @@ export class BotBroadcaster {
           }
           await this.sendNormalBroadcast(client, context, target, fileEntries);
         } catch (error) {
-          console.error('[bot] broadcast failed', target.receiveId, error);
+          botLog.error('播报失败', { receiveId: target.receiveId }, error);
         }
       }),
     );
@@ -101,7 +104,7 @@ export class BotBroadcaster {
   ): Promise<void> {
     let thread = await ensureQuietBroadcastThread(client, this.db, context.binding, target);
     if (!thread) {
-      console.warn('[bot] quiet mode unavailable, fallback to normal broadcast', target.receiveId);
+      botLog.warn('安静模式不可用，回退普通播报', { receiveId: target.receiveId });
       await this.sendNormalBroadcast(client, context, target, fileEntries);
       return;
     }
@@ -112,7 +115,7 @@ export class BotBroadcaster {
       if (!target.quietThreadId || !isQuietThreadInvalidError(error)) {
         throw error;
       }
-      console.warn('[bot] quiet thread invalid, recreating', target.receiveId, error);
+      botLog.warn('安静话题无效，重新创建', { receiveId: target.receiveId }, error);
       await clearQuietBroadcastThread(this.db, context.binding, target);
       thread = await ensureQuietBroadcastThread(client, this.db, context.binding, target);
       if (!thread) {
@@ -202,7 +205,7 @@ export class BotBroadcaster {
           if (isFeishuThreadReplyUnsupportedError(error)) {
             throw error;
           }
-          console.warn('[bot] commit thread reply failed', target.receiveId, error);
+          botLog.warn('提交记录话题回复失败', { receiveId: target.receiveId }, error);
         }
       }
       for (const reply of threadPlan.fileReplies) {
@@ -212,12 +215,12 @@ export class BotBroadcaster {
           if (isFeishuThreadReplyUnsupportedError(error)) {
             throw error;
           }
-          console.warn('[bot] file thread reply failed', target.receiveId, error);
+          botLog.warn('文件话题回复失败', { receiveId: target.receiveId }, error);
         }
       }
     } catch (error) {
       if (isFeishuThreadReplyUnsupportedError(error)) {
-        console.warn('[bot] broadcast thread reply unsupported for target', target.receiveId);
+        botLog.warn('目标不支持话题回复', { receiveId: target.receiveId });
         return;
       }
       throw error;

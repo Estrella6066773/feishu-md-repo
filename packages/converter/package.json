@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@feishu-md/feishu": "workspace:*",
+    "@feishu-md/shared": "workspace:*",
     "remark": "^15.0.1",
     "remark-parse": "^11.0.0"
   },

@@ -1,6 +1,7 @@
 import type { DbClient } from '@feishu-md/db';
 import { getBinding, insertSyncLog, updateSyncLog } from '@feishu-md/db';
 import {
+  createLogger,
   shouldForceUpdateForTrigger,
   type RepositoryOptions,
   type SyncTriggerType,
@@ -11,6 +12,8 @@ import { runSync } from '@feishu-md/core';
 import { createGitProvider, fetchRemoteForSync } from '@feishu-md/git';
 import type { SyncQueue } from './scheduler.js';
 import type { BotBroadcaster } from './bot/broadcaster.js';
+
+const coordLog = createLogger('sync-coordinator');
 
 export class SyncCoordinator {
   constructor(
@@ -32,7 +35,16 @@ export class SyncCoordinator {
       startedAt,
     });
 
+    coordLog.info('同步任务入队', {
+      bindingId,
+      logId,
+      trigger,
+      queueDepth: this.queue.getQueueDepth(),
+      fullResync: fullResync === true,
+    });
+
     this.queue.enqueue(async () => {
+      const log = coordLog.child({ bindingId, logId, trigger });
       const binding = await getBinding(this.db, bindingId);
       if (!binding) {
         const message = `Binding not found: ${bindingId}`;
@@ -45,6 +57,7 @@ export class SyncCoordinator {
           startedAt,
           finishedAt: new Date().toISOString(),
         });
+        log.error('绑定不存在', undefined, new Error(message));
         throw new Error(message);
       }
 
@@ -79,6 +92,7 @@ export class SyncCoordinator {
               startedAt,
               finishedAt: new Date().toISOString(),
             });
+            log.info('定时检查无更新，跳过同步', { toSha: latestSha });
             return;
           }
         }
@@ -88,7 +102,12 @@ export class SyncCoordinator {
           db: this.db,
           trigger,
           fullResync,
+          repairMissingRemote: trigger === 'manual' || trigger === 'bot',
           logId,
+        });
+        log.info('同步任务完成', {
+          toSha: result.toSha,
+          operationCount: result.operationCount,
         });
         await this.broadcaster.notifySyncFinished({
           binding,
@@ -98,6 +117,7 @@ export class SyncCoordinator {
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        log.error('同步任务失败', undefined, error);
         await this.broadcaster.notifySyncFinished({
           binding,
           trigger,

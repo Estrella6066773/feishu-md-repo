@@ -1,5 +1,5 @@
 import type { Binding, CommentImportTriggerType } from '@feishu-md/shared';
-import { isReservedSyncGitPath } from '@feishu-md/shared';
+import { createLogger, isReservedSyncGitPath } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import { getFeishuCredentials, listNodeMappings, updateCommentImportLog } from '@feishu-md/db';
 import {
@@ -10,7 +10,6 @@ import {
   deleteDocCommentExport,
   FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
   formatFeishuErrorMessage,
-  formatSyncLog,
   isDocumentCommentExportUnchanged,
   listAllDocumentComments,
   readCommentImportManifest,
@@ -23,6 +22,8 @@ import {
   writeDocCommentExport,
   type FeishuCommentImportManifest,
 } from '@feishu-md/feishu';
+
+const commentLog = createLogger('comment-import');
 
 export interface RunCommentImportOptions {
   binding: Binding;
@@ -56,6 +57,12 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       && !isReservedSyncGitPath(mapping.gitPath)
       && Boolean(mapping.feishuDocToken ?? mapping.feishuNodeToken),
   );
+
+  commentLog.info('开始评论导入', {
+    bindingId: binding.id,
+    logId,
+    documentCount: docMappings.length,
+  });
 
   const runStartedAt = new Date().toISOString();
   const existingManifest = await readCommentImportManifest(binding.repoPath);
@@ -119,10 +126,10 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         assertFeishuResponse(metaResponse, 'Get docx document metadata');
         documentTitle = metaResponse.data?.document?.title;
       } catch (metaError) {
-        console.warn(formatSyncLog(
+        commentLog.warn(
           `读取文档标题失败，继续导入评论: ${formatFeishuErrorMessage(metaError)}`,
-          { sourcePath: gitPath, documentId: feishuDocToken },
-        ));
+          { gitPath, documentId: feishuDocToken },
+        );
       }
 
       const updatedAt = new Date().toISOString();
@@ -166,10 +173,10 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     } catch (error) {
       const message = formatFeishuErrorMessage(error);
       failedDocuments.push({ gitPath, error: message });
-      console.warn(formatSyncLog(`评论导入失败: ${message}`, {
-        sourcePath: gitPath,
+      commentLog.warn(`评论导入失败: ${message}`, {
+        gitPath,
         documentId: feishuDocToken,
-      }));
+      });
     }
   }
 
@@ -229,6 +236,14 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
   if (failedDocuments.length > 0 && manifestDocuments.length === 0) {
     throw new Error(message);
   }
+
+  commentLog.info('评论导入摘要', {
+    bindingId: binding.id,
+    logId,
+    documentCount: manifestDocuments.length,
+    commentCount,
+    failedCount: failedDocuments.length,
+  });
 
   return {
     documentCount: manifestDocuments.length,

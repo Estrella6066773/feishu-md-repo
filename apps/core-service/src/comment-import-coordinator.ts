@@ -1,9 +1,11 @@
 import type { DbClient } from '@feishu-md/db';
 import { getBinding, insertCommentImportLog, updateCommentImportLog } from '@feishu-md/db';
-import type { CommentImportTriggerType } from '@feishu-md/shared';
+import { createLogger, type CommentImportTriggerType } from '@feishu-md/shared';
 import { randomUUID } from 'node:crypto';
 import { runCommentImport } from '@feishu-md/core';
 import type { SyncQueue } from './scheduler.js';
+
+const commentCoordLog = createLogger('comment-import-coordinator');
 
 export class CommentImportCoordinator {
   constructor(
@@ -24,7 +26,15 @@ export class CommentImportCoordinator {
       startedAt,
     });
 
+    commentCoordLog.info('评论导入任务入队', {
+      bindingId,
+      logId,
+      trigger,
+      queueDepth: this.queue.getQueueDepth(),
+    });
+
     this.queue.enqueue(async () => {
+      const log = commentCoordLog.child({ bindingId, logId, trigger });
       const binding = await getBinding(this.db, bindingId);
       if (!binding) {
         const message = `Binding not found: ${bindingId}`;
@@ -37,6 +47,7 @@ export class CommentImportCoordinator {
           startedAt,
           finishedAt: new Date().toISOString(),
         });
+        log.error('绑定不存在', undefined, new Error(message));
         throw new Error(message);
       }
 
@@ -49,15 +60,23 @@ export class CommentImportCoordinator {
         startedAt,
       });
 
+      log.info('评论导入开始');
+
       try {
-        await runCommentImport({
+        const result = await runCommentImport({
           binding,
           db: this.db,
           trigger,
           logId,
         });
+        log.info('评论导入完成', {
+          documentCount: result.documentCount,
+          commentCount: result.commentCount,
+          failedCount: result.failedDocuments.length,
+        });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        log.error('评论导入失败', undefined, error);
         await updateCommentImportLog(this.db, {
           id: logId,
           bindingId,

@@ -1,10 +1,13 @@
 import type { FeishuClient } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import {
   parseMermaidGraph,
   type ParsedMermaidEdge,
   type ParsedMermaidSubgraph,
 } from './mermaid-subgraph.js';
+
+const syncLog = createLogger('sync');
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -75,6 +78,7 @@ async function withWhiteboardRetry<T>(
       if (!isWhiteboardNotReadyError(error) || attempt >= WHITEBOARD_RETRY_DELAYS_MS.length) {
         throw error;
       }
+      syncLog.warn(`${action} 画板未就绪，${WHITEBOARD_RETRY_DELAYS_MS[attempt]!}ms 后重试 (${attempt + 1}/${WHITEBOARD_RETRY_DELAYS_MS.length})`);
       await sleep(WHITEBOARD_RETRY_DELAYS_MS[attempt]!);
     }
   }
@@ -803,6 +807,59 @@ function groupPlansByParentId(plans: SectionBuildPlan[]): Map<string | undefined
   return groups;
 }
 
+/** 先递归测量子分区，再按子树外包确定父分区尺寸（父子优先于同级）。 */
+function measurePlanSubtree(
+  plan: SectionBuildPlan,
+  groupsByParent: Map<string | undefined, SectionBuildPlan[]>,
+): void {
+  const memberDims = computePlanDimensions(plan);
+  const children = groupsByParent.get(plan.subgraph.id) ?? [];
+
+  if (children.length === 0) {
+    plan.bounds = { x: 0, y: 0, ...memberDims };
+    return;
+  }
+
+  for (const child of children) {
+    measurePlanSubtree(child, groupsByParent);
+  }
+
+  placeSiblingSectionGroup(
+    children,
+    SECTION_PADDING,
+    SECTION_TITLE_HEIGHT + SECTION_PADDING,
+  );
+
+  const childBounds = computeBoundsFromRects(children.map((child) => child.bounds));
+  plan.bounds = {
+    x: 0,
+    y: 0,
+    width: snapCeil(Math.max(memberDims.width, childBounds?.width ?? 0)),
+    height: snapCeil(Math.max(memberDims.height, childBounds?.height ?? 0)),
+  };
+}
+
+/** 在父分区最终落位后，递归放置子分区并排版内部块。 */
+function placePlanSubtree(
+  plan: SectionBuildPlan,
+  groupsByParent: Map<string | undefined, SectionBuildPlan[]>,
+  placementByShapeId: Map<string, BlockPlacement>,
+): void {
+  const children = groupsByParent.get(plan.subgraph.id) ?? [];
+  if (children.length > 0) {
+    placeSiblingSectionGroup(
+      children,
+      plan.bounds.x + SECTION_PADDING,
+      plan.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING,
+    );
+    for (const child of children) {
+      placePlanSubtree(child, groupsByParent, placementByShapeId);
+    }
+  }
+
+  layoutPlanInternalBlocks(plan, placementByShapeId);
+}
+
 function applyReadableLayout(
   plans: SectionBuildPlan[],
 ): Map<string, BlockPlacement> {
@@ -813,34 +870,17 @@ function applyReadableLayout(
   const baseX = snapFloor(Math.min(...allShapes.map((shape) => Number(shape.x ?? 0))));
   const baseY = snapFloor(Math.min(...allShapes.map((shape) => Number(shape.y ?? 0))));
 
-  for (const plan of plans) {
-    const dimensions = computePlanDimensions(plan);
-    plan.bounds = { x: 0, y: 0, ...dimensions };
-  }
-
   const groupsByParent = groupPlansByParentId(plans);
-  const planBySubgraphId = new Map(plans.map((plan) => [plan.subgraph.id, plan]));
+  const roots = groupsByParent.get(undefined) ?? [];
 
-  placeSiblingSectionGroup(groupsByParent.get(undefined) ?? [], baseX, baseY);
-
-  const parentsWithChildren = [...groupsByParent.keys()]
-    .filter((parentId): parentId is string => Boolean(parentId))
-    .map((parentId) => planBySubgraphId.get(parentId))
-    .filter((plan): plan is SectionBuildPlan => Boolean(plan))
-    .sort((left, right) => left.subgraph.depth - right.subgraph.depth);
-
-  for (const parent of parentsWithChildren) {
-    const children = groupsByParent.get(parent.subgraph.id) ?? [];
-    if (children.length === 0) continue;
-    placeSiblingSectionGroup(
-      children,
-      parent.bounds.x + SECTION_PADDING,
-      parent.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING,
-    );
+  for (const root of roots) {
+    measurePlanSubtree(root, groupsByParent);
   }
 
-  for (const plan of plans) {
-    layoutPlanInternalBlocks(plan, placementByShapeId);
+  placeSiblingSectionGroup(roots, baseX, baseY);
+
+  for (const root of roots) {
+    placePlanSubtree(root, groupsByParent, placementByShapeId);
   }
 
   expandParentSections(plans);

@@ -1,6 +1,7 @@
 import { getBotSettings, setBotSettings, updateBinding } from '@feishu-md/db';
 import type { DbClient } from '@feishu-md/db';
 import type { Binding, BotBroadcastTarget } from '@feishu-md/shared';
+import { createLogger } from '@feishu-md/shared';
 import type { FeishuClient } from '@feishu-md/feishu';
 import {
   formatFeishuErrorMessage,
@@ -14,6 +15,8 @@ const QUIET_THREAD_ANCHOR =
   '📋 **同步播报（安静模式）**\n后续同步更新将集中在此话题内，不在群会话刷屏。';
 
 const QUIET_THREAD_SEED = '此话题由机器人维护，用于汇集全部同步播报。';
+
+const botLog = createLogger('bot');
 
 export interface QuietBroadcastThread {
   threadId: string;
@@ -92,7 +95,7 @@ export async function createQuietBroadcastThread(
       });
     } catch (error) {
       if (!isFeishuThreadReplyUnsupportedError(error)) {
-        console.warn('[bot] quiet thread seed reply failed', chatId, error);
+        botLog.warn('安静话题种子回复失败', { chatId }, error);
       }
     }
     return { threadId, rootMessageId: anchor.messageId };
@@ -107,13 +110,13 @@ export async function createQuietBroadcastThread(
       threadId = await resolveThreadIdFromMessage(client, anchor.messageId);
     }
     if (!threadId) {
-      console.warn('[bot] quiet thread created but thread_id missing in response', chatId);
+      botLog.warn('安静话题已创建但响应缺少 thread_id', { chatId });
       return null;
     }
     return { threadId, rootMessageId: anchor.messageId };
   } catch (error) {
     if (isFeishuThreadReplyUnsupportedError(error)) {
-      console.warn('[bot] chat does not support quiet mode topics', chatId);
+      botLog.warn('会话不支持安静模式话题', { chatId });
       return null;
     }
     throw error;
@@ -134,7 +137,7 @@ export async function ensureQuietBroadcastThread(
   }
 
   if (target.quietThreadId && !target.quietRootMessageId) {
-    console.warn('[bot] quiet thread missing root message id, recreating', target.receiveId);
+    botLog.warn('安静话题缺少根消息 ID，重新创建', { receiveId: target.receiveId });
   }
 
   const created = await createQuietBroadcastThread(client, target.receiveId);
@@ -143,7 +146,7 @@ export async function ensureQuietBroadcastThread(
   }
 
   await persistBroadcastTargetQuietThread(db, binding, target, created);
-  console.info('[bot] quiet broadcast thread ready', target.receiveId, created.threadId);
+  botLog.info('安静播报话题就绪', { receiveId: target.receiveId, threadId: created.threadId });
   return created;
 }
 

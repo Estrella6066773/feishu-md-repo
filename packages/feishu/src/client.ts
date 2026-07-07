@@ -23,9 +23,15 @@ export interface NodeRef {
   nodeToken?: string;
 }
 
+export interface DirectChildRef {
+  tokens: string[];
+}
+
 export interface FeishuTargetAdapter {
   readonly type: FeishuTargetType;
   getRootParentToken(): string | undefined;
+  /** 列出指定父节点下的直接子节点 token（用于补建检测）。 */
+  listDirectChildren(parentToken: string | undefined): Promise<DirectChildRef[]>;
   ensureFolder(gitPath: string, parentToken: string | undefined, title: string): Promise<NodeRef>;
   ensureDocument(
     gitPath: string,

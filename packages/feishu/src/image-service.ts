@@ -11,8 +11,11 @@ import {
   type BlockIdRelation,
   type ConvertBlockLike,
 } from './docx-block-service.js';
+import { createLogger } from '@feishu-md/shared';
 import { extractMarkdownImageRefs } from './markdown-images.js';
-import { formatSyncLog, type SyncLogContext } from './sync-log.js';
+import type { SyncLogContext } from './sync-log.js';
+
+const syncLog = createLogger('sync');
 
 const IMAGE_BLOCK_TYPE = 27;
 const ALLOWED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
@@ -153,10 +156,10 @@ export async function resolveImageBlockIdsAfterConvertInsert(
   }
 
   if (tempImageIds.length > 0) {
-    console.warn(formatSyncLog(
+    syncLog.warn(
       `Image Block 临时 ID 映射不完整(${tempImageIds.length} 个)，改从文档块列表解析`,
       { documentId },
-    ));
+    );
   }
 
   const items = await listDocumentBlocks(client, documentId, 'List docx blocks for image bind');
@@ -210,10 +213,10 @@ async function replaceDocxImageToken(
     );
     assertFeishuResponse(bindResponse, 'Bind docx image block');
     if (patchError instanceof FeishuApiError) {
-      console.warn(formatSyncLog(
+      syncLog.warn(
         `replace_image patch 失败，已改用 batchUpdate: ${patchError.message}`,
         context,
-      ));
+      );
     }
   }
 }
@@ -234,18 +237,19 @@ export async function bindConvertedImageBlocks(
   const imageRefs = extractMarkdownImageRefs(markdown);
   if (imageRefs.length === 0) return;
   if (imageBlockIds.length === 0) {
-    console.warn(formatSyncLog('Markdown 含图片但插入后未找到 Image Block', context));
+    syncLog.warn('Markdown 含图片但插入后未找到 Image Block', context);
     return;
   }
 
   if (imageBlockIds.length !== imageRefs.length) {
-    console.warn(formatSyncLog(
+    syncLog.warn(
       `图片块数量(${imageBlockIds.length})与 Markdown 引用(${imageRefs.length})不一致，按顺序对齐前 ${Math.min(imageBlockIds.length, imageRefs.length)} 张`,
       context,
-    ));
+    );
   }
 
   const pairCount = Math.min(imageBlockIds.length, imageRefs.length);
+  let successCount = 0;
   for (let i = 0; i < pairCount; i += 1) {
     const ref = imageRefs[i]!;
     const blockId = imageBlockIds[i]!;
@@ -253,17 +257,23 @@ export async function bindConvertedImageBlocks(
     try {
       const resolved = await resolveImage(ref.src, ref.alt);
       if (!resolved) {
-        console.warn(formatSyncLog('图片无法解析，保留空图片块', itemContext));
+        syncLog.warn('图片无法解析，保留空图片块', itemContext);
         continue;
       }
       await uploadAndBindDocxImageBlock(client, documentId, blockId, resolved, itemContext);
+      successCount += 1;
     } catch (error) {
-      console.warn(formatSyncLog(
+      syncLog.warn(
         `图片上传失败，保留空图片块: ${formatFeishuErrorMessage(error)}`,
         itemContext,
-      ));
+      );
     }
   }
+  syncLog.debug('图片绑定完成', {
+    documentId,
+    successCount,
+    total: pairCount,
+  });
 }
 
 /** 创建 Image Block、上传并绑定，返回 block_id（便于失败时清理） */

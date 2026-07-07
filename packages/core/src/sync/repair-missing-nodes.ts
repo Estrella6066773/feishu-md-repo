@@ -1,6 +1,7 @@
 import { basename, dirname } from 'node:path';
 import type { Binding, NodeMapping, RepositoryOptions, SyncMode, WorkspaceOptions } from '@feishu-md/shared';
 import {
+  createLogger,
   DEFAULT_REPOSITORY_OPTIONS,
   isReservedSyncGitPath,
   allSyncDocExtensions,
@@ -21,6 +22,16 @@ import {
   standaloneTabularTitle,
 } from './repository-paths.js';
 import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync-content.js';
+
+const repairLog = createLogger('sync');
+
+/** 父节点 list 子节点结果缓存：key 为 list 用的 parent token（空串表示绑定根）。 */
+export type RemoteChildrenCache = Map<string, Set<string>>;
+
+export interface RepairMissingRemoteResult {
+  repairs: SyncOperation[];
+  remoteChildrenCache: RemoteChildrenCache;
+}
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -43,15 +54,25 @@ function mappingStillNeeded(gitPath: string, treePaths: string[]): boolean {
   });
 }
 
-function mappingToNodeRef(mapping: NodeMapping) {
-  return {
-    token: mapping.feishuNodeToken,
-    nodeToken: mapping.feishuNodeToken,
-    docToken:
-      mapping.feishuDocToken ??
-      (mapping.feishuNodeType === 'docx' ? mapping.feishuNodeToken : undefined),
-    nodeType: mapping.feishuNodeType,
-  };
+export function parentListCacheKey(parentToken: string | undefined): string {
+  return parentToken ?? '';
+}
+
+function mappingRemoteTokens(mapping: NodeMapping): string[] {
+  const tokens = [mapping.feishuNodeToken];
+  if (mapping.feishuDocToken) tokens.push(mapping.feishuDocToken);
+  return tokens;
+}
+
+export function mappingPresentInRemoteCache(
+  mapping: Pick<NodeMapping, 'feishuNodeToken' | 'feishuDocToken' | 'feishuParentToken'>,
+  parentToken: string | undefined,
+  cache: RemoteChildrenCache,
+): boolean {
+  const parentKey = parentListCacheKey(parentToken ?? mapping.feishuParentToken);
+  const remoteSet = cache.get(parentKey);
+  if (!remoteSet) return false;
+  return mappingRemoteTokens(mapping as NodeMapping).some((token) => remoteSet.has(token));
 }
 
 function sortSyncOperations(operations: SyncOperation[]): SyncOperation[] {
@@ -211,8 +232,31 @@ function buildFolderRepair(
   };
 }
 
+function resolveListParentToken(
+  mapping: NodeMapping,
+  rootParentToken: string | undefined,
+): string | undefined {
+  return mapping.feishuParentToken ?? rootParentToken;
+}
+
+function tokensFromDirectChildren(
+  children: Awaited<ReturnType<FeishuTargetAdapter['listDirectChildren']>>,
+): Set<string> {
+  const tokens = new Set<string>();
+  for (const child of children) {
+    for (const token of child.tokens) {
+      if (token) tokens.add(token);
+    }
+  }
+  return tokens;
+}
+
+function mappingPresentInRemoteSet(mapping: NodeMapping, remoteTokens: Set<string>): boolean {
+  return mappingRemoteTokens(mapping).some((token) => remoteTokens.has(token));
+}
+
 /**
- * 飞书侧节点已被手动删除、但本地仍有 node_mapping 时，补建同步操作并清理过期映射。
+ * 按父节点子数量检测飞书侧缺失节点：每父节点 list 一次，数量一致则跳过，不一致则 token 差分补建。
  */
 export async function buildRepairOperationsForMissingRemote(options: {
   binding: Binding;
@@ -225,7 +269,7 @@ export async function buildRepairOperationsForMissingRemote(options: {
   workspaceOptions?: WorkspaceOptions;
   repositoryOptions?: RepositoryOptions;
   gapFillOnly?: boolean;
-}): Promise<SyncOperation[]> {
+}): Promise<RepairMissingRemoteResult> {
   const {
     binding,
     db,
@@ -241,52 +285,83 @@ export async function buildRepairOperationsForMissingRemote(options: {
 
   const mappings = await listNodeMappings(db, binding.id);
   const plannedPaths = new Set(plan.operations.map((operation) => normalizePath(operation.gitPath)));
+  const rootParentToken = adapter.getRootParentToken();
+  const remoteChildrenCache: RemoteChildrenCache = new Map();
   const repairs: SyncOperation[] = [];
 
-  for (const mapping of mappings) {
+  const scanMappings = mappings.filter((mapping) => {
     const gitPath = normalizePath(mapping.gitPath);
-    if (isReservedSyncGitPath(gitPath)) continue;
-    if (!mappingStillNeeded(gitPath, plan.allTrackedPaths)) continue;
-    if (plannedPaths.has(gitPath)) continue;
+    if (isReservedSyncGitPath(gitPath)) return false;
+    return mappingStillNeeded(gitPath, plan.allTrackedPaths);
+  });
 
-    const ref = mappingToNodeRef(mapping);
-    const exists = await adapter.nodeExists(ref);
-    if (exists) continue;
+  const byParent = new Map<string, NodeMapping[]>();
+  for (const mapping of scanMappings) {
+    const listParent = resolveListParentToken(mapping, rootParentToken);
+    const parentKey = parentListCacheKey(listParent);
+    const group = byParent.get(parentKey) ?? [];
+    group.push(mapping);
+    byParent.set(parentKey, group);
+  }
 
-    await deleteNodeMapping(db, mapping.id);
-    console.warn(`[sync] 飞书节点已不存在，将重新创建: ${gitPath || '(根)'}`);
+  for (const [parentKey, groupMappings] of byParent) {
+    const listParent = parentKey === '' ? rootParentToken : parentKey;
+    const children = await adapter.listDirectChildren(listParent);
+    const remoteTokens = tokensFromDirectChildren(children);
+    remoteChildrenCache.set(parentKey, remoteTokens);
 
-    if (mapping.feishuNodeType === 'folder') {
-      repairs.push(buildFolderRepair(mapping, syncMode, bindingName));
+    if (remoteTokens.size === groupMappings.length) {
       continue;
     }
 
-    if (mapping.feishuNodeType !== 'docx') continue;
+    for (const mapping of groupMappings) {
+      const gitPath = normalizePath(mapping.gitPath);
+      if (plannedPaths.has(gitPath)) continue;
+      if (mappingPresentInRemoteSet(mapping, remoteTokens)) continue;
+      await deleteNodeMapping(db, mapping.id);
+      repairLog.warn('飞书节点已不存在，将重新创建', { gitPath: gitPath || '(根)' });
 
-    const repair =
-      syncMode === 'repository'
-        ? await buildRepositoryDocRepair(
-            mapping,
-            plan.allTrackedPaths,
-            repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS,
-            bindingName,
-            readMarkdown,
-            gapFillOnly,
-          )
-        : await buildWorkspaceDocRepair(
-            mapping,
-            plan.allTrackedPaths,
-            readMarkdown,
-            workspaceOptions,
-            gapFillOnly,
-          );
+      if (mapping.feishuNodeType === 'folder') {
+        repairs.push(buildFolderRepair(mapping, syncMode, bindingName));
+        continue;
+      }
 
-    if (repair) {
-      repairs.push(repair);
+      if (mapping.feishuNodeType !== 'docx') continue;
+
+      const repair =
+        syncMode === 'repository'
+          ? await buildRepositoryDocRepair(
+              mapping,
+              plan.allTrackedPaths,
+              repositoryOptions ?? DEFAULT_REPOSITORY_OPTIONS,
+              bindingName,
+              readMarkdown,
+              gapFillOnly,
+            )
+          : await buildWorkspaceDocRepair(
+              mapping,
+              plan.allTrackedPaths,
+              readMarkdown,
+              workspaceOptions,
+              gapFillOnly,
+            );
+
+      if (repair) {
+        repairs.push(repair);
+      }
     }
   }
 
-  return sortSyncOperations(repairs);
+  repairLog.info('缺失节点扫描完成', {
+    bindingId: binding.id,
+    missingRepairCount: repairs.length,
+    scannedMappings: scanMappings.length,
+  });
+
+  return {
+    repairs: sortSyncOperations(repairs),
+    remoteChildrenCache,
+  };
 }
 
 export { sortSyncOperations };

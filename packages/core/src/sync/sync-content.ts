@@ -1,4 +1,3 @@
-import { csvToMarkdown } from '@feishu-md/converter';
 import {
   DEFAULT_REPOSITORY_OPTIONS,
   DEFAULT_WORKSPACE_OPTIONS,
@@ -40,7 +39,7 @@ export async function readSyncableDocumentContent(
   if (raw == null) return null;
 
   if (pathEndsWithExtension(path, extensions.tabularExtensions)) {
-    return csvToMarkdown(raw);
+    return raw;
   }
 
   if (pathEndsWithExtension(path, extensions.mdExtensions)) {

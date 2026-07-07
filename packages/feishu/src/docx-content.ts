@@ -11,7 +11,11 @@ import { bindConvertedImageBlocks, insertDocxImageAt, resolveImageBlockIdsAfterC
 import type { DocxImageResolver } from './image-service.js';
 import { splitMarkdownByDiagrams } from './mermaid-markdown.js';
 import { markdownContainsImages, splitMarkdownByImages, stripMarkdownImagesToFallback } from './markdown-images.js';
-import { formatSyncLog, syncContextFromOptions, type SyncLogContext } from './sync-log.js';
+import { pathEndsWithExtension, parseCsv, createLogger } from '@feishu-md/shared';
+import { insertCsvTableAt } from './docx-table-service.js';
+import { syncContextFromOptions, type SyncLogContext } from './sync-log.js';
+
+const syncLog = createLogger('sync');
 
 export type MarkdownImageResolver = DocxImageResolver;
 
@@ -19,6 +23,8 @@ export interface ReplaceDocumentMarkdownOptions {
   /** Git 仓库内源 Markdown 路径，写入日志便于排查 */
   sourcePath?: string;
   resolveImage?: MarkdownImageResolver;
+  /** 表格类扩展名，用于识别 CSV 等并插入飞书原生表格 */
+  tabularExtensions?: string[];
 }
 
 function syncCtx(
@@ -66,7 +72,18 @@ export async function replaceDocumentMarkdown(
   markdown: string,
   options?: ReplaceDocumentMarkdownOptions,
 ): Promise<void> {
+  syncLog.info('写入文档正文', {
+    documentId,
+    sourcePath: options?.sourcePath,
+  });
   await clearDocumentBody(client, documentId);
+
+  const tabularExtensions = options?.tabularExtensions ?? ['.csv'];
+  if (options?.sourcePath && pathEndsWithExtension(options.sourcePath, tabularExtensions)) {
+    const rows = parseCsv(markdown);
+    await insertCsvTableAt(client, documentId, rows, 0);
+    return;
+  }
 
   const trimmed = markdown.trim() || ' ';
   const segments = splitMarkdownByDiagrams(trimmed);
@@ -91,16 +108,16 @@ export async function replaceDocumentMarkdown(
       try {
         await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
       } catch (sectionError) {
-        console.warn(formatSyncLog(
+        syncLog.warn(
           `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
           syncCtx(documentId, options),
-        ));
+        );
       }
     } catch (error) {
-      console.warn(formatSyncLog(
+      syncLog.warn(
         `画板图表导入失败，保留 Markdown 代码块: ${formatFeishuErrorMessage(error)}`,
         syncCtx(documentId, options),
-      ));
+      );
       await deleteDocumentBlockAtIndex(client, documentId, insertIndex);
       insertIndex += await insertMarkdownSegment(
         client,
@@ -137,15 +154,15 @@ async function insertMarkdownSegment(
       if (!isDocxInsertRecoverableError(error)) {
         throw error;
       }
-      console.warn(formatSyncLog(
+      syncLog.warn(
         `含图片 Markdown convert 插入失败，回退逐张插入: ${formatFeishuErrorMessage(error)}`,
         syncCtx(documentId, options),
-      ));
+      );
       return insertMarkdownSegmentWithImages(client, documentId, trimmed, index, options);
     }
   }
 
-  const candidates = uniqueStrings([trimmed, flattenMarkdownTables(trimmed)]);
+  const candidates = uniqueStrings([flattenMarkdownTables(trimmed), trimmed]);
   for (const content of candidates) {
     try {
       return await insertConvertedMarkdownAt(client, documentId, content, index, options);
@@ -188,10 +205,10 @@ async function insertMarkdownSegmentWithImages(
     try {
       const resolved = await resolveImage(segment.src, segment.alt);
       if (!resolved) {
-        console.warn(formatSyncLog(
+        syncLog.warn(
           '图片无法解析，插入文本占位',
           syncCtx(documentId, options, { imageSrc: segment.src }),
-        ));
+        );
         await insertPlainTextBlockAt(
           client,
           documentId,
@@ -213,10 +230,10 @@ async function insertMarkdownSegmentWithImages(
       currentIndex += 1;
       insertedCount += 1;
     } catch (error) {
-      console.warn(formatSyncLog(
+      syncLog.warn(
         `图片上传失败，插入文本占位: ${formatFeishuErrorMessage(error)}`,
         syncCtx(documentId, options, { imageSrc: segment.src }),
-      ));
+      );
       await insertPlainTextBlockAt(
         client,
         documentId,

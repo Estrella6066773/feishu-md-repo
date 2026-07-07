@@ -32,6 +32,8 @@ import {
   defaultTriggersForSourceType,
   normalizeBindingTriggers,
   DEFAULT_BOT_SETTINGS,
+  createLogger,
+  isDebugEnabled,
 } from '@feishu-md/shared';
 import { installLocalHook, removeLocalHook } from '@feishu-md/git';
 import { createFeishuClient, exportDocumentToMarkdown, formatExportError } from '@feishu-md/feishu';
@@ -75,6 +77,17 @@ export const CORE_API_FEATURES = [
   'comment-import-log-detail',
 ] as const;
 
+/** UI 读取/轮询类 GET，非 debug 且成功时不打访问日志；写操作与错误仍记录 */
+function shouldSkipHttpAccessLog(method: string, status: number): boolean {
+  if (isDebugEnabled()) {
+    return false;
+  }
+  if (method !== 'GET') {
+    return false;
+  }
+  return status < 400;
+}
+
 export function createApp(options: {
   db: DbClient;
   config: ServiceConfig;
@@ -86,6 +99,7 @@ export function createApp(options: {
 }) {
   const app = new Hono();
   const { db, config, scheduler, syncCoordinator, commentImportCoordinator, botManager } = options;
+  const httpLog = createLogger('http');
 
   app.use(
     '*',
@@ -94,6 +108,31 @@ export function createApp(options: {
       allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     }),
   );
+
+  app.use('*', async (c, next) => {
+    const start = Date.now();
+    const method = c.req.method;
+    const path = c.req.path;
+    await next();
+    const status = c.res.status;
+    if (shouldSkipHttpAccessLog(method, status)) {
+      return;
+    }
+    const durationMs = Date.now() - start;
+    const message = `${method} ${path} ${status}`;
+    if (status >= 500) {
+      httpLog.error(message, { durationMs });
+    } else if (status >= 400) {
+      httpLog.warn(message, { durationMs });
+    } else {
+      httpLog.info(message, { durationMs });
+    }
+  });
+
+  app.onError((err, c) => {
+    httpLog.error('未处理请求异常', { path: c.req.path, method: c.req.method }, err);
+    return c.json({ error: 'Internal Server Error' }, 500);
+  });
 
   app.get('/api/health', (c) =>
     c.json({
@@ -128,6 +167,7 @@ export function createApp(options: {
     }
     await setFeishuCredentials(db, body);
     await botManager.refresh();
+    httpLog.info('飞书凭证已更新', { appId: body.appId });
     return c.json({ ok: true });
   });
 
@@ -140,6 +180,7 @@ export function createApp(options: {
     const body = (await c.req.json()) as BotSettings;
     await setBotSettings(db, { ...DEFAULT_BOT_SETTINGS, ...body });
     await botManager.refresh();
+    httpLog.info('机器人设置已更新', { enabled: body.enabled });
     return c.json({ ok: true, connection: botManager.getStatus() });
   });
 
@@ -204,6 +245,7 @@ export function createApp(options: {
     applyLocalGitHook(binding, getPublicBaseUrl(config));
 
     await scheduler.refresh(db, syncCoordinator, commentImportCoordinator);
+    httpLog.info('绑定已创建', { bindingId: binding.id, bindingName: binding.name });
     return c.json(binding, 201);
   });
 
@@ -250,6 +292,12 @@ export function createApp(options: {
       body.trigger ?? 'manual',
       body.fullResync ?? false,
     );
+    httpLog.info('同步已入队', {
+      bindingId: binding.id,
+      logId,
+      trigger: body.trigger ?? 'manual',
+      fullResync: body.fullResync === true,
+    });
     return c.json({ ok: true, queued: true, logId });
   });
 
@@ -299,6 +347,7 @@ export function createApp(options: {
     }
 
     syncCoordinator.enqueueBindingSync(body.bindingId, 'git');
+    httpLog.info('本地 Git 钩子触发同步', { bindingId: body.bindingId });
     return c.json({ ok: true, queued: true });
   });
 

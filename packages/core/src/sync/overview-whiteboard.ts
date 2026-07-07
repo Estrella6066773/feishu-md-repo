@@ -4,6 +4,7 @@ import type { Binding, FeishuTargetType, NodeMapping, SyncMode } from '@feishu-m
 import {
   SYNC_OVERVIEW_GIT_PATH,
   SYNC_OVERVIEW_TITLE,
+  createLogger,
   isReservedSyncGitPath,
 } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
@@ -28,6 +29,7 @@ interface StructureTreeNode {
 }
 
 const OVERVIEW_NATIVE_BOARD_VERSION = 2;
+const overviewLog = createLogger('sync');
 
 export async function syncOverviewWhiteboard(options: {
   binding: Binding;
@@ -38,9 +40,13 @@ export async function syncOverviewWhiteboard(options: {
   syncMode: SyncMode;
 }): Promise<boolean> {
   const { binding, db, client, adapter, targetType, syncMode } = options;
+  overviewLog.debug('开始更新同步文档总览', { bindingId: binding.id });
   const mappings = await listNodeMappings(db, binding.id);
   const tree = buildStructureTree(mappings, binding.name, syncMode);
-  if (!tree) return false;
+  if (!tree) {
+    overviewLog.debug('无结构树，跳过总览更新', { bindingId: binding.id });
+    return false;
+  }
 
   const linkNodes = flattenStructureTree(tree);
   const mindMapHash = hashContent(
@@ -49,6 +55,7 @@ export async function syncOverviewWhiteboard(options: {
 
   const existing = await getNodeMappingByGitPath(db, binding.id, SYNC_OVERVIEW_GIT_PATH);
   if (existing?.contentSha === mindMapHash) {
+    overviewLog.debug('总览内容未变化，跳过写入', { bindingId: binding.id });
     return false;
   }
 

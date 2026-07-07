@@ -106,6 +106,9 @@ importers:
       '@feishu-md/feishu':
         specifier: workspace:*
         version: link:../feishu
+      '@feishu-md/shared':
+        specifier: workspace:*
+        version: link:../shared
       remark:
         specifier: ^15.0.1
         version: 15.0.1
@@ -201,6 +204,9 @@ importers:
 
   packages/shared:
     devDependencies:
+      '@types/node':
+        specifier: ^22.15.21
+        version: 22.19.21
       typescript:
         specifier: ^5.8.3
         version: 5.9.3

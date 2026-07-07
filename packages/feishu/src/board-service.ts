@@ -1,4 +1,5 @@
 import type { FeishuClient } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 import { assertFeishuResponse, withRateLimit } from './api-error.js';
 import {
   findDocumentPageBlock,
@@ -7,6 +8,8 @@ import {
   listDocumentBlocks,
   type DocxBlockListItem,
 } from './docx-block-service.js';
+
+const syncLog = createLogger('sync');
 
 const BOARD_BLOCK_TYPE = 43;
 const BOARD_TOKEN_RETRY_DELAYS_MS = [200, 500, 800, 1200, 2000, 3000];
@@ -176,7 +179,7 @@ async function createBoardMindMapNodes(
       if (mode === modes[modes.length - 1]) {
         throw error instanceof Error ? error : new Error(message);
       }
-      console.warn(`[sync] 思维导图批量 ${mode} 创建失败，尝试下一种: ${message}`);
+      syncLog.warn(`思维导图批量 ${mode} 创建失败，尝试下一种: ${message}`);
     }
   }
 }

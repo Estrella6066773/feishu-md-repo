@@ -1,5 +1,6 @@
 import type { DbClient } from '@feishu-md/db';
 import { listBindings } from '@feishu-md/db';
+import { createLogger } from '@feishu-md/shared';
 import type { SyncTriggerType } from '@feishu-md/shared';
 import { normalizeBindingTriggers } from '@feishu-md/shared';
 import type { SyncCoordinator } from './sync-coordinator.js';
@@ -14,6 +15,10 @@ export class SyncQueue {
     void this.drain();
   }
 
+  getQueueDepth(): number {
+    return this.pending.length + (this.running ? 1 : 0);
+  }
+
   private async drain(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -23,12 +28,15 @@ export class SyncQueue {
       try {
         await task();
       } catch (error) {
-        console.error('[sync-queue] task failed:', error);
+        queueLog.error('队列任务失败', undefined, error);
       }
     }
     this.running = false;
   }
 }
+
+const queueLog = createLogger('sync-queue');
+const schedulerLog = createLogger('scheduler');
 
 export class Scheduler {
   private timers = new Map<string, ReturnType<typeof setInterval>>();
@@ -53,6 +61,7 @@ export class Scheduler {
       if (!triggers.scheduleEnabled) continue;
       const timer = setInterval(
         () => {
+          schedulerLog.debug('定时触发同步与评论导入', { bindingId: binding.id });
           syncCoordinator.enqueueBindingSync(binding.id, 'schedule');
           if (triggers.commentImportOnSchedule) {
             commentImportCoordinator.enqueueCommentImport(binding.id, 'schedule');
@@ -62,6 +71,7 @@ export class Scheduler {
       );
       this.timers.set(binding.id, timer);
     }
+    schedulerLog.info('定时任务已刷新', { activeTimers: this.timers.size });
   }
 
   stopAll(): void {

@@ -1,4 +1,5 @@
 import type { FeishuClient } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 
 export class FeishuApiError extends Error {
   constructor(
@@ -31,7 +32,9 @@ export function formatFeishuErrorMessage(error: unknown): string {
 
 const FEISHU_API_MAX_RETRIES = 4;
 const FEISHU_API_RETRY_BASE_MS = 800;
-const FEISHU_API_RATE_LIMIT_DELAY_MS = 350;
+const FEISHU_API_RATE_LIMIT_DELAY_MS = 500;
+
+const syncApiLog = createLogger('sync');
 
 const TRANSIENT_NETWORK_CODES = new Set([
   'ECONNRESET',
@@ -53,12 +56,17 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
     } catch (error) {
       lastError = error;
       if (attempt >= FEISHU_API_MAX_RETRIES || !isRetryableFeishuRequestError(error)) {
+        syncApiLog.warn(
+          `飞书 API 请求最终失败: ${describeRetryableError(error)}`,
+          undefined,
+          error,
+        );
         throw normalizeFeishuClientError(error);
       }
 
       const delayMs = FEISHU_API_RETRY_BASE_MS * 2 ** attempt;
-      console.warn(
-        `[sync] 飞书 API 请求失败，${delayMs}ms 后重试 (${attempt + 1}/${FEISHU_API_MAX_RETRIES}): ${describeRetryableError(error)}`,
+      syncApiLog.warn(
+        `飞书 API 请求失败，${delayMs}ms 后重试 (${attempt + 1}/${FEISHU_API_MAX_RETRIES}): ${describeRetryableError(error)}`,
       );
       await sleep(delayMs);
     }
@@ -69,8 +77,14 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
 
 function isRetryableFeishuRequestError(error: unknown): boolean {
   if (error instanceof FeishuApiError) {
-    // 频控 / 素材并发 / 服务端临时错误
-    return error.code === 1061045 || error.code === 99991400 || error.code === 99991672;
+    // 频控 / 素材并发 / 服务端临时错误 / 租户校验瞬时失败（2200）
+    return (
+      error.code === 1061045
+      || error.code === 11232
+      || error.code === 2200
+      || error.code === 99991400
+      || error.code === 99991672
+    );
   }
 
   const networkCode = extractNetworkErrorCode(error);

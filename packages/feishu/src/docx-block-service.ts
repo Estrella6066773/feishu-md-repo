@@ -1,5 +1,8 @@
 import type { FeishuClient } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 import { assertFeishuResponse, withRateLimit } from './api-error.js';
+
+const docxBlockLog = createLogger('docx-block');
 
 const DOCX_PAGE_BLOCK_LIST_SIZE = 500;
 const TEXT_BLOCK_TYPE = 2;
@@ -190,11 +193,22 @@ export async function insertDocumentBlockChildrenAt(
   children: BlockChildPayload,
   action: string,
 ) {
+  return insertBlockChildrenUnder(client, documentId, documentId, index, children, action);
+}
+
+export async function insertBlockChildrenUnder(
+  client: FeishuClient,
+  documentId: string,
+  parentBlockId: string,
+  index: number,
+  children: BlockChildPayload,
+  action: string,
+) {
   const createResponse = await withRateLimit(() =>
     client.docx.v1.documentBlockChildren.create({
       path: {
         document_id: documentId,
-        block_id: documentId,
+        block_id: parentBlockId,
       },
       data: {
         children: children as never,
@@ -267,10 +281,13 @@ export async function clearDocumentBody(
   client: FeishuClient,
   documentId: string,
 ): Promise<void> {
+  docxBlockLog.debug('清空文档正文', { documentId });
   const items = await listDocumentBlocks(client, documentId, 'List docx blocks');
   const pageBlock = findDocumentPageBlock(items, documentId);
   const childCount = pageBlock?.children?.length ?? 0;
   if (childCount === 0) return;
+
+  docxBlockLog.debug('删除文档块', { documentId, blockCount: childCount });
 
   const deleteResponse = await withRateLimit(() =>
     client.docx.v1.documentBlockChildren.batchDelete({

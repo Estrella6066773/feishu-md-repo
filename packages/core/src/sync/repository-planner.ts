@@ -1,5 +1,6 @@
 import {
   DEFAULT_REPOSITORY_OPTIONS,
+  createLogger,
   matchesAnyProjectPathGlob,
   shouldForceUpdateForTrigger,
 } from '@feishu-md/shared';
@@ -17,6 +18,8 @@ import {
   standaloneTabularTitle,
 } from './repository-paths.js';
 import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync-content.js';
+
+const plannerLog = createLogger('sync-planner');
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -140,6 +143,12 @@ export class RepositoryPlanner implements SyncPlanner {
         forceWrite,
       });
     }
+
+    const counts = operations.reduce<Record<string, number>>((acc, op) => {
+      acc[op.type] = (acc[op.type] ?? 0) + 1;
+      return acc;
+    }, {});
+    plannerLog.debug('同步规划摘要', { syncMode: 'repository', ...counts, total: operations.length });
 
     return {
       bindingId: context.bindingId,

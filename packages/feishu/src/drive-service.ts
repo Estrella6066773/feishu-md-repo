@@ -1,11 +1,15 @@
 import type { FeishuClient, NodeRef } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 import { assertFeishuResponse, withRateLimit } from './api-error.js';
 import { createEmptyDocument, replaceDocumentMarkdown } from './docx-content.js';
+
+const driveApiLog = createLogger('drive-api');
 
 export async function createDriveFolder(
   client: FeishuClient,
   options: { parentFolderToken: string; name: string },
 ): Promise<NodeRef> {
+  driveApiLog.debug('创建 Drive 文件夹', { name: options.name });
   const response = await withRateLimit(() =>
     client.drive.v1.file.createFolder({
       data: {
@@ -32,6 +36,7 @@ export async function createDriveDocument(
   client: FeishuClient,
   options: { parentFolderToken: string; title: string },
 ): Promise<NodeRef> {
+  driveApiLog.debug('创建 Drive 文档', { title: options.title });
   const documentId = await createEmptyDocument(client, {
     folderToken: options.parentFolderToken,
     title: options.title,
@@ -69,21 +74,35 @@ export async function listDriveFolderChildren(
   client: FeishuClient,
   folderToken: string,
 ): Promise<Array<{ token: string; name: string; type: string }>> {
-  const response = await withRateLimit(() =>
-    client.drive.v1.file.list({
-      params: {
-        folder_token: folderToken,
-        page_size: 200,
-      },
-    }),
-  );
-  assertFeishuResponse(response, 'List drive folder children');
+  driveApiLog.debug('列出 Drive 文件夹子项', { folderToken });
+  const files: Array<{ token: string; name: string; type: string }> = [];
+  let pageToken: string | undefined;
 
-  return (response.data?.files ?? []).map((file) => ({
-    token: file.token ?? '',
-    name: file.name ?? '',
-    type: file.type ?? '',
-  }));
+  do {
+    const response = await withRateLimit(() =>
+      client.drive.v1.file.list({
+        params: {
+          folder_token: folderToken,
+          page_size: 200,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      }),
+    );
+    assertFeishuResponse(response, 'List drive folder children');
+
+    for (const file of response.data?.files ?? []) {
+      files.push({
+        token: file.token ?? '',
+        name: file.name ?? '',
+        type: file.type ?? '',
+      });
+    }
+
+    if (!response.data?.has_more) break;
+    pageToken = response.data?.next_page_token;
+  } while (pageToken);
+
+  return files;
 }
 
 export async function findDriveChildByName(
@@ -113,6 +132,7 @@ export async function deleteDriveFile(
   client: FeishuClient,
   options: { fileToken: string; type: 'docx' | 'folder' | 'file' },
 ): Promise<void> {
+  driveApiLog.debug('删除 Drive 文件', { fileToken: options.fileToken, type: options.type });
   const response = await withRateLimit(() =>
     client.drive.v1.file.delete({
       path: { file_token: options.fileToken },

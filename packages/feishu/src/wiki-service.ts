@@ -1,6 +1,9 @@
 import type { FeishuClient, NodeRef } from './client.js';
+import { createLogger } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import { createEmptyDocument, replaceDocumentMarkdown } from './docx-content.js';
+
+const wikiApiLog = createLogger('wiki-api');
 
 export interface ResolvedWikiNode {
   spaceId: string;
@@ -70,6 +73,7 @@ export async function createWikiDocxNode(
     title: string;
   },
 ): Promise<NodeRef> {
+  wikiApiLog.debug('创建 Wiki 文档节点', { title: options.title });
   const response = await withRateLimit(() =>
     client.wiki.v2.spaceNode.create({
       path: { space_id: options.spaceId },
@@ -123,6 +127,7 @@ export async function moveWikiNode(
     targetParentToken?: string;
   },
 ): Promise<void> {
+  wikiApiLog.debug('移动 Wiki 节点', { nodeToken: options.nodeToken });
   const response = await withRateLimit(() =>
     client.wiki.v2.spaceNode.move({
       path: {
@@ -150,22 +155,38 @@ export async function listWikiChildNodes(
     objType: string;
   }>
 > {
-  const response = await withRateLimit(() =>
-    client.wiki.v2.spaceNode.list({
-      path: { space_id: spaceId },
-      params: {
-        page_size: 50,
-        parent_node_token: parentNodeToken,
-      },
-    }),
-  );
-  assertFeishuResponse(response, 'List wiki child nodes');
+  const items: Array<{
+    node_token?: string;
+    obj_token?: string;
+    title?: string;
+    obj_type?: string;
+  }> = [];
+  let pageToken: string | undefined;
+  wikiApiLog.debug('列出 Wiki 子节点', { parentToken: parentNodeToken ?? '(根)' });
 
-  return (response.data?.items ?? []).map((item) => ({
+  do {
+    const response = await withRateLimit(() =>
+      client.wiki.v2.spaceNode.list({
+        path: { space_id: spaceId },
+        params: {
+          page_size: 50,
+          parent_node_token: parentNodeToken,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      }),
+    );
+    assertFeishuResponse(response, 'List wiki child nodes');
+    items.push(...(response.data?.items ?? []));
+
+    if (!response.data?.has_more) break;
+    pageToken = response.data?.page_token;
+  } while (pageToken);
+
+  return items.map((item) => ({
     nodeToken: item.node_token ?? '',
     objToken: item.obj_token,
     title: item.title,
-    objType: item.obj_type,
+    objType: item.obj_type ?? '',
   }));
 }
 
@@ -193,6 +214,7 @@ export async function deleteWikiNode(
   client: FeishuClient,
   options: { spaceId: string; nodeToken: string },
 ): Promise<void> {
+  wikiApiLog.debug('删除 Wiki 节点', { nodeToken: options.nodeToken });
   const response = await withRateLimit(() =>
     (client as FeishuClient & { delete: (url: string) => Promise<{ code?: number; msg?: string }> }).delete(
       `https://open.feishu.cn/open-apis/wiki/v2/spaces/${encodeURIComponent(options.spaceId)}/nodes/${encodeURIComponent(options.nodeToken)}`,
