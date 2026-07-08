@@ -2,17 +2,15 @@ import type { FeishuClient } from './client.js';
 import { createLogger, normalizeTableRows } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import {
-  insertBlockChildrenUnder,
   insertDocumentBlockChildrenAt,
   insertPlainTextBlockAt,
   listDocumentBlocks,
 } from './docx-block-service.js';
+import { insertMarkdownIntoTableCell, clearTableCellMarkdownCache } from './table-cell-markdown.js';
 
 const docxTableLog = createLogger('docx-table');
 
-const DOCX_TEXT_BLOCK_TYPE = 2;
 const DOCX_TABLE_BLOCK_TYPE = 31;
-const DOCX_CELL_TEXT_MAX_LENGTH = 8000;
 /** 飞书「创建块」接口建表时 row_size / column_size 的上限 */
 const CREATE_BLOCK_TABLE_LIMIT = 9;
 
@@ -122,22 +120,13 @@ async function fillTableCells(
   for (let cellIndex = 0; cellIndex < cellIds.length; cellIndex += 1) {
     const rowIndex = Math.floor(cellIndex / columnCount);
     const columnIndex = cellIndex % columnCount;
-    const content = normalized[rowIndex]![columnIndex]!.slice(0, DOCX_CELL_TEXT_MAX_LENGTH);
+    const content = normalized[rowIndex]![columnIndex]!;
 
-    await insertBlockChildrenUnder(
+    await insertMarkdownIntoTableCell(
       client,
       documentId,
       cellIds[cellIndex]!,
-      0,
-      [
-        {
-          block_type: DOCX_TEXT_BLOCK_TYPE,
-          text: {
-            elements: [{ text_run: { content } }],
-          },
-        },
-      ],
-      'Insert CSV table cell text',
+      content,
     );
   }
 }
@@ -207,6 +196,7 @@ export async function insertNativeTableAt(
       : await listTableCellIds(client, documentId, tableBlockId);
 
   await fillTableCells(client, documentId, normalized, cellIds, columnCount);
+  clearTableCellMarkdownCache();
 
   return 1;
 }
