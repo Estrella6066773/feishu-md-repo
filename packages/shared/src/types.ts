@@ -18,6 +18,14 @@ export function isReservedSyncGitPath(gitPath: string): boolean {
 }
 export type SyncJobStatus = 'pending' | 'running' | 'success' | 'failed';
 
+export type SyncProgressPhase =
+  | 'planning'
+  | 'structure'
+  | 'content'
+  | 'cleanup'
+  | 'overview'
+  | 'done';
+
 export type FeishuUserRole = 'admin' | 'manager' | 'member' | 'blacklist';
 
 /** 显式配置的飞书用户权限（default 组用户不写入库） */
@@ -110,6 +118,11 @@ export interface SyncLogEntry {
   toSha?: string;
   status: SyncJobStatus;
   message?: string;
+  /** 同步进度阶段（按文档数量统计主要在 content 阶段） */
+  progressPhase?: SyncProgressPhase;
+  progressDone?: number;
+  progressTotal?: number;
+  currentGitPath?: string;
   startedAt: string;
   finishedAt?: string;
 }
@@ -132,7 +145,10 @@ export interface CommentImportRequest {
 }
 
 export interface SyncRequest {
+  /** 修复同步：全库结构检查，并按飞书块特征校验后仅重写异常正文 */
   fullResync?: boolean;
+  /** 强制重写全部正文（需配合 fullResync） */
+  forceRewriteAll?: boolean;
   trigger?: SyncTriggerType;
 }
 

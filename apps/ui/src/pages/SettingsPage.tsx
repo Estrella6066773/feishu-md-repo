@@ -1,7 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { BroadcastTargetEditor } from '@/components/BroadcastTargetEditor';
-import { DEFAULT_BOT_SETTINGS, type BotSettings } from '@feishu-md/shared';
+import { DEFAULT_BOT_SETTINGS, BOT_COMMAND_SUMMARY, type BotSettings } from '@feishu-md/shared';
+import { ServiceHealthAlert } from '@/components/ServiceHealthAlert';
+import { BotConnectionBadge } from '@/components/ConnectionStatusBadge';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHeader } from '@/components/ui/Card';
@@ -9,14 +11,14 @@ import { Field } from '@/components/ui/Field';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Toggle } from '@/components/ui/Toggle';
 import { UserPermissionsCard } from '@/components/UserPermissionsCard';
-import { fetchBindings, fetchHealth, fetchSettings, isCoreServiceCompatible, saveBotSettings, saveFeishuCredentials } from '@/lib/queries';
+import { fetchBindings, saveBotSettings, saveFeishuCredentials } from '@/lib/queries';
+import { useBindingsQuery, useHealthQuery, useSettingsQuery } from '@/hooks/useCoreQueries';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
-  const settings = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
-  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, retry: 1, refetchInterval: 15_000 });
-  const bindings = useQuery({ queryKey: ['bindings'], queryFn: fetchBindings });
-  const serviceStale = health.data != null && !isCoreServiceCompatible(health.data);
+  const settings = useSettingsQuery();
+  const health = useHealthQuery(15_000);
+  const bindings = useBindingsQuery();
 
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -42,28 +44,17 @@ export function SettingsPage() {
   });
 
   const connection = settings.data?.botConnection;
-  const connectionClass = connection?.connected
-    ? 'connection-badge connection-badge-online'
-    : connection?.listening
-      ? 'connection-badge connection-badge-pending'
-      : 'connection-badge connection-badge-offline';
 
   return (
     <div className="page-stack-lg max-w-3xl">
       <PageHeader title="设置" description="配置飞书应用凭证、同步播报与指令监听。" />
 
-      {serviceStale ? (
-        <Alert tone="danger" title="核心服务版本过旧">
-          当前 8787 端口上的 core-service 缺少新版 API（保存机器人/用户权限会 404）。请结束旧进程后重新运行{' '}
-          <code>pnpm dev:service</code>，并刷新本页。Windows 查占用：<code>netstat -ano | findstr :8787</code>
-        </Alert>
-      ) : null}
-
-      {!health.isLoading && health.isError ? (
-        <Alert tone="danger" title="无法连接核心服务">
-          请先运行 <code>pnpm dev:service</code>（默认 http://127.0.0.1:8787）。
-        </Alert>
-      ) : null}
+      <ServiceHealthAlert
+        variant="settings"
+        healthError={health.isError}
+        healthLoading={health.isLoading}
+        health={health.data}
+      />
 
       <Card>
         <CardHeader title="运行环境" description="本地数据与 API 地址" />
@@ -150,19 +141,10 @@ export function SettingsPage() {
             title="机器人播报与指令"
             description="同步完成后推送消息；通过长连接接收「同步」等指令。"
             action={
-              <span className={connectionClass}>
-                <span
-                  className={`status-dot ${
-                    connection?.connected
-                      ? 'status-dot-online'
-                      : connection?.listening
-                        ? 'status-dot-warning'
-                        : 'status-dot-offline'
-                  }`}
-                  style={{ width: '0.375rem', height: '0.375rem' }}
-                />
-                {connection?.connected ? '长连接已就绪' : connection?.listening ? '连接中' : '未启动'}
-              </span>
+              <BotConnectionBadge
+                connected={connection?.connected}
+                listening={connection?.listening}
+              />
             }
           />
 
@@ -277,7 +259,7 @@ export function SettingsPage() {
             </Field>
 
             <div className="help-box">
-              支持指令：同步 / sync、同步 &lt;绑定名&gt;、完全重新搭建、状态 / status、帮助 / help。
+              {BOT_COMMAND_SUMMARY}
               需在飞书开发者后台订阅「接收消息 im.message.receive_v1」，并选择「使用长连接接收事件」；保存订阅前请确保本机 core-service 已运行。
             </div>
           </div>

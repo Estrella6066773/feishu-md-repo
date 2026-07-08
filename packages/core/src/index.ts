@@ -7,4 +7,5 @@ export {
   BINDING_TASK_PREEMPTED_MESSAGE,
   throwIfAborted,
 } from './errors.js';
+export { SyncProgressReporter } from './sync/sync-progress.js';
 export type { SyncPlan, SyncOperation, SyncPlanner } from './sync/planner.js';

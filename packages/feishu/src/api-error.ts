@@ -1,5 +1,6 @@
 import type { FeishuClient } from './client.js';
 import { createLogger } from '@feishu-md/shared';
+import { getFeishuApiRetryPolicy } from './api-retry-policy.js';
 
 export class FeishuApiError extends Error {
   constructor(
@@ -33,6 +34,7 @@ export function formatFeishuErrorMessage(error: unknown): string {
 const FEISHU_API_MAX_RETRIES = 4;
 const FEISHU_API_RETRY_BASE_MS = 800;
 const FEISHU_API_RATE_LIMIT_DELAY_MS = 500;
+const FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS = 60_000;
 
 const syncApiLog = createLogger('sync');
 
@@ -45,9 +47,11 @@ const TRANSIENT_NETWORK_CODES = new Set([
 ]);
 
 export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
+  const persistOnRateLimit = getFeishuApiRetryPolicy().persistOnRateLimit === true;
   let lastError: unknown;
+  let attempt = 0;
 
-  for (let attempt = 0; attempt <= FEISHU_API_MAX_RETRIES; attempt += 1) {
+  while (true) {
     try {
       const result = await task();
       // Docx / Wiki write APIs are limited to ~3 QPS per app/document.
@@ -55,7 +59,8 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
       return result;
     } catch (error) {
       lastError = error;
-      if (attempt >= FEISHU_API_MAX_RETRIES || !isRetryableFeishuRequestError(error)) {
+      const retryable = isRetryableFeishuRequestError(error);
+      if (!retryable) {
         syncApiLog.warn(
           `飞书 API 请求最终失败: ${describeRetryableError(error)}`,
           undefined,
@@ -64,18 +69,34 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
         throw normalizeFeishuClientError(error);
       }
 
-      const delayMs = FEISHU_API_RETRY_BASE_MS * 2 ** attempt;
+      const rateLimit = isRateLimitError(error);
+      const shouldPersist = persistOnRateLimit && rateLimit;
+      if (!shouldPersist && attempt >= FEISHU_API_MAX_RETRIES) {
+        syncApiLog.warn(
+          `飞书 API 请求最终失败: ${describeRetryableError(error)}`,
+          undefined,
+          error,
+        );
+        throw normalizeFeishuClientError(error);
+      }
+
+      const delayMs = Math.min(
+        FEISHU_API_RETRY_BASE_MS * 2 ** Math.min(attempt, 8),
+        shouldPersist ? FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS : 30_000,
+      );
+      attempt += 1;
+      const retryLabel = shouldPersist
+        ? `持续重试 (${attempt})`
+        : `重试 (${attempt}/${FEISHU_API_MAX_RETRIES})`;
       syncApiLog.warn(
-        `飞书 API 请求失败，${delayMs}ms 后重试 (${attempt + 1}/${FEISHU_API_MAX_RETRIES}): ${describeRetryableError(error)}`,
+        `飞书 API 请求失败，${delayMs}ms 后${retryLabel}: ${describeRetryableError(error)}`,
       );
       await sleep(delayMs);
     }
   }
-
-  throw normalizeFeishuClientError(lastError);
 }
 
-function isRetryableFeishuRequestError(error: unknown): boolean {
+export function isRetryableFeishuRequestError(error: unknown): boolean {
   if (error instanceof FeishuApiError) {
     // 频控 / 素材并发 / 服务端临时错误 / 租户校验瞬时失败（2200）
     return (
@@ -110,6 +131,24 @@ function isRetryableFeishuRequestError(error: unknown): boolean {
   }
 
   return false;
+}
+
+export function isRateLimitError(error: unknown): boolean {
+  if (error instanceof FeishuApiError) {
+    return (
+      error.code === 1061045
+      || error.code === 99991400
+      || error.code === 99991672
+    );
+  }
+
+  if (error && typeof error === 'object' && 'response' in error) {
+    const status = (error as { response?: { status?: number } }).response?.status;
+    if (status === 429) return true;
+  }
+
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes('frequency limit') || message.includes('rate limit');
 }
 
 function extractNetworkErrorCode(error: unknown): string | undefined {

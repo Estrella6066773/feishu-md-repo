@@ -29,17 +29,29 @@ export class SyncCoordinator {
     private registry: BindingTaskRegistry,
   ) {}
 
-  enqueueBindingSync(bindingId: string, trigger: SyncTriggerType, fullResync = false): string {
+  enqueueBindingSync(
+    bindingId: string,
+    trigger: SyncTriggerType,
+    fullResync = false,
+    forceRewriteAll = false,
+  ): string {
     const logId = randomUUID();
     const startedAt = new Date().toISOString();
     const preempt = isManualPreemptTrigger(trigger);
+    const queueMessage = forceRewriteAll
+      ? '强制重写排队中'
+      : fullResync
+        ? '修复同步排队中'
+        : preempt
+          ? '同步准备中'
+          : '同步排队中';
 
     void insertSyncLog(this.db, {
       id: logId,
       bindingId,
       trigger,
       status: 'pending',
-      message: fullResync ? '完全重新搭建排队中' : preempt ? '同步准备中' : '同步排队中',
+      message: queueMessage,
       startedAt,
     });
 
@@ -49,6 +61,7 @@ export class SyncCoordinator {
       trigger,
       queueDepth: this.queue.getQueueDepth(),
       fullResync: fullResync === true,
+      forceRewriteAll: forceRewriteAll === true,
       preempt,
     });
 
@@ -58,6 +71,7 @@ export class SyncCoordinator {
       trigger,
       startedAt,
       fullResync,
+      forceRewriteAll,
       preempt,
     });
 
@@ -70,9 +84,10 @@ export class SyncCoordinator {
     trigger: SyncTriggerType;
     startedAt: string;
     fullResync: boolean;
+    forceRewriteAll: boolean;
     preempt: boolean;
   }): Promise<void> {
-    const { bindingId, logId, trigger, startedAt, fullResync, preempt } = options;
+    const { bindingId, logId, trigger, startedAt, fullResync, forceRewriteAll, preempt } = options;
     let generation = this.registry.getGeneration(bindingId);
     if (preempt) {
       generation = await preemptBindingTasks(this.db, this.registry, this.queue, bindingId);
@@ -93,6 +108,7 @@ export class SyncCoordinator {
           startedAt,
           generation,
           fullResync,
+          forceRewriteAll,
         });
       },
     };
@@ -107,8 +123,9 @@ export class SyncCoordinator {
     startedAt: string;
     generation: number;
     fullResync: boolean;
+    forceRewriteAll: boolean;
   }): Promise<void> {
-    const { bindingId, logId, trigger, startedAt, generation, fullResync } = options;
+    const { bindingId, logId, trigger, startedAt, generation, fullResync, forceRewriteAll } = options;
     const log = coordLog.child({ bindingId, logId, trigger });
     const shouldAbort = () => this.registry.isStale(bindingId, generation);
 
@@ -191,6 +208,7 @@ export class SyncCoordinator {
         db: this.db,
         trigger,
         fullResync,
+        forceRewriteAll,
         repairMissingRemote: trigger === 'manual' || trigger === 'bot',
         logId,
         shouldAbort,

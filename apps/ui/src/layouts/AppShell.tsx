@@ -1,5 +1,4 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import {
   IconDashboard,
   IconFeishu,
@@ -8,7 +7,8 @@ import {
   IconSettings,
   IconToolbox,
 } from '@/components/icons';
-import { fetchHealth, fetchSettings } from '@/lib/queries';
+import { BotConnectionBadge, CoreServiceConnectionBadge } from '@/components/ConnectionStatusBadge';
+import { useHealthQuery, useServiceOnline, useSettingsQuery } from '@/hooks/useCoreQueries';
 
 const navItems = [
   { to: '/', label: '仪表盘', end: true, icon: IconDashboard, desc: '服务状态与概览' },
@@ -29,17 +29,9 @@ const pageMeta: Record<string, { title: string; desc: string }> = {
 export function AppShell() {
   const location = useLocation();
   const meta = pageMeta[location.pathname] ?? { title: 'Feishu MD Repo', desc: '' };
-  const health = useQuery({
-    queryKey: ['health'],
-    queryFn: fetchHealth,
-    retry: 1,
-    refetchInterval: 30_000,
-  });
-  const settings = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
-
-  const serviceOnline = !health.isError && health.data?.ok;
-  const botConnected = settings.data?.botConnection?.connected;
-  const botListening = settings.data?.botConnection?.listening;
+  const health = useHealthQuery(30_000);
+  const settings = useSettingsQuery();
+  const serviceOnline = useServiceOnline(health);
 
   return (
     <div className="app-shell">
@@ -74,25 +66,13 @@ export function AppShell() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="status-pill">
-            <span
-              className={`status-dot ${serviceOnline ? 'status-dot-online' : 'status-dot-offline'}`}
-            />
-            核心服务 {serviceOnline ? '在线' : '离线'}
-          </div>
+          <CoreServiceConnectionBadge online={serviceOnline} visual="dot" />
           {settings.data?.bot?.enabled ? (
-            <div className="status-pill">
-              <span
-                className={`status-dot ${
-                  botConnected
-                    ? 'status-dot-online'
-                    : botListening
-                      ? 'status-dot-warning'
-                      : 'status-dot-offline'
-                }`}
-              />
-              机器人 {botConnected ? '已连接' : botListening ? '连接中' : '未启动'}
-            </div>
+            <BotConnectionBadge
+              connected={settings.data?.botConnection?.connected}
+              listening={settings.data?.botConnection?.listening}
+              visual="dot"
+            />
           ) : null}
         </div>
       </aside>

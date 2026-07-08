@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { eq, and, or, like } from 'drizzle-orm';
+import { eq, and, or, like, desc } from 'drizzle-orm';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,7 +148,7 @@ export async function deleteBinding(db: DbClient, id: string): Promise<void> {
 }
 
 export async function listSyncLogs(db: DbClient, bindingId?: string): Promise<SyncLogEntry[]> {
-  const query = db.select().from(schema.syncLogs).orderBy(schema.syncLogs.startedAt);
+  const query = db.select().from(schema.syncLogs).orderBy(desc(schema.syncLogs.startedAt));
   const rows = bindingId
     ? await query.where(eq(schema.syncLogs.bindingId, bindingId))
     : await query;
@@ -161,6 +161,10 @@ export async function listSyncLogs(db: DbClient, bindingId?: string): Promise<Sy
     toSha: row.toSha ?? undefined,
     status: row.status,
     message: row.message ?? undefined,
+    progressPhase: row.progressPhase ?? undefined,
+    progressDone: row.progressDone ?? undefined,
+    progressTotal: row.progressTotal ?? undefined,
+    currentGitPath: row.currentGitPath ?? undefined,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt ?? undefined,
   }));
@@ -179,6 +183,10 @@ export async function getSyncLog(db: DbClient, id: string): Promise<SyncLogEntry
     toSha: row.toSha ?? undefined,
     status: row.status,
     message: row.message ?? undefined,
+    progressPhase: row.progressPhase ?? undefined,
+    progressDone: row.progressDone ?? undefined,
+    progressTotal: row.progressTotal ?? undefined,
+    currentGitPath: row.currentGitPath ?? undefined,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt ?? undefined,
   };
@@ -193,6 +201,10 @@ export async function insertSyncLog(db: DbClient, entry: SyncLogEntry): Promise<
     toSha: entry.toSha,
     status: entry.status,
     message: entry.message,
+    progressPhase: entry.progressPhase,
+    progressDone: entry.progressDone,
+    progressTotal: entry.progressTotal,
+    currentGitPath: entry.currentGitPath,
     startedAt: entry.startedAt,
     finishedAt: entry.finishedAt,
   });
@@ -206,6 +218,10 @@ export async function updateSyncLog(db: DbClient, entry: SyncLogEntry): Promise<
       message: entry.message,
       toSha: entry.toSha,
       finishedAt: entry.finishedAt,
+      progressPhase: entry.progressPhase,
+      progressDone: entry.progressDone,
+      progressTotal: entry.progressTotal,
+      currentGitPath: entry.currentGitPath,
     })
     .where(eq(schema.syncLogs.id, entry.id));
 }

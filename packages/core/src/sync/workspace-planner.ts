@@ -43,6 +43,7 @@ export class WorkspacePlanner implements SyncPlanner {
     const normalizedTree = context.treePaths.map(normalizePath);
     const changedSet = new Set(context.changedPaths.map(normalizePath));
     const fullRebuild = context.fullResync === true;
+    const forceRewriteAll = context.forceRewriteAll === true;
     const gapFillOnly = false;
     const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
 
@@ -108,7 +109,7 @@ export class WorkspacePlanner implements SyncPlanner {
         title,
         parentGitPath,
         contentMarkdown: content,
-        forceWrite: fullRebuild || matchesAnyProjectPathGlob(path, forceUpdateGlobs),
+        forceWrite: forceRewriteAll || matchesAnyProjectPathGlob(path, forceUpdateGlobs),
       });
     }
 

@@ -1,5 +1,5 @@
 import type { FeishuClient } from './client.js';
-import { createLogger, normalizeTableRows } from '@feishu-md/shared';
+import { computeTableColumnWidths, createLogger, normalizeTableRows } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import {
   insertDocumentBlockChildrenAt,
@@ -28,6 +28,48 @@ function collectTableCellIds(tableBlock: CreatedTableBlock | undefined): string[
   if (!tableBlock) return [];
   if (tableBlock.children?.length) return tableBlock.children;
   return tableBlock.table?.cells ?? [];
+}
+
+async function patchTableColumnWidth(
+  client: FeishuClient,
+  documentId: string,
+  tableBlockId: string,
+  columnIndex: number,
+  columnWidth: number,
+): Promise<void> {
+  const response = await withRateLimit(() =>
+    client.docx.v1.documentBlock.patch({
+      path: {
+        document_id: documentId,
+        block_id: tableBlockId,
+      },
+      data: {
+        update_table_property: {
+          column_index: columnIndex,
+          column_width: columnWidth,
+        },
+      },
+    }),
+  );
+  assertFeishuResponse(response, 'Update table column width');
+}
+
+async function applyTableColumnWidths(
+  client: FeishuClient,
+  documentId: string,
+  tableBlockId: string,
+  columnWidths: number[],
+  startColumnIndex = 0,
+): Promise<void> {
+  for (let columnIndex = startColumnIndex; columnIndex < columnWidths.length; columnIndex += 1) {
+    await patchTableColumnWidth(
+      client,
+      documentId,
+      tableBlockId,
+      columnIndex,
+      columnWidths[columnIndex]!,
+    );
+  }
 }
 
 async function patchInsertTableRow(
@@ -149,6 +191,7 @@ export async function insertNativeTableAt(
 
   const rowCount = normalized.length;
   const columnCount = normalized[0]!.length;
+  const columnWidths = computeTableColumnWidths(normalized, { headerRow: rowCount > 1 });
   docxTableLog.info('插入原生表格', { documentId, rowCount, columnCount, index });
   const initialRows = Math.min(rowCount, CREATE_BLOCK_TABLE_LIMIT);
   const initialColumns = Math.min(columnCount, CREATE_BLOCK_TABLE_LIMIT);
@@ -164,6 +207,7 @@ export async function insertNativeTableAt(
           property: {
             row_size: initialRows,
             column_size: initialColumns,
+            column_width: columnWidths.slice(0, initialColumns),
             header_row: rowCount > 1,
           },
         },
@@ -196,6 +240,17 @@ export async function insertNativeTableAt(
       : await listTableCellIds(client, documentId, tableBlockId);
 
   await fillTableCells(client, documentId, normalized, cellIds, columnCount);
+
+  if (columnCount > initialColumns) {
+    await applyTableColumnWidths(
+      client,
+      documentId,
+      tableBlockId,
+      columnWidths,
+      initialColumns,
+    );
+  }
+
   clearTableCellMarkdownCache();
 
   return 1;

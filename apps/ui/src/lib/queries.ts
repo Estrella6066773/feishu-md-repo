@@ -1,5 +1,8 @@
 import type { Binding, BotSettings, CommentImportLogEntry, FeishuCredentials, FeishuUserPermission, SyncLogEntry } from '@feishu-md/shared';
+import { isCoreServiceCompatible, pollUntilTerminal } from '@feishu-md/shared';
 import { apiFetch } from './api';
+
+export { isCoreServiceCompatible } from '@feishu-md/shared';
 
 export interface SettingsResponse {
   feishu?: { appId: string; appSecretConfigured: boolean };
@@ -60,10 +63,10 @@ export function deleteBinding(id: string) {
   return apiFetch<{ ok: boolean }>(`/api/bindings/${id}`, { method: 'DELETE' });
 }
 
-export function triggerSync(id: string, fullResync = false) {
+export function triggerSync(id: string, fullResync = false, forceRewriteAll = false) {
   return apiFetch<{ ok: boolean; logId: string }>(`/api/bindings/${id}/sync`, {
     method: 'POST',
-    body: JSON.stringify({ fullResync, trigger: 'manual' }),
+    body: JSON.stringify({ fullResync, forceRewriteAll, trigger: 'manual' }),
   });
 }
 
@@ -71,26 +74,27 @@ export function fetchSyncLog(id: string) {
   return apiFetch<SyncLogEntry>(`/api/sync-logs/${id}`);
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export async function waitForSyncLog(
+  logId: string,
+  timeoutMs = 300_000,
+  timeoutMessage = '同步等待超时，请到「同步日志」查看详情',
+): Promise<SyncLogEntry> {
+  return pollUntilTerminal({
+    fetch: () => fetchSyncLog(logId),
+    isTerminal: (log) => log.status === 'success' || log.status === 'failed',
+    timeoutMs,
+    timeoutMessage,
+    intervalMs: (log) => (log.status === 'running' ? 500 : 1_000),
+  });
 }
 
-/** 轮询直到同步完成或超时 */
-export async function waitForSyncLog(logId: string, timeoutMs = 300_000): Promise<SyncLogEntry> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const log = await fetchSyncLog(logId);
-    if (log.status === 'success' || log.status === 'failed') {
-      return log;
-    }
-    await sleep(1000);
-  }
-  throw new Error('同步等待超时，请到「同步日志」查看详情');
-}
-
-export async function triggerSyncAndWait(id: string, fullResync = false) {
-  const { logId } = await triggerSync(id, fullResync);
-  return waitForSyncLog(logId);
+export async function triggerSyncAndWait(id: string, fullResync = false, forceRewriteAll = false) {
+  const { logId } = await triggerSync(id, fullResync, forceRewriteAll);
+  const timeoutMs = forceRewriteAll ? 3_600_000 : 300_000;
+  const timeoutMessage = forceRewriteAll
+    ? '强制重写等待超时，任务可能仍在后台运行，请到「同步日志」查看进度'
+    : '同步等待超时，请到「同步日志」查看详情';
+  return waitForSyncLog(logId, timeoutMs, timeoutMessage);
 }
 
 export function fetchSyncLogs(bindingId?: string) {
@@ -113,15 +117,13 @@ export async function waitForCommentImportLog(
   logId: string,
   timeoutMs = 300_000,
 ): Promise<CommentImportLogEntry> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const log = await fetchCommentImportLog(logId);
-    if (log.status === 'success' || log.status === 'failed') {
-      return log;
-    }
-    await sleep(1000);
-  }
-  throw new Error('评论导入等待超时，请到日志查看详情');
+  return pollUntilTerminal({
+    fetch: () => fetchCommentImportLog(logId),
+    isTerminal: (log) => log.status === 'success' || log.status === 'failed',
+    timeoutMs,
+    timeoutMessage: '评论导入等待超时，请到日志查看详情',
+    intervalMs: 1_000,
+  });
 }
 
 export async function triggerCommentImportAndWait(id: string) {
@@ -149,14 +151,4 @@ export function fetchHealth() {
     apiVersion?: number;
     features?: string[];
   }>('/api/health');
-}
-
-export const REQUIRED_CORE_API_FEATURES = ['settings-bot', 'settings-user-permissions'] as const;
-
-export function isCoreServiceCompatible(health: {
-  apiVersion?: number;
-  features?: string[];
-}): boolean {
-  if (health.apiVersion != null && health.apiVersion >= 2) return true;
-  return REQUIRED_CORE_API_FEATURES.every((feature) => health.features?.includes(feature));
 }

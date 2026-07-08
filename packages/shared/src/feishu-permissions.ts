@@ -13,9 +13,9 @@ export const FEISHU_USER_ROLE_LABELS: Record<FeishuUserRole, string> = {
 };
 
 export const FEISHU_ROLE_DESCRIPTIONS: Record<FeishuUserRole | 'default', string> = {
-  admin: '可访问管理后台逻辑下的全部绑定与指令（含完全重新搭建）',
+  admin: '可访问管理后台逻辑下的全部绑定与指令（含修复同步与强制重写）',
   manager: '仅可对已指定的绑定使用全部可用指令',
-  member: '仅可对有云（云端）绑定发起普通同步，不可操作本地库、不可完全重新搭建',
+  member: '仅可对有云（云端）绑定发起普通同步，不可操作本地库、不可修复同步或强制重写',
   blacklist: '禁止使用一切机器人功能',
   default: '未在名单中配置的用户；不写入数据库，无法使用指令',
 };
@@ -69,10 +69,11 @@ export type BotCommandKind = 'help' | 'status' | 'sync' | 'full_sync';
 export function classifyBotCommand(command: {
   type: string;
   fullResync?: boolean;
+  forceRewriteAll?: boolean;
 }): BotCommandKind {
   if (command.type === 'help') return 'help';
   if (command.type === 'status') return 'status';
-  if (command.fullResync) return 'full_sync';
+  if (command.fullResync || command.forceRewriteAll) return 'full_sync';
   return 'sync';
 }
 
@@ -93,7 +94,7 @@ export function authorizeBotCommand(options: {
   }
 
   if (commandKind === 'full_sync' && role === 'member') {
-    return { allowed: false, message: '成员权限不支持完全重新搭建，请使用「同步」指令。' };
+    return { allowed: false, message: '成员权限不支持修复同步或强制重写，请使用「同步」指令。' };
   }
 
   if (commandKind === 'help') {

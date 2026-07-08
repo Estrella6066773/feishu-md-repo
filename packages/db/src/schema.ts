@@ -42,6 +42,12 @@ export const syncLogs = sqliteTable('sync_logs', {
   toSha: text('to_sha'),
   status: text('status', { enum: ['pending', 'running', 'success', 'failed'] }).notNull(),
   message: text('message'),
+  progressPhase: text('progress_phase', {
+    enum: ['planning', 'structure', 'content', 'cleanup', 'overview', 'done'],
+  }),
+  progressDone: integer('progress_done'),
+  progressTotal: integer('progress_total'),
+  currentGitPath: text('current_git_path'),
   startedAt: text('started_at').notNull(),
   finishedAt: text('finished_at'),
 });

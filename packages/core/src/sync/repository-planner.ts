@@ -35,6 +35,7 @@ export class RepositoryPlanner implements SyncPlanner {
     const normalizedTree = context.treePaths.map(normalizePath);
     const changedSet = new Set(context.changedPaths.map(normalizePath));
     const fullRebuild = context.fullResync === true;
+    const forceRewriteAll = context.forceRewriteAll === true;
     const gapFillOnly = false;
     const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
     const rootTitle = context.bindingName?.trim() || context.bindingId;
@@ -45,7 +46,7 @@ export class RepositoryPlanner implements SyncPlanner {
     const operations = [];
 
     for (const container of containers) {
-      const forceWrite = fullRebuild || isForceUpdatedContainer(container, forceUpdateGlobs);
+      const forceWrite = forceRewriteAll || isForceUpdatedContainer(container, forceUpdateGlobs);
       if (!gapFillOnly && !forceWrite && !isRepositoryContainerDirty(container, changedSet, incremental)) continue;
 
       if (gapFillOnly) {
@@ -96,7 +97,7 @@ export class RepositoryPlanner implements SyncPlanner {
       const content = await readSyncableDocumentContent(filePath, context.readMarkdown, docExtensions);
       if (content == null) continue;
 
-      const forceWrite = fullRebuild || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
+      const forceWrite = forceRewriteAll || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
       if (!forceWrite && !isStandaloneFileDirty(filePath, changedSet, incremental, content)) continue;
 
       operations.push({
@@ -130,7 +131,7 @@ export class RepositoryPlanner implements SyncPlanner {
       const content = await readSyncableDocumentContent(filePath, context.readMarkdown, docExtensions);
       if (content == null) continue;
 
-      const forceWrite = fullRebuild || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
+      const forceWrite = forceRewriteAll || matchesAnyProjectPathGlob(filePath, forceUpdateGlobs);
       if (!forceWrite && !isStandaloneFileDirty(filePath, changedSet, incremental)) continue;
 
       operations.push({

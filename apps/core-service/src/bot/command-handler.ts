@@ -3,10 +3,12 @@ import { getBotSettings, getFeishuUserPermissions, listBindings } from '@feishu-
 import type { BotSettings } from '@feishu-md/shared';
 import {
   authorizeBotCommand,
+  buildBotHelpText,
   canAccessBinding,
   classifyBotCommand,
   createLogger,
   filterBindingsForRole,
+  formatBindingStatusLine,
   getManagerBindingIds,
   resolveFeishuUserRole,
   type EffectiveFeishuRole,
@@ -69,7 +71,7 @@ export class BotCommandHandler {
     }
 
     if (command.type === 'help') {
-      await replyTextMessage(this.client, data.message.message_id, buildHelpText(role));
+      await replyTextMessage(this.client, data.message.message_id, buildBotHelpText(role));
       return;
     }
 
@@ -136,10 +138,14 @@ export class BotCommandHandler {
   private buildAckText(command: BotCommandAction): string {
     switch (command.type) {
       case 'sync_all':
-        return command.fullResync ? '已收到：开始完全重新搭建…' : '已收到：开始同步…';
+        if (command.forceRewriteAll) return '已收到：开始强制重写…';
+        return command.fullResync ? '已收到：开始修复同步…' : '已收到：开始同步…';
       case 'sync_binding':
+        if (command.forceRewriteAll) {
+          return `已收到：开始强制重写「${command.bindingName}」…`;
+        }
         return command.fullResync
-          ? `已收到：开始完全重新搭建「${command.bindingName}」…`
+          ? `已收到：开始修复同步「${command.bindingName}」…`
           : `已收到：开始同步「${command.bindingName}」…`;
       case 'import_comments_all':
         return '已收到：开始导入全部绑定评论…';
@@ -161,10 +167,22 @@ export class BotCommandHandler {
       case 'status':
         return;
       case 'sync_all':
-        await this.syncAll(command.fullResync ?? false, settings, role, managerBindingIds);
+        await this.syncAll(
+          command.fullResync ?? false,
+          command.forceRewriteAll ?? false,
+          settings,
+          role,
+          managerBindingIds,
+        );
         return;
       case 'sync_binding':
-        await this.syncByName(command.bindingName, command.fullResync ?? false, role, managerBindingIds);
+        await this.syncByName(
+          command.bindingName,
+          command.fullResync ?? false,
+          command.forceRewriteAll ?? false,
+          role,
+          managerBindingIds,
+        );
         return;
       case 'import_comments_all':
         await this.importCommentsAll(settings, role, managerBindingIds);
@@ -177,6 +195,7 @@ export class BotCommandHandler {
 
   private async syncAll(
     fullResync: boolean,
+    forceRewriteAll: boolean,
     settings: BotSettings,
     role: EffectiveFeishuRole,
     managerBindingIds?: string[],
@@ -198,13 +217,14 @@ export class BotCommandHandler {
 
     for (const binding of targets) {
       botCmdLog.info('机器人指令入队同步', { bindingId: binding.id, bindingName: binding.name });
-      this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync);
+      this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync, forceRewriteAll);
     }
   }
 
   private async syncByName(
     name: string,
     fullResync: boolean,
+    forceRewriteAll: boolean,
     role: EffectiveFeishuRole,
     managerBindingIds?: string[],
   ): Promise<void> {
@@ -219,10 +239,10 @@ export class BotCommandHandler {
       }
       throw new Error(`你没有权限同步绑定「${name}」`);
     }
-    if (fullResync && role === 'member') {
-      throw new Error('成员权限不支持完全重新搭建');
+    if ((fullResync || forceRewriteAll) && role === 'member') {
+      throw new Error('成员权限不支持修复同步或强制重写');
     }
-    this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync);
+    this.syncCoordinator.enqueueBindingSync(binding.id, 'bot', fullResync, forceRewriteAll);
     botCmdLog.info('机器人指令入队同步', { bindingId: binding.id, bindingName: binding.name });
   }
 
@@ -266,32 +286,6 @@ export class BotCommandHandler {
   }
 }
 
-function buildHelpText(role: EffectiveFeishuRole): string {
-  const lines = [
-    'Feishu MD Repo 指令：',
-    '• 同步 / sync — 触发同步',
-    '• 同步 <绑定名> — 同步指定绑定',
-    '• 导入评论 / import-comments — 从飞书拉取评论到本地',
-    '• 导入评论 <绑定名> — 为指定绑定导入评论',
-    '• 状态 / status — 查看绑定状态',
-    '• 帮助 / help — 显示本说明',
-  ];
-
-  if (role === 'admin' || role === 'manager') {
-    lines.splice(3, 0, '• 完全重新搭建 / sync --full — 强制重写全库文档');
-  }
-  if (role === 'member') {
-    lines.push('', '当前权限：成员 — 仅可对「有云仓库」绑定发起普通同步。');
-  } else if (role === 'manager') {
-    lines.push('', '当前权限：管理者 — 仅可操作已授权的绑定。');
-  } else if (role === 'admin') {
-    lines.push('', '当前权限：管理员 — 可使用全部指令。');
-  }
-
-  lines.push('', '群聊中默认需 @ 机器人才会响应。');
-  return lines.join('\n');
-}
-
 export async function formatBindingStatus(
   db: DbClient,
   role: EffectiveFeishuRole,
@@ -304,11 +298,6 @@ export async function formatBindingStatus(
       : '当前没有你可查看的绑定。';
   }
 
-  const lines = bindings.map((binding) => {
-    const sha = binding.lastSyncedSha?.slice(0, 7) ?? '未同步';
-    const at = binding.lastSyncedAt ? new Date(binding.lastSyncedAt).toLocaleString() : '-';
-    const source = binding.sourceType === 'cloud' ? '有云' : '本地';
-    return `• ${binding.name}（${source} / ${binding.syncMode}）最近：${sha} @ ${at}`;
-  });
+  const lines = bindings.map((binding) => formatBindingStatusLine(binding));
   return `绑定状态：\n${lines.join('\n')}`;
 }

@@ -63,3 +63,11 @@ export function mergeProjectIgnoreGlobs(custom: string[] | undefined): string[] 
   const merged = [...DEFAULT_PROJECT_IGNORE_GLOBS, ...(custom ?? [])];
   return [...new Set(merged.map((item) => item.trim()).filter(Boolean))];
 }
+
+/** 将多行文本解析为 glob 列表（绑定表单等场景） */
+export function parseGlobsFromMultilineText(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}

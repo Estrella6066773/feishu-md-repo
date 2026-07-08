@@ -1,5 +1,6 @@
 export * from './client.js';
-export { FeishuApiError, formatFeishuErrorMessage, assertFeishuResponse, withRateLimit } from './api-error.js';
+export { FeishuApiError, formatFeishuErrorMessage, assertFeishuResponse, withRateLimit, isRetryableFeishuRequestError, isRateLimitError } from './api-error.js';
+export { runWithFeishuApiRetryPolicy, getFeishuApiRetryPolicy, type FeishuApiRetryPolicy } from './api-retry-policy.js';
 export { formatSyncLog, syncContextFromOptions, type SyncLogContext } from './sync-log.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';
 export { getWikiNodeByToken, type ResolvedWikiNode } from './wiki-service.js';
@@ -40,6 +41,14 @@ export {
   markdownContainsGfmTable,
   type MarkdownTableSegment,
 } from './markdown-tables.js';
+export {
+  verifyDocumentIntegrity,
+  computeExpectedDocumentFingerprint,
+  computeActualDocumentFingerprint,
+  compareDocumentFingerprints,
+  type DocumentContentFingerprint,
+  type DocumentIntegrityResult,
+} from './document-integrity.js';
 export { parseMermaidGraph, type ParsedMermaidGraph, type ParsedMermaidSubgraph } from './mermaid-subgraph.js';
 export { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
 export {

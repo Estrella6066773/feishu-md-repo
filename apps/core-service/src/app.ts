@@ -34,6 +34,8 @@ import {
   DEFAULT_BOT_SETTINGS,
   createLogger,
   isDebugEnabled,
+  CORE_API_FEATURES,
+  CORE_API_VERSION,
 } from '@feishu-md/shared';
 import { installLocalHook, removeLocalHook } from '@feishu-md/git';
 import { createFeishuClient, exportDocumentToMarkdown, formatExportError } from '@feishu-md/feishu';
@@ -63,19 +65,7 @@ function applyLocalGitHook(binding: Binding, coreServiceUrl: string, previous?: 
   }
 }
 
-/** 递增此版本号以提示 UI 重启 core-service（旧进程可能缺少新路由） */
-export const CORE_API_VERSION = 3;
-
-export const CORE_API_FEATURES = [
-  'settings-feishu',
-  'settings-bot',
-  'settings-user-permissions',
-  'bindings-crud',
-  'sync-log-detail',
-  'export-markdown',
-  'import-comments',
-  'comment-import-log-detail',
-] as const;
+export { CORE_API_VERSION, CORE_API_FEATURES } from '@feishu-md/shared';
 
 /** UI 读取/轮询类 GET，非 debug 且成功时不打访问日志；写操作与错误仍记录 */
 function shouldSkipHttpAccessLog(method: string, status: number): boolean {
@@ -287,16 +277,20 @@ export function createApp(options: {
     if (!binding) return c.json({ error: 'Not found' }, 404);
 
     const body = (await c.req.json().catch(() => ({}))) as SyncRequest;
+    const forceRewriteAll = body.forceRewriteAll === true;
+    const fullResync = (body.fullResync ?? false) || forceRewriteAll;
     const logId = syncCoordinator.enqueueBindingSync(
       binding.id,
       body.trigger ?? 'manual',
-      body.fullResync ?? false,
+      fullResync,
+      forceRewriteAll,
     );
     httpLog.info('同步已入队', {
       bindingId: binding.id,
       logId,
       trigger: body.trigger ?? 'manual',
-      fullResync: body.fullResync === true,
+      fullResync,
+      forceRewriteAll,
     });
     return c.json({ ok: true, queued: true, logId });
   });

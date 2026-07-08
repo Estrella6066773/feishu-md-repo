@@ -1,56 +1,42 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Alert } from '@/components/ui/Alert';
+import { formatBindingLastSyncLine } from '@feishu-md/shared';
+import { BotConnectionBadge } from '@/components/ConnectionStatusBadge';
+import { ServiceHealthAlert } from '@/components/ServiceHealthAlert';
+import { SyncLogTable } from '@/components/SyncLogTable';
 import { Badge } from '@/components/ui/Badge';
 import { Card, CardHeader, StatCard } from '@/components/ui/Card';
 import { IconLink, IconLogs, IconSettings, IconSync } from '@/components/icons';
 import { LoadingBlock } from '@/components/ui/Spinner';
-import { fetchBindings, fetchHealth, fetchSettings, fetchSyncLogs, isCoreServiceCompatible } from '@/lib/queries';
-
-const triggerLabel = {
-  git: 'Git',
-  schedule: '定时',
-  manual: '手动',
-  bot: '指令',
-} as const;
-
-const statusTone = {
-  pending: 'amber',
-  running: 'blue',
-  success: 'green',
-  failed: 'red',
-} as const;
-
-const statusText = {
-  pending: '排队',
-  running: '进行中',
-  success: '成功',
-  failed: '失败',
-} as const;
+import { useBindingNameMap } from '@/hooks/useBindingMaps';
+import { useBindingsQuery, useHealthQuery, useServiceOnline, useSettingsQuery } from '@/hooks/useCoreQueries';
+import { queryKeys } from '@/hooks/queryKeys';
+import { fetchSyncLogs } from '@/lib/queries';
 
 export function DashboardPage() {
-  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, retry: 1, refetchInterval: 15_000 });
-  const settings = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
-  const bindings = useQuery({ queryKey: ['bindings'], queryFn: fetchBindings });
-  const logs = useQuery({ queryKey: ['sync-logs'], queryFn: () => fetchSyncLogs(), refetchInterval: 15_000 });
+  const health = useHealthQuery(15_000);
+  const settings = useSettingsQuery();
+  const bindings = useBindingsQuery();
+  const logs = useQuery({
+    queryKey: queryKeys.syncLogs,
+    queryFn: () => fetchSyncLogs(),
+    refetchInterval: 15_000,
+  });
 
-  const bindingMap = new Map((bindings.data ?? []).map((b) => [b.id, b.name]));
+  const bindingMap = useBindingNameMap(bindings.data);
   const recentLogs = (logs.data ?? []).slice(0, 8);
   const recentFailures = (logs.data ?? []).filter((log) => log.status === 'failed').length;
   const recentSuccess = (logs.data ?? []).filter((log) => log.status === 'success').length;
-  const serviceOnline = !health.isError && health.data?.ok;
+  const serviceOnline = useServiceOnline(health);
 
   return (
     <div className="page-stack-lg">
-      {!serviceOnline ? (
-        <Alert tone="danger" title="核心服务未连接">
-          请先运行 <code>pnpm dev:service</code>，或通过 Tauri 桌面应用启动 Sidecar。UI 无法在未连接时执行同步。
-        </Alert>
-      ) : health.data && !isCoreServiceCompatible(health.data) ? (
-        <Alert tone="danger" title="核心服务版本过旧">
-          8787 端口上的进程缺少新版 API。请结束旧进程后重新运行 <code>pnpm dev:service</code> 并刷新页面。
-        </Alert>
-      ) : null}
+      <ServiceHealthAlert
+        variant="dashboard"
+        healthError={health.isError}
+        healthLoading={health.isLoading}
+        health={health.data}
+      />
 
       <section className="stat-grid">
         <StatCard
@@ -95,34 +81,12 @@ export function DashboardPage() {
             <div className="card-empty">暂无同步记录，可在绑定管理中触发首次同步。</div>
           ) : (
             <div className="card-embedded-table">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>绑定</th>
-                    <th>触发</th>
-                    <th>状态</th>
-                    <th>Commit</th>
-                    <th>说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentLogs.map((log) => (
-                    <tr key={log.id}>
-                      <td>{formatTime(log.startedAt)}</td>
-                      <td>{bindingMap.get(log.bindingId) ?? log.bindingId.slice(0, 8)}</td>
-                      <td>{triggerLabel[log.trigger]}</td>
-                      <td>
-                        <Badge tone={statusTone[log.status]}>{statusText[log.status]}</Badge>
-                      </td>
-                      <td className="font-mono text-xs">{log.toSha?.slice(0, 7) ?? '—'}</td>
-                      <td className="max-w-xs truncate text-muted" title={log.message ?? undefined}>
-                        {log.message ?? '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <SyncLogTable
+                logs={recentLogs}
+                bindingMap={bindingMap}
+                compactTime
+                wrapClassName=""
+              />
             </div>
           )}
         </Card>
@@ -168,21 +132,10 @@ export function DashboardPage() {
               </div>
               <div className="kv-row">
                 <span className="text-muted">长连接</span>
-                <Badge
-                  tone={
-                    settings.data?.botConnection?.connected
-                      ? 'green'
-                      : settings.data?.botConnection?.listening
-                        ? 'amber'
-                        : 'default'
-                  }
-                >
-                  {settings.data?.botConnection?.connected
-                    ? '已连接'
-                    : settings.data?.botConnection?.listening
-                      ? '连接中'
-                      : '未启动'}
-                </Badge>
+                <BotConnectionBadge
+                  connected={settings.data?.botConnection?.connected}
+                  listening={settings.data?.botConnection?.listening}
+                />
               </div>
               {!settings.data?.bot?.enabled ? (
                 <p className="help-box !p-2">
@@ -216,11 +169,7 @@ export function DashboardPage() {
                   <Badge tone="blue">{binding.syncMode === 'workspace' ? '工作区' : '仓库'}</Badge>
                   <Badge>{binding.feishuTarget.type === 'wiki' ? 'Wiki' : 'Drive'}</Badge>
                 </div>
-                <div className="binding-meta">
-                  {binding.lastSyncedSha
-                    ? `最近 ${binding.lastSyncedSha.slice(0, 7)} · ${binding.lastSyncedAt ? formatTime(binding.lastSyncedAt) : ''}`
-                    : '尚未同步'}
-                </div>
+                <div className="binding-meta">{formatBindingLastSyncLine(binding)}</div>
               </div>
             ))}
           </div>
@@ -228,13 +177,4 @@ export function DashboardPage() {
       ) : null}
     </div>
   );
-}
-
-function formatTime(value: string) {
-  return new Date(value).toLocaleString(undefined, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }

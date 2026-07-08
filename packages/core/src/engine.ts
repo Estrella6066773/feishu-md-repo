@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions, TabularSyncMode } from '@feishu-md/shared';
-import { createLogger, isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs, pathEndsWithExtension } from '@feishu-md/shared';
+import { createLogger, isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs, pathEndsWithExtension, resolveSyncDocWriteConcurrency, runTasksWithConcurrency } from '@feishu-md/shared';
 import type { Logger } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
@@ -27,6 +27,10 @@ import {
   resolveRepositoryFeishuTarget,
   toFeishuDocumentUrl,
   formatFeishuErrorMessage,
+  verifyDocumentIntegrity,
+  runWithFeishuApiRetryPolicy,
+  isRateLimitError,
+  type FeishuClient,
   type MarkdownImageResolver,
   type NodeRef,
 } from '@feishu-md/feishu';
@@ -39,6 +43,7 @@ import {
 } from './sync/repair-missing-nodes.js';
 import { syncOverviewWhiteboard } from './sync/overview-whiteboard.js';
 import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync/sync-content.js';
+import { SyncProgressReporter } from './sync/sync-progress.js';
 import type { SyncOperation, SyncPlan } from './sync/planner.js';
 import { BindingTaskPreemptedError, throwIfAborted } from './errors.js';
 
@@ -47,12 +52,16 @@ export interface RunSyncOptions {
   db: DbClient;
   trigger: SyncTriggerType;
   fullResync?: boolean;
+  /** 强制重写全部正文（需配合 fullResync）；跳过飞书块特征校验 */
+  forceRewriteAll?: boolean;
   /** 立即同步 / 机器人同步时按父节点子数量检测飞书缺失并补建 */
   repairMissingRemote?: boolean;
   /** 由队列预先创建的日志 ID */
   logId?: string;
   /** 返回 true 时表示同项目已有新的手动指令，应中止当前任务 */
   shouldAbort?: () => boolean;
+  /** 跨文档正文写入并发数；默认读取 FEISHU_MD_SYNC_DOC_CONCURRENCY */
+  docWriteConcurrency?: number;
 }
 
 export interface RunSyncResult {
@@ -65,13 +74,25 @@ export interface RunSyncResult {
 }
 
 export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
-  const { binding, db, trigger, fullResync, repairMissingRemote, shouldAbort } = options;
+  const { binding, db, trigger, fullResync, forceRewriteAll, repairMissingRemote, shouldAbort } = options;
   const logId = options.logId ?? randomUUID();
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
   const log = createLogger('sync').child({ bindingId: binding.id, logId, trigger });
 
-  log.info('开始执行同步', { fullResync: fullResync === true });
+  log.info('开始执行同步', {
+    fullResync: fullResync === true,
+    forceRewriteAll: forceRewriteAll === true,
+  });
+
+  const progress = options.logId
+    ? new SyncProgressReporter(db, {
+        id: logId,
+        bindingId: binding.id,
+        trigger,
+        startedAt,
+      })
+    : undefined;
 
   if (options.logId) {
     await updateSyncLog(db, {
@@ -81,6 +102,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       fromSha: fullResync ? undefined : binding.lastSyncedSha,
       status: 'running',
       startedAt,
+      progressPhase: 'planning',
     });
   } else {
     await insertSyncLog(db, {
@@ -95,6 +117,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
 
   try {
     throwIfAborted(shouldAbort);
+    await progress?.setPhase('planning');
     const credentials = await getFeishuCredentials(db);
     if (!credentials) {
       throw new Error('Feishu credentials are not configured');
@@ -156,6 +179,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       fromSha,
       toSha,
       fullResync,
+      forceRewriteAll,
       treePaths,
       changedPaths,
       readMarkdown: readSyncContent,
@@ -168,22 +192,45 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       changedPaths: changedPaths.length,
     });
 
-    const { operationCount, overviewUpdated, repairedMissingCount } = await executePlan({
-      plan,
-      binding,
-      db,
-      credentials,
-      syncMode: binding.syncMode,
-      readMarkdown: readSyncContent,
-      readBinaryFile,
-      workspaceOptions,
-      repositoryOptions,
-      repairMissingRemote: repairMissingRemote === true,
-      log,
-      shouldAbort,
-    });
+    await progress?.setPhase('structure');
+
+    if (forceRewriteAll) {
+      log.info('强制重写：遇飞书频控将自动等待并重试，直至全部完成');
+    }
+
+    const runExecutePlan = () =>
+      executePlan({
+        plan,
+        binding,
+        db,
+        credentials,
+        syncMode: binding.syncMode,
+        readMarkdown: readSyncContent,
+        readBinaryFile,
+        workspaceOptions,
+        repositoryOptions,
+        repairMissingRemote: repairMissingRemote === true,
+        fullResync: fullResync === true,
+        forceRewriteAll: forceRewriteAll === true,
+        log,
+        shouldAbort,
+        docWriteConcurrency: options.docWriteConcurrency,
+        progress,
+      });
+
+    const {
+      operationCount,
+      overviewUpdated,
+      repairedMissingCount,
+      repairVerified,
+      repairSkipped,
+      repairFixed,
+    } = forceRewriteAll
+      ? await runWithFeishuApiRetryPolicy({ persistOnRateLimit: true }, runExecutePlan)
+      : await runExecutePlan();
 
     throwIfAborted(shouldAbort);
+    await progress?.markAllDocumentsDone();
 
     const isIncrementalNoop =
       plan.operations.length === 0 &&
@@ -233,9 +280,13 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
             ? '无正文变更，已更新同步文档总览'
             : '无内容变更，跳过写入'
           : fullResync
-            ? overviewUpdated
-              ? `已完全重新搭建 ${operationCount} 项，已更新同步文档总览`
-              : `已完全重新搭建 ${operationCount} 项`
+            ? forceRewriteAll
+              ? overviewUpdated
+                ? `已强制重写 ${operationCount} 项，已更新同步文档总览`
+                : `已强制重写 ${operationCount} 项`
+              : overviewUpdated
+                ? `已校验 ${repairVerified} 篇，修复 ${repairFixed} 篇，跳过 ${repairSkipped} 篇，已更新同步文档总览`
+                : `已校验 ${repairVerified} 篇，修复 ${repairFixed} 篇，跳过 ${repairSkipped} 篇`
             : repairedMissingCount > 0
               ? overviewUpdated
                 ? `已补建飞书侧缺失节点 ${repairedMissingCount} 项，已更新同步文档总览`
@@ -292,9 +343,20 @@ async function executePlan(options: {
   workspaceOptions?: WorkspaceOptions;
   repositoryOptions?: RepositoryOptions;
   repairMissingRemote?: boolean;
+  fullResync?: boolean;
+  forceRewriteAll?: boolean;
   log?: Logger;
   shouldAbort?: () => boolean;
-}): Promise<{ operationCount: number; overviewUpdated: boolean; repairedMissingCount: number }> {
+  docWriteConcurrency?: number;
+  progress?: SyncProgressReporter;
+}): Promise<{
+  operationCount: number;
+  overviewUpdated: boolean;
+  repairedMissingCount: number;
+  repairVerified: number;
+  repairSkipped: number;
+  repairFixed: number;
+}> {
   const {
     plan,
     binding,
@@ -306,11 +368,16 @@ async function executePlan(options: {
     workspaceOptions,
     repositoryOptions,
     repairMissingRemote = false,
+    fullResync = false,
+    forceRewriteAll = false,
     log: parentLog,
     shouldAbort,
+    docWriteConcurrency,
+    progress,
   } = options;
   const log = parentLog ?? createLogger('sync').child({ bindingId: binding.id });
   const gapFillOnly = plan.gapFillOnly === true;
+  const repairSyncMode = fullResync && !forceRewriteAll;
   const client = createFeishuClient(credentials);
 
   const resolved =
@@ -330,6 +397,9 @@ async function executePlan(options: {
     : undefined;
 
   let count = 0;
+  let repairVerified = 0;
+  let repairSkipped = 0;
+  let repairFixed = 0;
   const pendingDocUpdates: Array<{
     gitPath: string;
     sourcePath: string;
@@ -374,6 +444,7 @@ async function executePlan(options: {
 
   const docExtensions = resolveSyncDocExtensions(workspaceOptions, repositoryOptions);
   const tabularSyncMode = resolveTabularSyncMode(workspaceOptions, repositoryOptions);
+  let structureDocumentsDone = 0;
 
   for (const operation of operations) {
     throwIfAborted(shouldAbort);
@@ -471,6 +542,7 @@ async function executePlan(options: {
                   contentSha,
                 });
                 count += 1;
+                structureDocumentsDone += 1;
               }
               break;
             }
@@ -529,6 +601,8 @@ async function executePlan(options: {
     }
   }
 
+  await progress?.setPhase('cleanup');
+
   const deletedCount = await deleteRemovedNodes({
     db,
     binding,
@@ -539,34 +613,79 @@ async function executePlan(options: {
   });
   count += deletedCount;
 
+  const documentProgressTotal = structureDocumentsDone + pendingDocUpdates.length;
+  if (documentProgressTotal > 0) {
+    await progress?.beginDocumentProgress(documentProgressTotal, structureDocumentsDone);
+  }
+
   if (pendingDocUpdates.length > 0) {
     const mappings = await listNodeMappings(db, binding.id);
     const mappingByGitPath = new Map(mappings.map((item) => [item.gitPath, item]));
+    const concurrency = forceRewriteAll
+      ? 1
+      : (docWriteConcurrency ?? resolveSyncDocWriteConcurrency());
 
-    for (const pending of pendingDocUpdates) {
+    log.info(forceRewriteAll ? '串行写入文档正文（强制重写）' : '并行写入文档正文', {
+      documentCount: pendingDocUpdates.length,
+      concurrency,
+    });
+
+    await runTasksWithConcurrency(pendingDocUpdates, concurrency, async (pending) => {
       throwIfAborted(shouldAbort);
-      const rewritten = rewriteInternalMarkdownLinks(
-        pending.markdown,
-        pending.sourcePath,
-        mappingByGitPath,
-      );
-      const rewrittenSha = await hashDocumentSyncContent(
-        rewritten,
-        pending.sourcePath,
-        readBinaryFile,
-        docExtensions.tabularExtensions,
-      );
-      if (pending.forceWrite || pending.previousContentSha !== rewrittenSha) {
-        try {
-          await adapter.updateDocumentContent(pending.docToken, rewritten, {
-            sourcePath: pending.sourcePath,
-            resolveImage: createMarkdownImageResolver(pending.sourcePath, readBinaryFile),
-            tabularExtensions: docExtensions.tabularExtensions,
-          });
-        } catch (error) {
-          const detail = formatFeishuErrorMessage(error);
-          throw new Error(`同步文档失败 file=${pending.gitPath}: ${detail}`, { cause: error });
+
+      try {
+        const rewritten = rewriteInternalMarkdownLinks(
+          pending.markdown,
+          pending.sourcePath,
+          mappingByGitPath,
+        );
+        const rewrittenSha = await hashDocumentSyncContent(
+          rewritten,
+          pending.sourcePath,
+          readBinaryFile,
+          docExtensions.tabularExtensions,
+        );
+
+        const rewriteDecision = await resolveDocumentRewriteDecision({
+          client,
+          docToken: pending.docToken,
+          markdown: rewritten,
+          sourcePath: pending.sourcePath,
+          tabularExtensions: docExtensions.tabularExtensions,
+          forceWrite: pending.forceWrite === true,
+          forceRewriteAll,
+          repairSyncMode,
+          previousContentSha: pending.previousContentSha,
+          rewrittenSha,
+          log,
+          gitPath: pending.gitPath,
+        });
+
+        if (repairSyncMode && rewriteDecision.verified) {
+          repairVerified += 1;
         }
+        if (!rewriteDecision.shouldWrite) {
+          if (repairSyncMode && rewriteDecision.verified) {
+            repairSkipped += 1;
+          }
+          return;
+        }
+        if (repairSyncMode) {
+          repairFixed += 1;
+        }
+
+        await writeDocumentContentResilient({
+          enabled: forceRewriteAll,
+          gitPath: pending.gitPath,
+          log,
+          shouldAbort,
+          write: () =>
+            adapter.updateDocumentContent(pending.docToken, rewritten, {
+              sourcePath: pending.sourcePath,
+              resolveImage: createMarkdownImageResolver(pending.sourcePath, readBinaryFile),
+              tabularExtensions: docExtensions.tabularExtensions,
+            }),
+        });
 
         const latest = await getNodeMappingByGitPath(db, binding.id, pending.gitPath);
         if (latest) {
@@ -575,9 +694,16 @@ async function executePlan(options: {
             contentSha: rewrittenSha,
           });
         }
+      } catch (error) {
+        const detail = formatFeishuErrorMessage(error);
+        throw new Error(`同步文档失败 file=${pending.gitPath}: ${detail}`, { cause: error });
+      } finally {
+        await progress?.documentCompleted(pending.gitPath);
       }
-    }
+    });
   }
+
+  await progress?.setPhase('overview');
 
   let overviewUpdated = false;
   try {
@@ -593,7 +719,14 @@ async function executePlan(options: {
     log.warn(`同步文档总览更新失败: ${formatFeishuErrorMessage(error)}`);
   }
 
-  return { operationCount: count, overviewUpdated, repairedMissingCount };
+  return {
+    operationCount: count,
+    overviewUpdated,
+    repairedMissingCount,
+    repairVerified,
+    repairSkipped,
+    repairFixed,
+  };
 }
 
 async function deleteRemovedNodes(options: {
@@ -848,6 +981,117 @@ function resolveTabularSyncMode(
   return workspaceOptions?.tabularSyncMode
     ?? repositoryOptions?.tabularSyncMode
     ?? 'native_table';
+}
+
+interface DocumentRewriteDecision {
+  shouldWrite: boolean;
+  verified: boolean;
+}
+
+async function resolveDocumentRewriteDecision(options: {
+  client: FeishuClient;
+  docToken: string;
+  markdown: string;
+  sourcePath: string;
+  tabularExtensions: string[];
+  forceWrite: boolean;
+  forceRewriteAll: boolean;
+  repairSyncMode: boolean;
+  previousContentSha?: string;
+  rewrittenSha: string;
+  gitPath: string;
+  log: Logger;
+}): Promise<DocumentRewriteDecision> {
+  const {
+    client,
+    docToken,
+    markdown,
+    sourcePath,
+    tabularExtensions,
+    forceWrite,
+    forceRewriteAll,
+    repairSyncMode,
+    previousContentSha,
+    rewrittenSha,
+    gitPath,
+    log,
+  } = options;
+
+  if (forceWrite || forceRewriteAll) {
+    return { shouldWrite: true, verified: false };
+  }
+
+  const contentNeverSynced = !previousContentSha;
+  const gitContentChanged = previousContentSha !== rewrittenSha;
+
+  if (!repairSyncMode) {
+    if (gitContentChanged || contentNeverSynced) {
+      return { shouldWrite: true, verified: false };
+    }
+    return { shouldWrite: false, verified: false };
+  }
+
+  if (contentNeverSynced || gitContentChanged) {
+    return { shouldWrite: true, verified: false };
+  }
+
+  const integrity = await verifyDocumentIntegrity(
+    client,
+    docToken,
+    markdown,
+    sourcePath,
+    tabularExtensions,
+  );
+
+  if (integrity.ok) {
+    return { shouldWrite: false, verified: true };
+  }
+
+  log.info('检测到飞书正文异常，将修复', {
+    gitPath,
+    reasons: integrity.reasons.join('；'),
+  });
+  return { shouldWrite: true, verified: true };
+}
+
+function unwrapErrorCause(error: unknown): unknown {
+  if (error instanceof Error && error.cause != null) {
+    return unwrapErrorCause(error.cause);
+  }
+  return error;
+}
+
+function isDocumentRateLimitError(error: unknown): boolean {
+  return isRateLimitError(unwrapErrorCause(error));
+}
+
+async function writeDocumentContentResilient(options: {
+  enabled: boolean;
+  gitPath: string;
+  log: Logger;
+  shouldAbort?: () => boolean;
+  write: () => Promise<void>;
+}): Promise<void> {
+  let attempt = 0;
+
+  while (true) {
+    throwIfAborted(options.shouldAbort);
+    try {
+      await options.write();
+      return;
+    } catch (error) {
+      if (!options.enabled || !isDocumentRateLimitError(error)) {
+        throw error;
+      }
+
+      attempt += 1;
+      const delayMs = Math.min(800 * 2 ** Math.min(attempt - 1, 8), 60_000);
+      options.log.warn(
+        `文档写入遇飞书频控，${delayMs}ms 后重试整篇 (${attempt}): ${options.gitPath}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 export { createPlanner } from './sync/factory.js';

@@ -1,33 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Badge } from '@/components/ui/Badge';
+import type { SyncJobStatus } from '@feishu-md/shared';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { PageHeader } from '@/components/ui/PageHeader';
+import { SyncLogTable } from '@/components/SyncLogTable';
 import { IconLogs } from '@/components/icons';
 import { LoadingBlock } from '@/components/ui/Spinner';
-import type { SyncJobStatus } from '@feishu-md/shared';
-import { fetchBindings, fetchSyncLogs } from '@/lib/queries';
-
-const triggerLabel = {
-  git: 'Git 事件',
-  schedule: '定时',
-  manual: '手动',
-  bot: '飞书指令',
-} as const;
-
-const statusLabel = {
-  pending: '排队中',
-  running: '进行中',
-  success: '成功',
-  failed: '失败',
-} as const;
-
-const statusTone = {
-  pending: 'amber',
-  running: 'blue',
-  success: 'green',
-  failed: 'red',
-} as const;
+import { useBindingNameMap } from '@/hooks/useBindingMaps';
+import { useBindingsQuery } from '@/hooks/useCoreQueries';
+import { queryKeys } from '@/hooks/queryKeys';
+import { fetchSyncLogs } from '@/lib/queries';
 
 type StatusFilter = 'all' | SyncJobStatus;
 
@@ -35,13 +17,19 @@ export function LogsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [bindingFilter, setBindingFilter] = useState<string>('all');
 
-  const bindings = useQuery({ queryKey: ['bindings'], queryFn: fetchBindings });
-  const logs = useQuery({ queryKey: ['sync-logs'], queryFn: () => fetchSyncLogs(), refetchInterval: 10_000 });
+  const bindings = useBindingsQuery();
+  const logs = useQuery({
+    queryKey: queryKeys.syncLogs,
+    queryFn: () => fetchSyncLogs(),
+    refetchInterval: (query) => {
+      const hasActive = (query.state.data ?? []).some(
+        (log) => log.status === 'running' || log.status === 'pending',
+      );
+      return hasActive ? 1_000 : 10_000;
+    },
+  });
 
-  const bindingMap = useMemo(
-    () => new Map((bindings.data ?? []).map((b) => [b.id, b.name])),
-    [bindings.data],
-  );
+  const bindingMap = useBindingNameMap(bindings.data);
 
   const filteredLogs = useMemo(() => {
     return (logs.data ?? []).filter((log) => {
@@ -104,36 +92,7 @@ export function LogsPage() {
           }
         />
       ) : (
-        <div className="data-table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>绑定</th>
-                <th>触发</th>
-                <th>状态</th>
-                <th>Commit</th>
-                <th>说明</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredLogs.map((log) => (
-                <tr key={log.id}>
-                  <td className="whitespace-nowrap">{new Date(log.startedAt).toLocaleString()}</td>
-                  <td>{bindingMap.get(log.bindingId) ?? log.bindingId.slice(0, 8)}</td>
-                  <td>{triggerLabel[log.trigger]}</td>
-                  <td>
-                    <Badge tone={statusTone[log.status]}>{statusLabel[log.status]}</Badge>
-                  </td>
-                  <td className="font-mono text-xs">{log.toSha?.slice(0, 7) ?? '—'}</td>
-                  <td className="max-w-xs truncate text-muted" title={log.message ?? undefined}>
-                    {log.message ?? '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <SyncLogTable logs={filteredLogs} bindingMap={bindingMap} showProgress />
       )}
     </div>
   );

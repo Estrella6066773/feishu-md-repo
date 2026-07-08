@@ -6,11 +6,20 @@ import type {
   FeishuTarget,
   ForceUpdateMode,
   RepoSourceType,
-  SyncLogEntry,
   SyncMode,
 } from '@feishu-md/shared';
+import {
+  defaultOptionsForMode,
+  defaultTriggersForSourceType,
+  latestSyncStatusBadgeLabel,
+  latestSyncStatusBadgeTone,
+  normalizeBindingTriggers,
+  parseGlobsFromMultilineText,
+  DEFAULT_BOT_SETTINGS,
+  DEFAULT_SCHEDULE_MINUTES,
+} from '@feishu-md/shared';
 import { BroadcastTargetEditor } from '@/components/BroadcastTargetEditor';
-import { defaultOptionsForMode, defaultTriggersForSourceType, DEFAULT_BOT_SETTINGS, DEFAULT_SCHEDULE_MINUTES } from '@feishu-md/shared';
+import { DismissibleAlert } from '@/components/DismissibleAlert';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -20,46 +29,44 @@ import { Field } from '@/components/ui/Field';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { IconEdit, IconLink, IconPlus, IconSync, IconTrash } from '@/components/icons';
 import { LoadingBlock } from '@/components/ui/Spinner';
+import { SyncProgressBar } from '@/components/SyncProgressBar';
+import { useLatestLogByBinding } from '@/hooks/useBindingMaps';
+import { useBindingSyncActions } from '@/hooks/useBindingSyncActions';
+import { useSettingsQuery } from '@/hooks/useCoreQueries';
+import { queryKeys } from '@/hooks/queryKeys';
 import {
   createBinding,
   deleteBinding,
   fetchBindings,
-  fetchSettings,
   fetchSyncLogs,
-  triggerSyncAndWait,
-  triggerCommentImportAndWait,
   updateBinding,
 } from '@/lib/queries';
 
 export function BindingsPage() {
   const queryClient = useQueryClient();
-  const bindings = useQuery({ queryKey: ['bindings'], queryFn: fetchBindings });
+  const {
+    syncingId,
+    importingCommentsId,
+    taskNotice,
+    clearTaskNotice,
+    syncMutation,
+    commentImportMutation,
+  } = useBindingSyncActions();
+  const bindings = useQuery({ queryKey: queryKeys.bindings, queryFn: fetchBindings });
   const syncLogs = useQuery({
-    queryKey: ['sync-logs'],
+    queryKey: queryKeys.syncLogs,
     queryFn: () => fetchSyncLogs(),
-    refetchInterval: 10_000,
+    refetchInterval: syncingId ? 1_000 : 10_000,
   });
-  const latestLogByBinding = new Map<string, SyncLogEntry>();
-  for (const log of syncLogs.data ?? []) {
-    if (!latestLogByBinding.has(log.bindingId)) {
-      latestLogByBinding.set(log.bindingId, log);
-    }
-  }
+  const latestLogByBinding = useLatestLogByBinding(syncLogs.data);
   const [formMode, setFormMode] = useState<'hidden' | 'create' | 'edit'>('hidden');
   const [editingBinding, setEditingBinding] = useState<Binding | null>(null);
-  const [syncNotice, setSyncNotice] = useState<{
-    tone: 'success' | 'danger' | 'warning';
-    title: string;
-    message: string;
-  } | null>(null);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
-  const [importingCommentsId, setImportingCommentsId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   const createMutation = useMutation({
     mutationFn: createBinding,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['bindings'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.bindings });
       closeForm();
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : '创建失败'),
@@ -68,7 +75,7 @@ export function BindingsPage() {
   const updateMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Partial<Binding> }) => updateBinding(id, payload),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['bindings'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.bindings });
       closeForm();
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : '保存失败'),
@@ -76,72 +83,7 @@ export function BindingsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: deleteBinding,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['bindings'] }),
-  });
-
-  const syncMutation = useMutation({
-    mutationFn: ({ id, fullResync }: { id: string; fullResync?: boolean }) =>
-      triggerSyncAndWait(id, fullResync ?? false),
-    onMutate: ({ id }) => setSyncingId(id),
-    onSettled: () => setSyncingId(null),
-    onSuccess: (log, { fullResync }) => {
-      if (log.status === 'failed') {
-        setSyncNotice({
-          tone: 'danger',
-          title: '同步失败',
-          message: log.message ?? '未知错误，请查看同步日志',
-        });
-      } else if (log.message?.includes('无内容变更')) {
-        setSyncNotice({
-          tone: 'warning',
-          title: '同步完成',
-          message: log.message,
-        });
-      } else {
-        setSyncNotice({
-          tone: 'success',
-          title: fullResync ? '完全重新搭建成功' : '同步成功',
-          message: log.message ?? '已完成',
-        });
-      }
-      void queryClient.invalidateQueries({ queryKey: ['sync-logs'] });
-      void queryClient.invalidateQueries({ queryKey: ['bindings'] });
-    },
-    onError: (error) => {
-      setSyncNotice({
-        tone: 'danger',
-        title: '同步失败',
-        message: error instanceof Error ? error.message : '触发同步失败',
-      });
-    },
-  });
-
-  const commentImportMutation = useMutation({
-    mutationFn: (id: string) => triggerCommentImportAndWait(id),
-    onMutate: (id) => setImportingCommentsId(id),
-    onSettled: () => setImportingCommentsId(null),
-    onSuccess: (log) => {
-      if (log.status === 'failed') {
-        setSyncNotice({
-          tone: 'danger',
-          title: '评论导入失败',
-          message: log.message ?? '未知错误',
-        });
-      } else {
-        setSyncNotice({
-          tone: 'success',
-          title: '评论导入成功',
-          message: log.message ?? '已完成',
-        });
-      }
-    },
-    onError: (error) => {
-      setSyncNotice({
-        tone: 'danger',
-        title: '评论导入失败',
-        message: error instanceof Error ? error.message : '触发评论导入失败',
-      });
-    },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.bindings }),
   });
 
   function closeForm() {
@@ -180,13 +122,14 @@ export function BindingsPage() {
         }
       />
 
-      {syncNotice ? (
-        <Alert tone={syncNotice.tone} title={syncNotice.title}>
-          {syncNotice.message}
-          <button type="button" className="ml-3 text-xs underline opacity-80" onClick={() => setSyncNotice(null)}>
-            关闭
-          </button>
-        </Alert>
+      {taskNotice ? (
+        <DismissibleAlert
+          tone={taskNotice.tone}
+          title={taskNotice.title}
+          onDismiss={clearTaskNotice}
+        >
+          {taskNotice.message}
+        </DismissibleAlert>
       ) : null}
 
       {formMode !== 'hidden' ? (
@@ -223,14 +166,8 @@ export function BindingsPage() {
         <div className="binding-list">
           {(bindings.data ?? []).map((binding) => {
             const latestLog = latestLogByBinding.get(binding.id);
-            const syncStatusTone =
-              latestLog?.status === 'failed'
-                ? 'red'
-                : latestLog?.status === 'success'
-                  ? 'green'
-                  : latestLog?.status === 'running' || latestLog?.status === 'pending'
-                    ? 'amber'
-                    : undefined;
+            const syncStatusTone = latestSyncStatusBadgeTone(latestLog);
+            const syncStatusLabel = latestSyncStatusBadgeLabel(latestLog);
 
             return (
             <article key={binding.id} className="binding-card">
@@ -243,14 +180,8 @@ export function BindingsPage() {
                       {binding.syncMode === 'workspace' ? '工作区模式' : '仓库模式'}
                     </Badge>
                     <Badge>{binding.feishuTarget.type === 'wiki' ? 'Wiki' : 'Drive'}</Badge>
-                    {latestLog && syncStatusTone ? (
-                      <Badge tone={syncStatusTone}>
-                        {latestLog.status === 'failed'
-                          ? '最近失败'
-                          : latestLog.status === 'success'
-                            ? '最近成功'
-                            : '同步中'}
-                      </Badge>
+                    {latestLog && syncStatusTone && syncStatusLabel ? (
+                      <Badge tone={syncStatusTone}>{syncStatusLabel}</Badge>
                     ) : null}
                   </div>
                   <div className="binding-path">{binding.repoPath}</div>
@@ -271,6 +202,10 @@ export function BindingsPage() {
                   </div>
                   {latestLog?.status === 'failed' && latestLog.message ? (
                     <div className="mt-2 text-sm text-[var(--color-danger)]">{latestLog.message}</div>
+                  ) : null}
+                  {latestLog &&
+                  (latestLog.status === 'running' || latestLog.status === 'pending') ? (
+                    <SyncProgressBar log={latestLog} />
                   ) : null}
                 </div>
 
@@ -309,7 +244,15 @@ export function BindingsPage() {
                     disabled={syncMutation.isPending && syncingId === binding.id}
                     onClick={() => syncMutation.mutate({ id: binding.id, fullResync: true })}
                   >
-                    {syncingId === binding.id ? '重新搭建中…' : '完全重新搭建'}
+                    {syncingId === binding.id ? '修复中…' : '修复同步'}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={syncMutation.isPending && syncingId === binding.id}
+                    onClick={() => syncMutation.mutate({ id: binding.id, fullResync: true, forceRewriteAll: true })}
+                  >
+                    {syncingId === binding.id ? '强制重写中…' : '强制重写'}
                   </Button>
                   <Button
                     variant="danger"
@@ -345,7 +288,7 @@ function BindingForm(props: {
   onCancel: () => void;
 }) {
   const isEdit = props.mode === 'edit';
-  const settings = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
+  const settings = useSettingsQuery();
   const globalBroadcastDefaults = settings.data?.bot ?? DEFAULT_BOT_SETTINGS;
 
   const [name, setName] = useState('');
@@ -424,23 +367,20 @@ function BindingForm(props: {
     const defaults = defaultTriggersForSourceType(sourceType);
     const keepExistingCommitHook =
       isEdit && props.initial && props.initial.sourceType === sourceType;
-    return {
-      onGitCommit: keepExistingCommitHook ? props.initial!.triggers.onGitCommit : defaults.onGitCommit,
-      scheduleEnabled,
-      scheduleMinutes: Math.max(1, Math.round(Number(scheduleMinutes) || DEFAULT_SCHEDULE_MINUTES)),
-      commentImportOnSchedule: scheduleEnabled ? commentImportOnSchedule : false,
-    };
+    return normalizeBindingTriggers(
+      {
+        onGitCommit: keepExistingCommitHook ? props.initial!.triggers.onGitCommit : defaults.onGitCommit,
+        scheduleEnabled,
+        scheduleMinutes,
+        commentImportOnSchedule: scheduleEnabled ? commentImportOnSchedule : false,
+      },
+      sourceType,
+    );
   }
 
   function buildBindingOptions() {
-    const customGlobs = ignoreGlobsText
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const forceUpdateGlobs = forceUpdateGlobsText
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const customGlobs = parseGlobsFromMultilineText(ignoreGlobsText);
+    const forceUpdateGlobs = parseGlobsFromMultilineText(forceUpdateGlobsText);
     const base =
       isEdit && props.initial && props.initial.syncMode === syncMode
         ? props.initial.options
@@ -472,7 +412,7 @@ function BindingForm(props: {
         title={isEdit ? `编辑绑定${props.initial ? `：${props.initial.name}` : ''}` : '新建绑定'}
         description={
           isEdit
-            ? '修改配置后保存即可；变更 Git 路径或飞书目标后，建议执行一次完全重新搭建。'
+            ? '修改配置后保存即可；变更 Git 路径或飞书目标后，建议执行一次修复同步。'
             : '填写 Git 来源与飞书同步目标，创建后可立即触发同步。'
         }
       />

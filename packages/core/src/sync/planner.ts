@@ -32,8 +32,10 @@ export interface SyncPlanContext {
   trigger: SyncTriggerType;
   fromSha?: string;
   toSha: string;
-  /** 完全重新搭建：对全库可同步文档强制重写正文。 */
+  /** 修复同步：规划全库可同步文档（正文是否写入由引擎校验决定）。 */
   fullResync?: boolean;
+  /** 强制重写全部正文（跳过飞书块特征校验）。 */
+  forceRewriteAll?: boolean;
   treePaths: string[];
   changedPaths: string[];
   readMarkdown: (path: string) => Promise<string | null>;
