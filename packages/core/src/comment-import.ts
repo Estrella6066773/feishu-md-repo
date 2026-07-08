@@ -22,6 +22,7 @@ import {
   writeDocCommentExport,
   type FeishuCommentImportManifest,
 } from '@feishu-md/feishu';
+import { throwIfAborted, BindingTaskPreemptedError } from './errors.js';
 
 const commentLog = createLogger('comment-import');
 
@@ -30,6 +31,7 @@ export interface RunCommentImportOptions {
   db: DbClient;
   trigger: CommentImportTriggerType;
   logId: string;
+  shouldAbort?: () => boolean;
 }
 
 export interface CommentImportResult {
@@ -43,7 +45,7 @@ export interface CommentImportResult {
 }
 
 export async function runCommentImport(options: RunCommentImportOptions): Promise<CommentImportResult> {
-  const { binding, db, trigger, logId } = options;
+  const { binding, db, trigger, logId, shouldAbort } = options;
   const credentials = await getFeishuCredentials(db);
   if (!credentials) {
     throw new Error('飞书凭证未配置');
@@ -75,6 +77,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
   const failedDocuments: Array<{ gitPath: string; error: string }> = [];
 
   for (const mapping of docMappings) {
+    throwIfAborted(shouldAbort);
     const gitPath = mapping.gitPath.replace(/\\/g, '/');
     const feishuDocToken = mapping.feishuDocToken ?? mapping.feishuNodeToken;
     const documentUrl = toFeishuDocumentUrl({
@@ -171,6 +174,9 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       commentCount += comments.length;
       replyCount += docReplyCount;
     } catch (error) {
+      if (error instanceof BindingTaskPreemptedError) {
+        throw error;
+      }
       const message = formatFeishuErrorMessage(error);
       failedDocuments.push({ gitPath, error: message });
       commentLog.warn(`评论导入失败: ${message}`, {
@@ -208,6 +214,8 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     await removeCommentImportManifest(binding.repoPath);
     folderChanged = true;
   }
+
+  throwIfAborted(shouldAbort);
 
   const message = buildCommentImportMessage({
     documentCount: manifestDocuments.length,

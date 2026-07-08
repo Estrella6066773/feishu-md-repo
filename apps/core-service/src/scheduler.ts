@@ -8,15 +8,36 @@ import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 
 export class SyncQueue {
   private running = false;
-  private pending: Array<() => Promise<void>> = [];
+  private pending: QueuedBindingTask[] = [];
+  private activeTask: QueuedBindingTask | null = null;
 
-  enqueue(task: () => Promise<void>): void {
-    this.pending.push(task);
+  cancelPendingForBinding(bindingId: string): QueuedBindingTask[] {
+    const removed: QueuedBindingTask[] = [];
+    this.pending = this.pending.filter((task) => {
+      if (task.bindingId === bindingId) {
+        removed.push(task);
+        return false;
+      }
+      return true;
+    });
+    return removed;
+  }
+
+  enqueue(task: QueuedBindingTask, options?: { front?: boolean }): void {
+    if (options?.front) {
+      this.pending.unshift(task);
+    } else {
+      this.pending.push(task);
+    }
     void this.drain();
   }
 
   getQueueDepth(): number {
     return this.pending.length + (this.running ? 1 : 0);
+  }
+
+  getActiveTask(): QueuedBindingTask | null {
+    return this.activeTask;
   }
 
   private async drain(): Promise<void> {
@@ -25,14 +46,29 @@ export class SyncQueue {
     while (this.pending.length > 0) {
       const task = this.pending.shift();
       if (!task) continue;
+      this.activeTask = task;
       try {
-        await task();
+        await task.run();
       } catch (error) {
-        queueLog.error('队列任务失败', undefined, error);
+        queueLog.error('队列任务失败', { bindingId: task.bindingId, logId: task.logId }, error);
+      } finally {
+        this.activeTask = null;
       }
     }
     this.running = false;
   }
+}
+
+export type BindingQueueTaskKind = 'sync' | 'comment-import';
+
+export interface QueuedBindingTask {
+  bindingId: string;
+  logId: string;
+  kind: BindingQueueTaskKind;
+  trigger: string;
+  startedAt: string;
+  generation: number;
+  run: () => Promise<void>;
 }
 
 const queueLog = createLogger('sync-queue');

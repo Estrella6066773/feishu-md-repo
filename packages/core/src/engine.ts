@@ -40,6 +40,7 @@ import {
 import { syncOverviewWhiteboard } from './sync/overview-whiteboard.js';
 import { readSyncableDocumentContent, resolveSyncDocExtensions } from './sync/sync-content.js';
 import type { SyncOperation, SyncPlan } from './sync/planner.js';
+import { BindingTaskPreemptedError, throwIfAborted } from './errors.js';
 
 export interface RunSyncOptions {
   binding: Binding;
@@ -50,6 +51,8 @@ export interface RunSyncOptions {
   repairMissingRemote?: boolean;
   /** 由队列预先创建的日志 ID */
   logId?: string;
+  /** 返回 true 时表示同项目已有新的手动指令，应中止当前任务 */
+  shouldAbort?: () => boolean;
 }
 
 export interface RunSyncResult {
@@ -62,7 +65,7 @@ export interface RunSyncResult {
 }
 
 export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
-  const { binding, db, trigger, fullResync, repairMissingRemote } = options;
+  const { binding, db, trigger, fullResync, repairMissingRemote, shouldAbort } = options;
   const logId = options.logId ?? randomUUID();
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
@@ -91,6 +94,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
   }
 
   try {
+    throwIfAborted(shouldAbort);
     const credentials = await getFeishuCredentials(db);
     if (!credentials) {
       throw new Error('Feishu credentials are not configured');
@@ -176,7 +180,10 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       repositoryOptions,
       repairMissingRemote: repairMissingRemote === true,
       log,
+      shouldAbort,
     });
+
+    throwIfAborted(shouldAbort);
 
     const isIncrementalNoop =
       plan.operations.length === 0 &&
@@ -255,6 +262,9 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       changedPaths: broadcastChangedPaths,
     };
   } catch (error) {
+    if (error instanceof BindingTaskPreemptedError) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
     log.error('同步失败', { durationMs: Date.now() - startMs }, error);
     await updateSyncLog(db, {
@@ -283,6 +293,7 @@ async function executePlan(options: {
   repositoryOptions?: RepositoryOptions;
   repairMissingRemote?: boolean;
   log?: Logger;
+  shouldAbort?: () => boolean;
 }): Promise<{ operationCount: number; overviewUpdated: boolean; repairedMissingCount: number }> {
   const {
     plan,
@@ -296,6 +307,7 @@ async function executePlan(options: {
     repositoryOptions,
     repairMissingRemote = false,
     log: parentLog,
+    shouldAbort,
   } = options;
   const log = parentLog ?? createLogger('sync').child({ bindingId: binding.id });
   const gapFillOnly = plan.gapFillOnly === true;
@@ -364,6 +376,7 @@ async function executePlan(options: {
   const tabularSyncMode = resolveTabularSyncMode(workspaceOptions, repositoryOptions);
 
   for (const operation of operations) {
+    throwIfAborted(shouldAbort);
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
     const gitPath = operation.gitPath || '(根)';
 
@@ -531,6 +544,7 @@ async function executePlan(options: {
     const mappingByGitPath = new Map(mappings.map((item) => [item.gitPath, item]));
 
     for (const pending of pendingDocUpdates) {
+      throwIfAborted(shouldAbort);
       const rewritten = rewriteInternalMarkdownLinks(
         pending.markdown,
         pending.sourcePath,

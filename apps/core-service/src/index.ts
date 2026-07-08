@@ -3,6 +3,7 @@ import { createDb, failUnfinishedCommentImportLogs, failUnfinishedSyncLogs } fro
 import { createLogger } from '@feishu-md/shared';
 import { loadConfig } from './config.js';
 import { createApp } from './app.js';
+import { BindingTaskRegistry } from './binding-task-registry.js';
 import { Scheduler, SyncQueue } from './scheduler.js';
 import { SyncCoordinator } from './sync-coordinator.js';
 import { CommentImportCoordinator } from './comment-import-coordinator.js';
@@ -14,10 +15,11 @@ const serviceLog = createLogger('core-service');
 const config = loadConfig();
 const { db } = createDb({ dbPath: config.dbPath });
 const queue = new SyncQueue();
+const bindingTaskRegistry = new BindingTaskRegistry();
 const scheduler = new Scheduler();
 const broadcaster = new BotBroadcaster(db);
-const syncCoordinator = new SyncCoordinator(db, queue, broadcaster);
-const commentImportCoordinator = new CommentImportCoordinator(db, queue);
+const syncCoordinator = new SyncCoordinator(db, queue, broadcaster, bindingTaskRegistry);
+const commentImportCoordinator = new CommentImportCoordinator(db, queue, bindingTaskRegistry);
 const botManager = new BotManager(db, syncCoordinator, commentImportCoordinator);
 
 const app = createApp({
