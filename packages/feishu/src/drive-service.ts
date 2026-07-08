@@ -1,9 +1,29 @@
 import type { FeishuClient, NodeRef } from './client.js';
 import { createLogger } from '@feishu-md/shared';
-import { assertFeishuResponse, withRateLimit } from './api-error.js';
+import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import { createEmptyDocument, replaceDocumentMarkdown } from './docx-content.js';
 
 const driveApiLog = createLogger('drive-api');
+
+type FeishuUploadResponse = { code?: number; msg?: string; data?: { file_token?: string } };
+
+function extractUploadFileToken(response: unknown, action: string): string {
+  const payload = response as FeishuUploadResponse | null;
+  if (!payload) {
+    throw new FeishuApiError(`${action} returned empty response`);
+  }
+  if (payload.code != null && payload.code !== 0) {
+    throw new FeishuApiError(`${action} failed: ${payload.msg ?? 'unknown error'}`, payload.code);
+  }
+
+  const token =
+    payload.data?.file_token
+    ?? (payload as { file_token?: string }).file_token;
+  if (!token) {
+    throw new FeishuApiError(`${action} returned empty file_token`);
+  }
+  return token;
+}
 
 export async function createDriveFolder(
   client: FeishuClient,
@@ -140,6 +160,72 @@ export async function deleteDriveFile(
     }),
   );
   assertFeishuResponse(response, 'Delete drive file');
+}
+
+export async function uploadDriveFile(
+  client: FeishuClient,
+  options: {
+    parentFolderToken: string;
+    fileName: string;
+    data: Uint8Array;
+  },
+): Promise<string> {
+  driveApiLog.debug('上传 Drive 文件', {
+    fileName: options.fileName,
+    size: options.data.byteLength,
+  });
+  const response = await withRateLimit(() =>
+    client.drive.v1.file.uploadAll({
+      data: {
+        file_name: options.fileName.slice(0, 250),
+        parent_type: 'explorer',
+        parent_node: options.parentFolderToken,
+        size: options.data.byteLength,
+        file: Buffer.from(options.data),
+      },
+    }),
+  );
+  return extractUploadFileToken(response, 'Upload drive file');
+}
+
+export async function ensureDriveTabularFile(
+  client: FeishuClient,
+  options: {
+    parentFolderToken: string;
+    fileName: string;
+    data: Uint8Array;
+    existing?: NodeRef;
+  },
+): Promise<NodeRef> {
+  const existingTokens = new Set<string>();
+  if (options.existing?.token) {
+    existingTokens.add(options.existing.token);
+  }
+
+  const matched = await findDriveChildByName(
+    client,
+    options.parentFolderToken,
+    options.fileName,
+  );
+  if (matched?.token) {
+    existingTokens.add(matched.token);
+  }
+
+  for (const token of existingTokens) {
+    await deleteDriveFile(client, { fileToken: token, type: 'file' });
+  }
+
+  const fileToken = await uploadDriveFile(client, {
+    parentFolderToken: options.parentFolderToken,
+    fileName: options.fileName,
+    data: options.data,
+  });
+
+  return {
+    token: fileToken,
+    nodeType: 'file',
+    title: options.fileName,
+  };
 }
 
 export { replaceDocumentMarkdown };

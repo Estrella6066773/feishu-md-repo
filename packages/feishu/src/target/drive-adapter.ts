@@ -5,6 +5,7 @@ import {
   createDriveDocument,
   createDriveFolder,
   deleteDriveFile,
+  ensureDriveTabularFile,
   findDriveChildByName,
   listDriveFolderChildren,
   moveDriveFile,
@@ -113,5 +114,20 @@ export class DriveAdapter implements FeishuTargetAdapter {
   async deleteNode(token: string, nodeType: 'folder' | 'docx' | 'file'): Promise<void> {
     adapterLog.debug('删除 Drive 文件', { nodeToken: token, operation: 'delete', nodeType });
     await deleteDriveFile(this.client, { fileToken: token, type: nodeType });
+  }
+
+  async uploadTabularFile(
+    parentToken: string | undefined,
+    fileName: string,
+    data: Uint8Array,
+    existing?: NodeRef,
+  ): Promise<NodeRef> {
+    adapterLog.debug('上传表格原文件到云空间', { fileName, size: data.byteLength });
+    return ensureDriveTabularFile(this.client, {
+      parentFolderToken: parentToken ?? this.rootFolderToken,
+      fileName,
+      data,
+      existing,
+    });
   }
 }

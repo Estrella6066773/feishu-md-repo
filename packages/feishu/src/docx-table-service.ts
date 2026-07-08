@@ -143,10 +143,10 @@ async function fillTableCells(
 }
 
 /**
- * 在飞书云文档中插入原生表格（block_type 31），并按行列填入 CSV 数据。
+ * 在飞书云文档中插入原生表格（block_type 31），并按行列填入数据。
  * 创建块接口单次最多 9×9；超出部分通过 insert_table_row / insert_table_column 追加。
  */
-export async function insertCsvTableAt(
+export async function insertNativeTableAt(
   client: FeishuClient,
   documentId: string,
   rows: string[][],
@@ -160,7 +160,7 @@ export async function insertCsvTableAt(
 
   const rowCount = normalized.length;
   const columnCount = normalized[0]!.length;
-  docxTableLog.info('插入 CSV 原生表格', { documentId, rowCount, columnCount, index });
+  docxTableLog.info('插入原生表格', { documentId, rowCount, columnCount, index });
   const initialRows = Math.min(rowCount, CREATE_BLOCK_TABLE_LIMIT);
   const initialColumns = Math.min(columnCount, CREATE_BLOCK_TABLE_LIMIT);
 
@@ -210,3 +210,6 @@ export async function insertCsvTableAt(
 
   return 1;
 }
+
+/** @deprecated 请改用 insertNativeTableAt */
+export const insertCsvTableAt = insertNativeTableAt;

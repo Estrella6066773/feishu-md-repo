@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions } from '@feishu-md/shared';
+import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions, TabularSyncMode } from '@feishu-md/shared';
 import { createLogger, isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs, pathEndsWithExtension } from '@feishu-md/shared';
 import type { Logger } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
@@ -19,6 +19,7 @@ import { createGitProvider, fetchRemoteForSync, resolveSyncPaths } from '@feishu
 import {
   createFeishuClient,
   createTargetAdapter,
+  DriveAdapter,
   extractMarkdownImageRefs,
   FeishuApiError,
   readGitImageBinary,
@@ -359,6 +360,9 @@ async function executePlan(options: {
     operations = sortSyncOperations(operations);
   }
 
+  const docExtensions = resolveSyncDocExtensions(workspaceOptions, repositoryOptions);
+  const tabularSyncMode = resolveTabularSyncMode(workspaceOptions, repositoryOptions);
+
   for (const operation of operations) {
     const parentToken = await resolveParentToken(db, binding, adapter, operation.parentGitPath);
     const gitPath = operation.gitPath || '(根)';
@@ -412,6 +416,53 @@ async function executePlan(options: {
             break;
           }
 
+          const sourcePath = operation.sourcePath ?? operation.gitPath;
+          const isTabularSource = pathEndsWithExtension(sourcePath, docExtensions.tabularExtensions);
+
+          if (isTabularSource && tabularSyncMode === 'drive_file') {
+            if (adapter.type !== 'drive') {
+              log.warn('tabularSyncMode=drive_file 仅支持云空间目标，回退为原生表格', {
+                gitPath: operation.gitPath,
+                sourcePath,
+              });
+            } else {
+              const binary = await readBinaryFile(sourcePath);
+              if (!binary) {
+                throw new Error(`表格文件不存在: ${sourcePath}`);
+              }
+              const fileName = posix.basename(sourcePath);
+              const contentSha = createHash('sha256').update(binary).digest('hex');
+              const shouldUpload =
+                operation.forceWrite
+                || !remoteExists
+                || contentNeverSynced
+                || existing?.contentSha !== contentSha;
+
+              if (shouldUpload) {
+                const driveAdapter = adapter as DriveAdapter;
+                const fileRef = await driveAdapter.uploadTabularFile(
+                  parentToken,
+                  fileName,
+                  binary,
+                  remoteExists ? existingRef : undefined,
+                );
+                await upsertNodeMapping(db, {
+                  id: existing?.id ?? randomUUID(),
+                  bindingId: binding.id,
+                  gitPath: operation.gitPath,
+                  feishuTargetType: resolved.target.type,
+                  feishuNodeToken: fileRef.token,
+                  feishuDocToken: undefined,
+                  feishuNodeType: 'file',
+                  feishuParentToken: parentToken,
+                  contentSha,
+                });
+                count += 1;
+              }
+              break;
+            }
+          }
+
           const useConfiguredRootDoc =
             operation.gitPath === '' && rootDocumentRef != null && existingRef == null;
           const doc = useConfiguredRootDoc
@@ -424,7 +475,6 @@ async function executePlan(options: {
               );
 
           const docToken = doc.docToken ?? doc.token;
-          const sourcePath = operation.sourcePath ?? operation.gitPath;
           const shouldWriteContent = !gapFillOnly || !remoteExists || contentNeverSynced;
           let contentMarkdown = operation.contentMarkdown;
 
@@ -475,8 +525,6 @@ async function executePlan(options: {
     log,
   });
   count += deletedCount;
-
-  const docExtensions = resolveSyncDocExtensions(workspaceOptions, repositoryOptions);
 
   if (pendingDocUpdates.length > 0) {
     const mappings = await listNodeMappings(db, binding.id);
@@ -777,6 +825,15 @@ function findLinkTargetMapping(
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function resolveTabularSyncMode(
+  workspaceOptions?: WorkspaceOptions,
+  repositoryOptions?: RepositoryOptions,
+): TabularSyncMode {
+  return workspaceOptions?.tabularSyncMode
+    ?? repositoryOptions?.tabularSyncMode
+    ?? 'native_table';
 }
 
 export { createPlanner } from './sync/factory.js';

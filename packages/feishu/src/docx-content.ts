@@ -12,7 +12,8 @@ import type { DocxImageResolver } from './image-service.js';
 import { splitMarkdownByDiagrams } from './mermaid-markdown.js';
 import { markdownContainsImages, splitMarkdownByImages, stripMarkdownImagesToFallback } from './markdown-images.js';
 import { pathEndsWithExtension, parseCsv, createLogger } from '@feishu-md/shared';
-import { insertCsvTableAt } from './docx-table-service.js';
+import { insertNativeTableAt } from './docx-table-service.js';
+import { splitMarkdownByTables, markdownContainsGfmTable } from './markdown-tables.js';
 import { syncContextFromOptions, type SyncLogContext } from './sync-log.js';
 
 const syncLog = createLogger('sync');
@@ -81,7 +82,7 @@ export async function replaceDocumentMarkdown(
   const tabularExtensions = options?.tabularExtensions ?? ['.csv'];
   if (options?.sourcePath && pathEndsWithExtension(options.sourcePath, tabularExtensions)) {
     const rows = parseCsv(markdown);
-    await insertCsvTableAt(client, documentId, rows, 0);
+    await insertNativeTableAt(client, documentId, rows, 0);
     return;
   }
 
@@ -146,7 +147,6 @@ async function insertMarkdownSegment(
   const trimmed = markdown.trim();
   if (!trimmed) return 0;
 
-  // FAQ §10：含图片 Markdown 优先走 convert → descendant.create → upload_all → replace_image
   if (options?.resolveImage && markdownContainsImages(trimmed)) {
     try {
       return await insertConvertedMarkdownAt(client, documentId, trimmed, index, options);
@@ -162,14 +162,65 @@ async function insertMarkdownSegment(
     }
   }
 
-  const candidates = uniqueStrings([flattenMarkdownTables(trimmed), trimmed]);
-  for (const content of candidates) {
-    try {
-      return await insertConvertedMarkdownAt(client, documentId, content, index, options);
-    } catch (error) {
-      if (!isDocxInsertRecoverableError(error)) {
-        throw error;
-      }
+  if (markdownContainsGfmTable(trimmed)) {
+    return insertMarkdownWithNativeTables(client, documentId, trimmed, index, options);
+  }
+
+  return insertPlainMarkdownSegment(client, documentId, trimmed, index, options);
+}
+
+async function insertMarkdownWithNativeTables(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+  index: number,
+  options?: ReplaceDocumentMarkdownOptions,
+): Promise<number> {
+  const segments = splitMarkdownByTables(markdown);
+  let currentIndex = index;
+  let insertedCount = 0;
+
+  for (const segment of segments) {
+    if (segment.kind === 'table') {
+      const added = await insertNativeTableAt(client, documentId, segment.rows, currentIndex);
+      currentIndex += added;
+      insertedCount += added;
+      continue;
+    }
+
+    if (!segment.content.trim()) {
+      continue;
+    }
+
+    const added = await insertPlainMarkdownSegment(
+      client,
+      documentId,
+      segment.content,
+      currentIndex,
+      options,
+    );
+    currentIndex += added;
+    insertedCount += added;
+  }
+
+  return insertedCount;
+}
+
+async function insertPlainMarkdownSegment(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+  index: number,
+  options?: ReplaceDocumentMarkdownOptions,
+): Promise<number> {
+  const trimmed = markdown.trim();
+  if (!trimmed) return 0;
+
+  try {
+    return await insertConvertedMarkdownAt(client, documentId, trimmed, index, options);
+  } catch (error) {
+    if (!isDocxInsertRecoverableError(error)) {
+      throw error;
     }
   }
 
@@ -347,59 +398,6 @@ function stripMergeInfo(value: Record<string, unknown>): Record<string, unknown>
 
 function wrapAsMermaidFence(code: string): string {
   return `\`\`\`mermaid\n${code.trim()}\n\`\`\``;
-}
-
-/** 将 GFM 表格转为列表，避免飞书 block 插入接口对表格块报 invalid param */
-function flattenMarkdownTables(markdown: string): string {
-  const lines = markdown.split('\n');
-  const result: string[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (
-      line.trim().startsWith('|') &&
-      index + 1 < lines.length &&
-      /^\|[\s\-:|]+\|$/.test(lines[index + 1]!.trim())
-    ) {
-      const headerCells = line
-        .split('|')
-        .map((cell) => cell.trim())
-        .filter(Boolean);
-      index += 2;
-
-      while (index < lines.length && lines[index]!.trim().startsWith('|')) {
-        const row = lines[index]!;
-        const cells = row
-          .split('|')
-          .map((cell) => cell.trim())
-          .filter(Boolean);
-        const parts = headerCells.map((header, cellIndex) => `${header}: ${cells[cellIndex] ?? ''}`);
-        if (parts.length > 0) {
-          result.push(`- ${parts.join(' · ')}`);
-        }
-        index += 1;
-      }
-      result.push('');
-      continue;
-    }
-
-    result.push(line);
-    index += 1;
-  }
-
-  return result.join('\n');
-}
-
-function uniqueStrings(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) continue;
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
 }
 
 function isDocxInsertRecoverableError(error: unknown): boolean {

@@ -35,6 +35,11 @@ export {
   MERMAID_DIAGRAM_TYPE,
   type MarkdownDocumentSegment,
 } from './mermaid-markdown.js';
+export {
+  splitMarkdownByTables,
+  markdownContainsGfmTable,
+  type MarkdownTableSegment,
+} from './markdown-tables.js';
 export { parseMermaidGraph, type ParsedMermaidGraph, type ParsedMermaidSubgraph } from './mermaid-subgraph.js';
 export { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
 export {

@@ -35,10 +35,14 @@ export interface FeishuTarget {
   driveRootFolderToken?: string;
 }
 
+export type TabularSyncMode = 'native_table' | 'drive_file';
+
 export interface WorkspaceOptions {
   mdExtensions: string[];
-  /** 表格类扩展名（如 .csv），同步时转为 Markdown 表格写入云文档 */
+  /** 表格类扩展名（如 .csv） */
   tabularExtensions: string[];
+  /** native_table：写入云文档原生表格；drive_file：上传原文件到云空间（仅 drive 目标） */
+  tabularSyncMode?: TabularSyncMode;
   mirrorNonMdFiles: boolean;
   ignoreGlobs: string[];
   /** 每次同步都强制重写的 Markdown 文件 glob */
@@ -48,8 +52,10 @@ export interface WorkspaceOptions {
 
 export interface RepositoryOptions {
   readmeNames: string[];
-  /** 表格类扩展名（如 .csv），作为独立文档同步 */
+  /** 表格类扩展名（如 .csv） */
   tabularExtensions: string[];
+  /** native_table：写入云文档原生表格；drive_file：上传原文件到云空间（仅 drive 目标） */
+  tabularSyncMode?: TabularSyncMode;
   missingReadmePolicy: MissingReadmePolicy;
   ignoreGlobs: string[];
   /** 每次同步都强制重写的 Markdown 文件 glob */
@@ -190,6 +196,7 @@ export interface AppSettings {
 export const DEFAULT_WORKSPACE_OPTIONS: WorkspaceOptions = {
   mdExtensions: ['.md', '.markdown'],
   tabularExtensions: ['.csv'],
+  tabularSyncMode: 'native_table',
   mirrorNonMdFiles: false,
   ignoreGlobs: ['**/node_modules/**', '**/.git/**'],
   forceUpdateGlobs: [],
@@ -199,6 +206,7 @@ export const DEFAULT_WORKSPACE_OPTIONS: WorkspaceOptions = {
 export const DEFAULT_REPOSITORY_OPTIONS: RepositoryOptions = {
   readmeNames: ['README.md', 'readme.md', 'Readme.md'],
   tabularExtensions: ['.csv'],
+  tabularSyncMode: 'native_table',
   missingReadmePolicy: 'skip',
   ignoreGlobs: ['**/node_modules/**', '**/.git/**'],
   forceUpdateGlobs: [],
