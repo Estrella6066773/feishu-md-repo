@@ -199,6 +199,7 @@ function flattenStructureTree(root: StructureTreeNode): BoardMindMapLinkNode[] {
     parentId: string | undefined,
     zIndex: number,
     depth: number,
+    branchSide?: 'left' | 'right',
   ): void {
     const id = nextNodeId();
     nodes.push({
@@ -208,10 +209,11 @@ function flattenStructureTree(root: StructureTreeNode): BoardMindMapLinkNode[] {
       parentId,
       zIndex,
       isRoot: parentId == null,
-      layoutPosition: depth === 1 ? 'right' : undefined,
+      layoutPosition: depth === 1 ? 'right' : branchSide,
     });
+    const childBranchSide = depth === 0 ? 'right' : branchSide;
     node.children.forEach((child, index) => {
-      walk(child, id, index, depth + 1);
+      walk(child, id, index, depth + 1, childBranchSide);
     });
   }
 

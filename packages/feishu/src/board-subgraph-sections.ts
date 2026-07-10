@@ -500,6 +500,13 @@ function findMemberShapeByLabel(
   return [...candidates].sort((left, right) => nodeArea(left) - nodeArea(right))[0];
 }
 
+interface TreeLayoutResult {
+  depthByMember: Map<string, number>;
+  rowByMember: Map<string, number>;
+  maxDepth: number;
+  maxRows: number;
+}
+
 interface SectionBuildPlan {
   subgraph: ParsedMermaidSubgraph;
   sectionId: string;
@@ -507,7 +514,7 @@ interface SectionBuildPlan {
   memberIds: string[];
   memberShapes: BoardNodeRecord[];
   titleShape?: BoardNodeRecord;
-  ranks: Map<string, number>;
+  treeLayout: TreeLayoutResult;
 }
 
 interface BlockPlacement {
@@ -515,7 +522,7 @@ interface BlockPlacement {
   y: number;
   width: number;
   height: number;
-  rank?: number;
+  depth?: number;
 }
 
 function planSubgraphSections(
@@ -556,7 +563,7 @@ function planSubgraphSections(
       memberIds,
       memberShapes,
       titleShape,
-      ranks: computeNodeRanks(memberIds, edges),
+      treeLayout: computeTreeLayout(memberIds, edges),
     });
 
     for (const shape of memberShapes) {
@@ -567,66 +574,88 @@ function planSubgraphSections(
   return plans;
 }
 
-function computeNodeRanks(
+/** 按父子关系做树形排版：深度为列、兄弟按源码声明顺序自上而下，减少连线交叉 */
+function computeTreeLayout(
   memberIds: string[],
   edges: Array<{ from: string; to: string }>,
-): Map<string, number> {
+): TreeLayoutResult {
   const memberSet = new Set(memberIds);
-  const incoming = new Map<string, number>();
-  const outgoing = new Map<string, string[]>();
-  const ranks = new Map<string, number>();
+  const children = new Map<string, string[]>();
+  const orderIndex = new Map(memberIds.map((id, index) => [id, index]));
 
   for (const memberId of memberIds) {
-    incoming.set(memberId, 0);
-    outgoing.set(memberId, []);
-    ranks.set(memberId, 0);
+    children.set(memberId, []);
   }
 
+  // 多父节点时只保留首个父节点，避免 DAG 被拉成网状列布局
   for (const edge of edges) {
     if (!memberSet.has(edge.from) || !memberSet.has(edge.to)) continue;
-    outgoing.get(edge.from)?.push(edge.to);
-    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
-  }
-
-  const queue = memberIds.filter((memberId) => (incoming.get(memberId) ?? 0) === 0);
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    visited.add(current);
-    const nextRank = (ranks.get(current) ?? 0) + 1;
-    for (const next of outgoing.get(current) ?? []) {
-      ranks.set(next, Math.max(ranks.get(next) ?? 0, nextRank));
-      incoming.set(next, (incoming.get(next) ?? 0) - 1);
-      if ((incoming.get(next) ?? 0) === 0) {
-        queue.push(next);
-      }
+    const kids = children.get(edge.from)!;
+    if (!kids.includes(edge.to)) {
+      kids.push(edge.to);
     }
   }
 
-  // 环形关系无法完全拓扑排序时，保留已知 rank，其余节点放在最后一列。
-  const fallbackRank = Math.max(0, ...ranks.values()) + 1;
+  for (const kids of children.values()) {
+    kids.sort((left, right) => (orderIndex.get(left) ?? 0) - (orderIndex.get(right) ?? 0));
+  }
+
+  const hasParent = new Set<string>();
+  for (const kids of children.values()) {
+    for (const kid of kids) {
+      hasParent.add(kid);
+    }
+  }
+
+  const roots = memberIds.filter((id) => !hasParent.has(id));
+  const forestRoots = roots.length > 0 ? roots : [memberIds[0]!];
+
+  const depthByMember = new Map<string, number>();
+  const rowByMember = new Map<string, number>();
+  let leafCursor = 0;
+
+  function layoutSubtree(nodeId: string, depth: number): void {
+    if (rowByMember.has(nodeId)) return;
+
+    const kids = children.get(nodeId) ?? [];
+    depthByMember.set(nodeId, depth);
+
+    if (kids.length === 0) {
+      rowByMember.set(nodeId, leafCursor);
+      leafCursor += 1;
+      return;
+    }
+
+    for (const kid of kids) {
+      layoutSubtree(kid, depth + 1);
+    }
+
+    const childRows = kids.map((kid) => rowByMember.get(kid) ?? 0);
+    rowByMember.set(nodeId, (Math.min(...childRows) + Math.max(...childRows)) / 2);
+  }
+
+  for (const root of forestRoots) {
+    layoutSubtree(root, 0);
+  }
+
   for (const memberId of memberIds) {
-    if (!visited.has(memberId) && (outgoing.get(memberId)?.length ?? 0) > 0) {
-      ranks.set(memberId, fallbackRank);
+    if (!rowByMember.has(memberId)) {
+      depthByMember.set(memberId, 0);
+      rowByMember.set(memberId, leafCursor);
+      leafCursor += 1;
     }
   }
 
-  return ranks;
+  return {
+    depthByMember,
+    rowByMember,
+    maxDepth: Math.max(0, ...depthByMember.values()),
+    maxRows: Math.max(1, leafCursor),
+  };
 }
 
 function computePlanDimensions(plan: SectionBuildPlan): { width: number; height: number } {
-  const columns = new Map<number, BoardNodeRecord[]>();
-  plan.memberShapes.forEach((shape, index) => {
-    const memberId = plan.memberIds[index]!;
-    const rank = plan.ranks.get(memberId) ?? 0;
-    const column = columns.get(rank) ?? [];
-    column.push(shape);
-    columns.set(rank, column);
-  });
-
-  const sortedRanks = [...columns.keys()].sort((left, right) => left - right);
-  const maxRows = Math.max(1, ...[...columns.values()].map((column) => column.length));
+  const { maxDepth, maxRows } = plan.treeLayout;
   const maxBlockWidth = Math.max(
     120,
     ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
@@ -637,9 +666,7 @@ function computePlanDimensions(plan: SectionBuildPlan): { width: number; height:
   );
 
   const contentWidth =
-    sortedRanks.length <= 1
-      ? maxBlockWidth
-      : (sortedRanks.length - 1) * BLOCK_GAP_X + maxBlockWidth;
+    maxDepth <= 0 ? maxBlockWidth : maxDepth * BLOCK_GAP_X + maxBlockWidth;
   const contentHeight =
     maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
 
@@ -652,6 +679,34 @@ function computePlanDimensions(plan: SectionBuildPlan): { width: number; height:
       ),
     ),
   };
+}
+
+function placeSiblingSectionGroup(
+  plans: SectionBuildPlan[],
+  originX: number,
+  originY: number,
+): void {
+  if (plans.length === 0) return;
+
+  const targetRowWidth = computeTargetRowWidth(plans);
+  const rows = partitionPlansIntoRows(plans, targetRowWidth);
+  let cursorY = originY;
+
+  for (const row of rows) {
+    const rowHeight = Math.max(...row.map((plan) => plan.bounds.height));
+    let cursorX = originX;
+
+    for (const plan of row) {
+      plan.bounds = {
+        ...plan.bounds,
+        x: snapCeil(cursorX),
+        y: snapCeil(cursorY + Math.max(0, (rowHeight - plan.bounds.height) / 2)),
+      };
+      cursorX += plan.bounds.width + SECTION_GAP_X;
+    }
+
+    cursorY += rowHeight + SECTION_GAP_Y;
+  }
 }
 
 function computeTargetRowWidth(plans: SectionBuildPlan[]): number {
@@ -709,49 +764,11 @@ function partitionPlansIntoRows(plans: SectionBuildPlan[], targetRowWidth: numbe
   return rows;
 }
 
-function placeSiblingSectionGroup(
-  plans: SectionBuildPlan[],
-  originX: number,
-  originY: number,
-): void {
-  if (plans.length === 0) return;
-
-  const targetRowWidth = computeTargetRowWidth(plans);
-  const rows = partitionPlansIntoRows(plans, targetRowWidth);
-  let cursorY = originY;
-
-  for (const row of rows) {
-    const rowHeight = Math.max(...row.map((plan) => plan.bounds.height));
-    let cursorX = originX;
-
-    for (const plan of row) {
-      plan.bounds = {
-        ...plan.bounds,
-        x: snapCeil(cursorX),
-        y: snapCeil(cursorY + Math.max(0, (rowHeight - plan.bounds.height) / 2)),
-      };
-      cursorX += plan.bounds.width + SECTION_GAP_X;
-    }
-
-    cursorY += rowHeight + SECTION_GAP_Y;
-  }
-}
-
 function layoutPlanInternalBlocks(
   plan: SectionBuildPlan,
   placementByShapeId: Map<string, BlockPlacement>,
 ): void {
-  const columns = new Map<number, BoardNodeRecord[]>();
-  plan.memberShapes.forEach((shape, index) => {
-    const memberId = plan.memberIds[index]!;
-    const rank = plan.ranks.get(memberId) ?? 0;
-    const column = columns.get(rank) ?? [];
-    column.push(shape);
-    columns.set(rank, column);
-  });
-
-  const sortedRanks = [...columns.keys()].sort((left, right) => left - right);
-  const maxRows = Math.max(1, ...[...columns.values()].map((column) => column.length));
+  const { depthByMember, rowByMember } = plan.treeLayout;
   const maxBlockWidth = Math.max(
     120,
     ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
@@ -760,38 +777,22 @@ function layoutPlanInternalBlocks(
     56,
     ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
   );
-  const contentWidth =
-    sortedRanks.length <= 1
-      ? maxBlockWidth
-      : (sortedRanks.length - 1) * BLOCK_GAP_X + maxBlockWidth;
-  const contentHeight =
-    maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
 
-  for (const rank of sortedRanks) {
-    const column = columns.get(rank) ?? [];
-    const columnHeight =
-      column.length <= 1
-        ? maxBlockHeight
-        : (column.length - 1) * BLOCK_GAP_Y + maxBlockHeight;
-    const startY =
-      plan.bounds.y +
-      SECTION_TITLE_HEIGHT +
-      SECTION_PADDING +
-      Math.max(0, (contentHeight - columnHeight) / 2);
-
-    column.forEach((shape, rowIndex) => {
-      if (!shape.id) return;
-      const x = plan.bounds.x + SECTION_PADDING + rank * BLOCK_GAP_X;
-      const y = startY + rowIndex * BLOCK_GAP_Y;
-      shape.x = snapCeil(x);
-      shape.y = snapCeil(y);
-      placementByShapeId.set(String(shape.id), {
-        x: Number(shape.x),
-        y: Number(shape.y),
-        width: Number(shape.width ?? maxBlockWidth),
-        height: Number(shape.height ?? maxBlockHeight),
-        rank,
-      });
+  for (const [index, shape] of plan.memberShapes.entries()) {
+    if (!shape.id) continue;
+    const memberId = plan.memberIds[index]!;
+    const depth = depthByMember.get(memberId) ?? 0;
+    const row = rowByMember.get(memberId) ?? 0;
+    const x = plan.bounds.x + SECTION_PADDING + depth * BLOCK_GAP_X;
+    const y = plan.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING + row * BLOCK_GAP_Y;
+    shape.x = snapCeil(x);
+    shape.y = snapCeil(y);
+    placementByShapeId.set(String(shape.id), {
+      x: Number(shape.x),
+      y: Number(shape.y),
+      width: Number(shape.width ?? maxBlockWidth),
+      height: Number(shape.height ?? maxBlockHeight),
+      depth,
     });
   }
 }

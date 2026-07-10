@@ -136,7 +136,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       }
 
       const updatedAt = new Date().toISOString();
-      const storageFile = await writeDocCommentExport(binding.repoPath, {
+      const { storageFile, written } = await writeDocCommentExport(binding.repoPath, {
         schemaVersion: FEISHU_COMMENT_EXPORT_SCHEMA_VERSION,
         bindingId: binding.id,
         bindingName: binding.name,
@@ -158,7 +158,9 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         replyCount: docReplyCount,
         comments,
       });
-      folderChanged = true;
+      if (written) {
+        folderChanged = true;
+      }
 
       manifestDocuments.push({
         gitPath,
@@ -169,7 +171,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
         documentUrl,
         commentCount: comments.length,
         replyCount: docReplyCount,
-        updatedAt,
+        updatedAt: written ? updatedAt : (existing?.updatedAt ?? existing?.importedAt ?? updatedAt),
       });
       commentCount += comments.length;
       replyCount += docReplyCount;

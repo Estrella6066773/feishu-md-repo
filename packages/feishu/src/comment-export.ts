@@ -76,7 +76,7 @@ export function countCommentReplies(comments: FeishuCommentRecord[]): number {
   return comments.reduce((sum, comment) => sum + comment.replies.length, 0);
 }
 
-/** 评论正文指纹，用于判断飞书侧评论是否与本地导出一致 */
+/** 评论正文指纹，用于判断飞书侧评论是否与本地导出一致（不含 update_time、表情等元数据） */
 export function fingerprintDocumentComments(comments: FeishuCommentRecord[]): string {
   const normalized = normalizeCommentsForFingerprint(comments);
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
@@ -87,24 +87,14 @@ function normalizeCommentsForFingerprint(comments: FeishuCommentRecord[]): unkno
     .sort((a, b) => a.comment_id.localeCompare(b.comment_id))
     .map((comment) => ({
       comment_id: comment.comment_id,
-      user_id: comment.user_id,
-      create_time: comment.create_time,
-      update_time: comment.update_time,
-      is_solved: comment.is_solved,
-      solved_time: comment.solved_time,
-      solver_user_id: comment.solver_user_id,
-      is_whole: comment.is_whole,
-      quote: comment.quote,
+      is_whole: comment.is_whole ?? false,
+      quote: comment.quote ?? '',
       replies: [...comment.replies]
         .sort((a, b) => (a.reply_id ?? '').localeCompare(b.reply_id ?? ''))
         .map((reply) => ({
-          reply_id: reply.reply_id,
-          user_id: reply.user_id,
-          create_time: reply.create_time,
-          update_time: reply.update_time,
-          content: reply.content,
+          reply_id: reply.reply_id ?? '',
+          content: reply.content ?? { elements: [] },
           extra: reply.extra,
-          reactions: reply.reactions,
         })),
     }));
 }
@@ -144,13 +134,18 @@ export async function readCommentImportManifest(
 export async function writeDocCommentExport(
   repoPath: string,
   payload: FeishuDocCommentExport,
-): Promise<string> {
+): Promise<{ storageFile: string; written: boolean }> {
+  const storageFile = commentStorageFileName(payload.gitPath);
+  const existing = await readDocCommentExport(repoPath, payload.gitPath);
+  if (existing && isDocumentCommentExportUnchanged(existing, payload.comments)) {
+    return { storageFile, written: false };
+  }
+
   const docsDir = commentDocsDirectory(repoPath);
   await mkdir(docsDir, { recursive: true });
-  const storageFile = commentStorageFileName(payload.gitPath);
   const absolutePath = join(docsDir, storageFile);
   await writeFile(absolutePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
-  return storageFile;
+  return { storageFile, written: true };
 }
 
 export async function writeCommentImportManifest(
