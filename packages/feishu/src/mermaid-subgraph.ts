@@ -19,8 +19,32 @@ export interface ParsedMermaidEdge {
 
 const NODE_DEF_RE =
   /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
-const EDGE_RE =
-  /\b([A-Za-z][A-Za-z0-9_]*)\b\s*(?:--(?:[^>-]+)?-->|-->|-\.(?:[^>-]+)?->|==(?:[^>=]+)?==>)\s*\b([A-Za-z][A-Za-z0-9_]*)\b/g;
+const EDGE_ARROW_RE = /(?:--(?:[^>-]+)?-->|-->|-\.(?:[^>-]+)?->|==(?:[^>=]+)?==>)/;
+const EDGE_SCAN_RE = new RegExp(
+  String.raw`\b([A-Za-z][A-Za-z0-9_]*)\b\s*${EDGE_ARROW_RE.source}\s*\b([A-Za-z][A-Za-z0-9_]*)\b`,
+  'g',
+);
+
+function parseEdgesFromLine(line: string): ParsedMermaidEdge[] {
+  const edges: ParsedMermaidEdge[] = [];
+  let searchFrom = 0;
+
+  while (searchFrom < line.length) {
+    EDGE_SCAN_RE.lastIndex = searchFrom;
+    const match = EDGE_SCAN_RE.exec(line);
+    if (!match || match.index == null) break;
+
+    const from = match[1];
+    const to = match[2];
+    if (from && to) {
+      edges.push({ from, to });
+    }
+
+    searchFrom = match.index + (match[1]?.length ?? 1);
+  }
+
+  return edges;
+}
 
 /** 解析 Mermaid 流程图中的 subgraph 与节点标签，供导入后创建画板分区。 */
 export function parseMermaidGraph(code: string): ParsedMermaidGraph {
@@ -74,12 +98,8 @@ export function parseMermaidGraph(code: string): ParsedMermaidGraph {
       }
     }
 
-    for (const match of line.matchAll(EDGE_RE)) {
-      const from = match[1];
-      const to = match[2];
-      if (from && to) {
-        edges.push({ from, to });
-      }
+    for (const edge of parseEdgesFromLine(line)) {
+      edges.push(edge);
     }
   }
 

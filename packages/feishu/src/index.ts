@@ -4,7 +4,7 @@ export { runWithFeishuApiRetryPolicy, getFeishuApiRetryPolicy, type FeishuApiRet
 export { formatSyncLog, syncContextFromOptions, type SyncLogContext } from './sync-log.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';
 export { getWikiNodeByToken, type ResolvedWikiNode } from './wiki-service.js';
-export { replaceDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
+export { replaceDocumentMarkdown, appendDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
 export { toFeishuDocumentUrl, type FeishuDocumentLinkTarget } from './document-url.js';
 export {
   sendTextMessage,
@@ -63,6 +63,15 @@ export {
   type ExportDocumentResult,
 } from './export/markdown-exporter.js';
 export { parseFeishuDocumentUrl, type ParsedDocumentUrl, type FeishuDocumentUrlSource } from './export/document-url.js';
+export {
+  appendMarkdownToDocument,
+  appendMermaidBoardToDocument,
+  stripMermaidClassStyles,
+  type AppendMarkdownToDocumentOptions,
+  type AppendMarkdownToDocumentResult,
+  type AppendMermaidBoardOptions,
+  type AppendMermaidBoardResult,
+} from './append-markdown.js';
 export {
   splitMarkdownByImages,
   extractMarkdownImageRefs,

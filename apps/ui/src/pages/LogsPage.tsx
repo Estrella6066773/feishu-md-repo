@@ -32,11 +32,13 @@ export function LogsPage() {
   const bindingMap = useBindingNameMap(bindings.data);
 
   const filteredLogs = useMemo(() => {
-    return (logs.data ?? []).filter((log) => {
-      if (statusFilter !== 'all' && log.status !== statusFilter) return false;
-      if (bindingFilter !== 'all' && log.bindingId !== bindingFilter) return false;
-      return true;
-    });
+    return (logs.data ?? [])
+      .filter((log) => {
+        if (statusFilter !== 'all' && log.status !== statusFilter) return false;
+        if (bindingFilter !== 'all' && log.bindingId !== bindingFilter) return false;
+        return true;
+      })
+      .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
   }, [logs.data, statusFilter, bindingFilter]);
 
   const filters: { id: StatusFilter; label: string }[] = [

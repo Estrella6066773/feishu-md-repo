@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { eq, and, or, like, desc } from 'drizzle-orm';
+import { eq, and, or, like } from 'drizzle-orm';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,26 +148,32 @@ export async function deleteBinding(db: DbClient, id: string): Promise<void> {
 }
 
 export async function listSyncLogs(db: DbClient, bindingId?: string): Promise<SyncLogEntry[]> {
-  const query = db.select().from(schema.syncLogs).orderBy(desc(schema.syncLogs.startedAt));
+  // 一次链式构建查询；再在内存中按 startedAt 降序，避免驱动/ORM 排序异常
   const rows = bindingId
-    ? await query.where(eq(schema.syncLogs.bindingId, bindingId))
-    : await query;
+    ? await db
+        .select()
+        .from(schema.syncLogs)
+        .where(eq(schema.syncLogs.bindingId, bindingId))
+    : await db.select().from(schema.syncLogs);
 
-  return rows.map((row) => ({
-    id: row.id,
-    bindingId: row.bindingId,
-    trigger: row.trigger,
-    fromSha: row.fromSha ?? undefined,
-    toSha: row.toSha ?? undefined,
-    status: row.status,
-    message: row.message ?? undefined,
-    progressPhase: row.progressPhase ?? undefined,
-    progressDone: row.progressDone ?? undefined,
-    progressTotal: row.progressTotal ?? undefined,
-    currentGitPath: row.currentGitPath ?? undefined,
-    startedAt: row.startedAt,
-    finishedAt: row.finishedAt ?? undefined,
-  }));
+  return rows
+    .map((row) => ({
+      id: row.id,
+      bindingId: row.bindingId,
+      trigger: row.trigger,
+      fromSha: row.fromSha ?? undefined,
+      toSha: row.toSha ?? undefined,
+      status: row.status,
+      message: row.message ?? undefined,
+      progressPhase: row.progressPhase ?? undefined,
+      progressDone: row.progressDone ?? undefined,
+      progressTotal: row.progressTotal ?? undefined,
+      currentGitPath: row.currentGitPath ?? undefined,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt ?? undefined,
+    }))
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))
+    .slice(0, 100);
 }
 
 export async function getSyncLog(db: DbClient, id: string): Promise<SyncLogEntry | null> {
@@ -415,23 +421,28 @@ export async function listCommentImportLogs(
   db: DbClient,
   bindingId?: string,
 ): Promise<CommentImportLogEntry[]> {
-  const query = db.select().from(schema.commentImportLogs).orderBy(schema.commentImportLogs.startedAt);
   const rows = bindingId
-    ? await query.where(eq(schema.commentImportLogs.bindingId, bindingId))
-    : await query;
+    ? await db
+        .select()
+        .from(schema.commentImportLogs)
+        .where(eq(schema.commentImportLogs.bindingId, bindingId))
+    : await db.select().from(schema.commentImportLogs);
 
-  return rows.map((row) => ({
-    id: row.id,
-    bindingId: row.bindingId,
-    trigger: row.trigger,
-    status: row.status,
-    message: row.message ?? undefined,
-    documentCount: row.documentCount ?? undefined,
-    commentCount: row.commentCount ?? undefined,
-    replyCount: row.replyCount ?? undefined,
-    startedAt: row.startedAt,
-    finishedAt: row.finishedAt ?? undefined,
-  }));
+  return rows
+    .map((row) => ({
+      id: row.id,
+      bindingId: row.bindingId,
+      trigger: row.trigger,
+      status: row.status,
+      message: row.message ?? undefined,
+      documentCount: row.documentCount ?? undefined,
+      commentCount: row.commentCount ?? undefined,
+      replyCount: row.replyCount ?? undefined,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt ?? undefined,
+    }))
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))
+    .slice(0, 100);
 }
 
 export async function getCommentImportLog(

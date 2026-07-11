@@ -1,5 +1,5 @@
 /** 递增此版本号以提示 UI 重启 core-service（旧进程可能缺少新路由） */
-export const CORE_API_VERSION = 3;
+export const CORE_API_VERSION = 5;
 
 export const CORE_API_FEATURES = [
   'settings-feishu',
@@ -10,6 +10,7 @@ export const CORE_API_FEATURES = [
   'export-markdown',
   'import-comments',
   'comment-import-log-detail',
+  'diagram-append-document',
 ] as const;
 
 export type CoreApiFeature = (typeof CORE_API_FEATURES)[number];

@@ -1,6 +1,7 @@
 import {
   DIAGRAM_PRESETS,
   buildLegendTemplateMarkdown,
+  buildMindmapThemeCss,
   formatDiagramDocument,
   parseLegendFromMarkdownTable,
   type DiagramOutputMode,
@@ -15,12 +16,13 @@ import { Card, CardHeader } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field } from '@/components/ui/Field';
 import { IconCopy, IconDownload, IconToolbox } from '@/components/icons';
+import { appendDiagramToDocument } from '@/lib/queries';
 
 const PRESET_OPTIONS = Object.values(DIAGRAM_PRESETS);
 
 const OUTPUT_MODE_OPTIONS: Array<{ id: DiagramOutputMode; label: string; desc: string }> = [
   { id: 'flowchart-colored', label: '流程图着色', desc: '保留原结构，注入 classDef 配色' },
-  { id: 'mindmap', label: '思维导图', desc: '转译为仅发散的树；收束与平行边会丢弃' },
+  { id: 'mindmap', label: '思维导图', desc: '转译为仅发散的树并按图例配色；收束与平行边会丢弃' },
 ];
 
 const SAMPLE_MERMAID = `flowchart TD
@@ -51,6 +53,11 @@ function countLines(text: string): number {
   return text.split('\n').length;
 }
 
+/** 仅成品 Mermaid fence，供复制 / 下载 / 飞书画板导入 */
+function buildBoardExportMarkdown(mermaidCode: string): string {
+  return `\`\`\`mermaid\n${mermaidCode.trim()}\n\`\`\`\n`;
+}
+
 export function DiagramFormatTool() {
   const [title, setTitle] = useState('交互链');
   const [mermaidInput, setMermaidInput] = useState('');
@@ -60,21 +67,24 @@ export function DiagramFormatTool() {
     cloneLegend(DIAGRAM_PRESETS['interaction-chain'].legend),
   );
   const [templatePaste, setTemplatePaste] = useState('');
-  const [resultMarkdown, setResultMarkdown] = useState('');
   const [styledMermaid, setStyledMermaid] = useState('');
   const [warnings, setWarnings] = useState<string[]>([]);
   const [matchStats, setMatchStats] = useState<{ matched: number; total: number } | null>(null);
   const [copied, setCopied] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [targetDocumentUrl, setTargetDocumentUrl] = useState('');
+  const [isAppending, setIsAppending] = useState(false);
+  const [appendError, setAppendError] = useState<string | null>(null);
+  const [appendSuccess, setAppendSuccess] = useState<string | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
   const stats = useMemo(() => {
-    if (!resultMarkdown) return null;
+    if (!styledMermaid) return null;
     return {
-      lines: countLines(resultMarkdown),
-      chars: resultMarkdown.length,
+      lines: countLines(styledMermaid),
+      chars: styledMermaid.length,
     };
-  }, [resultMarkdown]);
+  }, [styledMermaid]);
 
   function applyPreset(nextPresetId: DiagramPresetId) {
     setPresetId(nextPresetId);
@@ -116,10 +126,11 @@ export function DiagramFormatTool() {
       outputMode,
     });
 
-    setResultMarkdown(result.markdown);
     setStyledMermaid(result.styledMermaid);
     setWarnings(result.warnings.map((item) => item.message));
     setMatchStats({ matched: result.matchedCount, total: result.totalNodeCount });
+    setAppendError(null);
+    setAppendSuccess(null);
   }
 
   function updateLegendRow(index: number, patch: Partial<LegendEntry>) {
@@ -154,15 +165,17 @@ export function DiagramFormatTool() {
   }
 
   async function handleCopy() {
-    if (!resultMarkdown) return;
-    await navigator.clipboard.writeText(resultMarkdown);
+    if (!styledMermaid) return;
+    await navigator.clipboard.writeText(buildBoardExportMarkdown(styledMermaid));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
 
   function handleDownload() {
-    if (!resultMarkdown) return;
-    const blob = new Blob([resultMarkdown], { type: 'text/markdown;charset=utf-8' });
+    if (!styledMermaid) return;
+    const blob = new Blob([buildBoardExportMarkdown(styledMermaid)], {
+      type: 'text/markdown;charset=utf-8',
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -171,6 +184,32 @@ export function DiagramFormatTool() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }
+
+  async function handleAppendToDocument() {
+    if (!styledMermaid) {
+      setAppendError('请先完成图表转换');
+      return;
+    }
+    if (!targetDocumentUrl.trim()) {
+      setAppendError('请填写目标飞书云文档链接');
+      return;
+    }
+
+    setIsAppending(true);
+    setAppendError(null);
+    setAppendSuccess(null);
+    try {
+      const result = await appendDiagramToDocument(targetDocumentUrl.trim(), styledMermaid);
+      const styleNote = result.usedStrippedStyles
+        ? '（飞书侧已去掉 classDef 样式以保证导入成功）'
+        : '';
+      setAppendSuccess(`已在文档末尾追加成品画板${styleNote}`);
+    } catch (err) {
+      setAppendError(err instanceof Error ? err.message : '导入云文档失败');
+    } finally {
+      setIsAppending(false);
+    }
   }
 
   useEffect(() => {
@@ -182,11 +221,13 @@ export function DiagramFormatTool() {
     void (async () => {
       try {
         const mermaid = await import('mermaid');
+        const isMindmap = /^\s*mindmap\b/i.test(styledMermaid);
         mermaid.default.initialize({
           startOnLoad: false,
           theme: 'default',
           securityLevel: 'strict',
           flowchart: { htmlLabels: true, curve: 'basis' },
+          themeCSS: isMindmap ? buildMindmapThemeCss(legend) : undefined,
         });
 
         if (cancelled || !previewRef.current) return;
@@ -206,9 +247,9 @@ export function DiagramFormatTool() {
     return () => {
       cancelled = true;
     };
-  }, [styledMermaid]);
+  }, [styledMermaid, legend]);
 
-  const hasResult = Boolean(resultMarkdown);
+  const hasResult = Boolean(styledMermaid);
 
   return (
     <>
@@ -420,8 +461,8 @@ export function DiagramFormatTool() {
           {warnings.length > 0 ? (
             <Alert tone="warning" title="转换提示">
               <ul className="toolbox-tips-list">
-                {warnings.slice(0, 8).map((message) => (
-                  <li key={message}>{message}</li>
+                {warnings.slice(0, 8).map((message, index) => (
+                  <li key={`${index}-${message}`}>{message}</li>
                 ))}
                 {warnings.length > 8 ? <li>另有 {warnings.length - 8} 条提示未显示</li> : null}
               </ul>
@@ -435,14 +476,14 @@ export function DiagramFormatTool() {
                   <div className="toolbox-result-meta">
                     <h2 className="toolbox-result-title">{title}</h2>
                     <div className="toolbox-result-badges">
-                      <Badge tone="blue">Markdown</Badge>
+                      <Badge tone="blue">成品画板</Badge>
                       <Badge>
                         {outputMode === 'mindmap' ? '思维导图' : '流程图着色'}
                       </Badge>
                       {matchStats ? (
                         <Badge>
                           {outputMode === 'mindmap'
-                            ? `树节点 ${matchStats.total}`
+                            ? `树节点 ${matchStats.total} · 已着色 ${matchStats.matched}`
                             : `已着色 ${matchStats.matched}/${matchStats.total} 节点`}
                         </Badge>
                       ) : null}
@@ -461,10 +502,10 @@ export function DiagramFormatTool() {
                       icon={<IconCopy />}
                       onClick={handleCopy}
                     >
-                      {copied ? '已复制' : '复制全文'}
+                      {copied ? '已复制' : '复制图表'}
                     </Button>
                     <Button variant="secondary" size="sm" icon={<IconDownload />} onClick={handleDownload}>
-                      下载 .md
+                      下载图表
                     </Button>
                   </div>
                 </div>
@@ -477,10 +518,53 @@ export function DiagramFormatTool() {
 
                 <div className="toolbox-diagram-preview" ref={previewRef} />
 
-                <div className="toolbox-code-panel">
-                  <pre className="toolbox-code-pre">
-                    <code>{resultMarkdown}</code>
-                  </pre>
+                <div className="toolbox-append-panel form-stack">
+                  <CardHeader
+                    title="导入到云文档"
+                    description="仅在文档末尾追加一块成品画板，不含标题与图例表"
+                  />
+                  <Field label="目标飞书云文档 URL" hint="支持 feishu.cn/docx 与 feishu.cn/wiki 链接">
+                    <input
+                      type="url"
+                      className="field-input toolbox-url-input"
+                      placeholder="https://feishu.cn/docx/xxxxxxxx"
+                      value={targetDocumentUrl}
+                      onChange={(event) => {
+                        setTargetDocumentUrl(event.target.value);
+                        setAppendError(null);
+                        setAppendSuccess(null);
+                      }}
+                      disabled={isAppending}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <div className="help-box toolbox-tips">
+                    <strong>导入前请确认</strong>
+                    <ul className="toolbox-tips-list">
+                      <li>已在「设置」中配置飞书应用凭证</li>
+                      <li>应用对该文档有编辑权限（含画板节点创建）</li>
+                      <li>只追加画板，不会写入图例表，也不会覆盖已有正文</li>
+                    </ul>
+                  </div>
+                  {appendError ? (
+                    <Alert tone="danger" title="导入失败">
+                      {appendError}
+                    </Alert>
+                  ) : null}
+                  {appendSuccess ? (
+                    <Alert tone="success" title="导入成功">
+                      {appendSuccess}
+                    </Alert>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="primary"
+                    disabled={isAppending || !styledMermaid}
+                    onClick={handleAppendToDocument}
+                  >
+                    {isAppending ? '正在追加画板…' : '追加成品画板到云文档'}
+                  </Button>
                 </div>
               </Card>
             </>

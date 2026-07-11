@@ -38,7 +38,7 @@ import {
   CORE_API_VERSION,
 } from '@feishu-md/shared';
 import { installLocalHook, removeLocalHook } from '@feishu-md/git';
-import { createFeishuClient, exportDocumentToMarkdown, formatExportError } from '@feishu-md/feishu';
+import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, formatExportError } from '@feishu-md/feishu';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
@@ -318,7 +318,7 @@ export function createApp(options: {
   app.get('/api/comment-import-logs', async (c) => {
     const bindingId = c.req.query('bindingId');
     const logs = await listCommentImportLogs(db, bindingId ?? undefined);
-    return c.json(logs.slice(-100).reverse());
+    return c.json(logs);
   });
 
   app.get('/api/sync-logs/:id', async (c) => {
@@ -330,7 +330,7 @@ export function createApp(options: {
   app.get('/api/sync-logs', async (c) => {
     const bindingId = c.req.query('bindingId');
     const logs = await listSyncLogs(db, bindingId ?? undefined);
-    return c.json(logs.slice(-100).reverse());
+    return c.json(logs);
   });
 
   app.post('/api/hooks/local', async (c) => {
@@ -364,6 +364,49 @@ export function createApp(options: {
         documentUrl: body.documentUrl,
       });
       return c.json({ ok: true, title: result.title, markdown: result.markdown });
+    } catch (error) {
+      return c.json({ error: formatExportError(error) }, 400);
+    }
+  });
+
+  app.post('/api/diagram/append-to-document', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      documentUrl?: string;
+      mermaidCode?: string;
+      /** @deprecated 兼容旧客户端；优先使用 mermaidCode */
+      markdown?: string;
+    };
+    if (!body.documentUrl?.trim()) {
+      return c.json({ error: '请填写飞书云文档链接' }, 400);
+    }
+    const mermaidCode = (body.mermaidCode ?? body.markdown ?? '').trim();
+    if (!mermaidCode) {
+      return c.json({ error: '请先完成图表转换，再导入云文档' }, 400);
+    }
+
+    const credentials = await getAppSettings(db).then((settings) => settings.feishu);
+    if (!credentials?.appId || !credentials?.appSecret) {
+      return c.json({ error: '飞书凭证未配置' }, 400);
+    }
+
+    const client = createFeishuClient(credentials);
+    try {
+      const result = await appendMermaidBoardToDocument(client, {
+        documentUrl: body.documentUrl.trim(),
+        mermaidCode,
+      });
+      httpLog.info('成品画板已追加到云文档', {
+        documentId: result.documentId,
+        whiteboardId: result.whiteboardId,
+        usedStrippedStyles: result.usedStrippedStyles,
+      });
+      return c.json({
+        ok: true,
+        documentId: result.documentId,
+        whiteboardId: result.whiteboardId,
+        insertedBlockCount: result.insertedBlockCount,
+        usedStrippedStyles: result.usedStrippedStyles,
+      });
     } catch (error) {
       return c.json({ error: formatExportError(error) }, 400);
     }

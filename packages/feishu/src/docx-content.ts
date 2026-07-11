@@ -5,11 +5,13 @@ import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js'
 import {
   clearDocumentBody,
   deleteDocumentBlockAtIndex,
+  findDocumentPageBlock,
   insertPlainTextBlockAt,
+  listDocumentBlocks,
 } from './docx-block-service.js';
 import { bindConvertedImageBlocks, insertDocxImageAt, resolveImageBlockIdsAfterConvertInsert } from './image-service.js';
 import type { DocxImageResolver } from './image-service.js';
-import { splitMarkdownByDiagrams } from './mermaid-markdown.js';
+import { MERMAID_DIAGRAM_TYPE, splitMarkdownByDiagrams } from './mermaid-markdown.js';
 import { markdownContainsImages, splitMarkdownByImages, stripMarkdownImagesToFallback } from './markdown-images.js';
 import { pathEndsWithExtension, parseCsv, createLogger } from '@feishu-md/shared';
 import { insertNativeTableAt } from './docx-table-service.js';
@@ -87,8 +89,54 @@ export async function replaceDocumentMarkdown(
   }
 
   const trimmed = markdown.trim() || ' ';
-  const segments = splitMarkdownByDiagrams(trimmed);
-  let insertIndex = 0;
+  const inserted = await insertMarkdownDocumentAt(client, documentId, trimmed, 0, options);
+  if (inserted === 0) {
+    await insertPlainTextBlockAt(client, documentId, trimmed, 0);
+  }
+}
+
+/** 在文档末尾追加 Markdown（含 Mermaid 画板块），不清空已有正文 */
+export async function appendDocumentMarkdown(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+  options?: ReplaceDocumentMarkdownOptions,
+): Promise<{ insertedBlockCount: number }> {
+  const trimmed = markdown.trim();
+  if (!trimmed) {
+    return { insertedBlockCount: 0 };
+  }
+
+  const items = await listDocumentBlocks(client, documentId, 'List docx blocks for append');
+  const pageBlock = findDocumentPageBlock(items, documentId);
+  const insertIndex = pageBlock?.children?.length ?? 0;
+
+  syncLog.info('追加文档正文', {
+    documentId,
+    insertIndex,
+    sourcePath: options?.sourcePath,
+  });
+
+  const inserted = await insertMarkdownDocumentAt(
+    client,
+    documentId,
+    trimmed,
+    insertIndex,
+    options,
+  );
+  return { insertedBlockCount: inserted };
+}
+
+async function insertMarkdownDocumentAt(
+  client: FeishuClient,
+  documentId: string,
+  markdown: string,
+  startIndex: number,
+  options?: ReplaceDocumentMarkdownOptions,
+): Promise<number> {
+  const segments = splitMarkdownByDiagrams(markdown);
+  let insertIndex = startIndex;
+  const initialIndex = startIndex;
 
   for (const segment of segments) {
     if (segment.kind === 'markdown') {
@@ -112,15 +160,21 @@ export async function replaceDocumentMarkdown(
     });
     try {
       await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      try {
-        await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
-        syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
-      } catch (sectionError) {
-        syncLog.warn(
-          `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
-          syncCtx(documentId, options),
-        );
+      // 思维导图不做 subgraph 分区后处理，避免破坏 mind_map 节点
+      if (
+        segment.diagramType === MERMAID_DIAGRAM_TYPE.flowchart ||
+        segment.diagramType === MERMAID_DIAGRAM_TYPE.auto
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        try {
+          await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
+          syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
+        } catch (sectionError) {
+          syncLog.warn(
+            `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
+            syncCtx(documentId, options),
+          );
+        }
       }
     } catch (error) {
       syncLog.warn(
@@ -140,9 +194,7 @@ export async function replaceDocumentMarkdown(
     insertIndex += 1;
   }
 
-  if (insertIndex === 0) {
-    await insertPlainTextBlockAt(client, documentId, trimmed, 0);
-  }
+  return insertIndex - initialIndex;
 }
 
 async function insertMarkdownSegment(

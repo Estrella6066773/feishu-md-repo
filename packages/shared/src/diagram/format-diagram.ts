@@ -31,7 +31,7 @@ export function formatDiagramDocument(options: FormatDiagramOptions): FormatDiag
         warnings: [
           {
             kind: 'parse',
-            message: '输入已是 mindmap，已原样输出（未再做发散树转译）',
+            message: '输入已是 mindmap，已原样输出（未再做发散树转译与配色）',
           },
         ],
         matchedCount: 0,
@@ -39,7 +39,7 @@ export function formatDiagramDocument(options: FormatDiagramOptions): FormatDiag
       };
     }
 
-    const converted = flowchartToMindmap(normalized);
+    const converted = flowchartToMindmap(normalized, { legend });
     if (converted.droppedEdgeCount > 0) {
       warnings.push({
         kind: 'mindmap-edge-dropped',
@@ -51,7 +51,7 @@ export function formatDiagramDocument(options: FormatDiagramOptions): FormatDiag
       markdown: buildDiagramDocument(title, legend, converted.code),
       styledMermaid: converted.code,
       warnings: [...warnings, ...converted.warnings],
-      matchedCount: converted.totalNodeCount,
+      matchedCount: converted.matchedCount,
       totalNodeCount: converted.totalNodeCount,
     };
   }

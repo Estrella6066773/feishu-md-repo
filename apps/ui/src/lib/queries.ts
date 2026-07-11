@@ -143,6 +143,19 @@ export function exportDocumentToMarkdown(documentUrl: string) {
   });
 }
 
+export function appendDiagramToDocument(documentUrl: string, mermaidCode: string) {
+  return apiFetch<{
+    ok: boolean;
+    documentId: string;
+    whiteboardId: string;
+    insertedBlockCount: number;
+    usedStrippedStyles?: boolean;
+  }>('/api/diagram/append-to-document', {
+    method: 'POST',
+    body: JSON.stringify({ documentUrl, mermaidCode }),
+  });
+}
+
 export function fetchHealth() {
   return apiFetch<{
     ok: boolean;

@@ -1,8 +1,11 @@
 const NODE_DEF_RE =
   /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
 
-const EDGE_RE =
-  /\b([A-Za-z][A-Za-z0-9_]*)\b\s*(?:--(?:[^>-]+)?-->|-->|-\.(?:[^>-]+)?->|==(?:[^>=]+)?==>)\s*\b([A-Za-z][A-Za-z0-9_]*)\b/g;
+const EDGE_ARROW_RE = /(?:--(?:[^>-]+)?-->|-->|-\.(?:[^>-]+)?->|==(?:[^>=]+)?==>)/;
+const EDGE_SCAN_RE = new RegExp(
+  String.raw`\b([A-Za-z][A-Za-z0-9_]*)\b\s*${EDGE_ARROW_RE.source}\s*\b([A-Za-z][A-Za-z0-9_]*)\b`,
+  'g',
+);
 
 export interface ParsedMermaidNode {
   id: string;
@@ -24,6 +27,32 @@ export interface ParsedMermaidSource {
 
 function unescapeLabel(raw: string): string {
   return raw.replace(/<br\s*\/?>/gi, '\n').trim();
+}
+
+/**
+ * 解析一行中的边，支持链式写法：`A --> B --> C` → A→B、B→C。
+ * 标准 matchAll 会在匹配后从 `to` 之后继续，导致漏掉后续边。
+ */
+export function parseEdgesFromLine(line: string): ParsedMermaidEdge[] {
+  const edges: ParsedMermaidEdge[] = [];
+  let searchFrom = 0;
+
+  while (searchFrom < line.length) {
+    EDGE_SCAN_RE.lastIndex = searchFrom;
+    const match = EDGE_SCAN_RE.exec(line);
+    if (!match || match.index == null) break;
+
+    const from = match[1];
+    const to = match[2];
+    if (from && to) {
+      edges.push({ from, to });
+    }
+
+    // 从 `to` 节点起点继续，使其可作为下一条边的 from
+    searchFrom = match.index + (match[1]?.length ?? 1);
+  }
+
+  return edges;
 }
 
 /** 从 Mermaid flowchart / graph 源码解析节点与边 */
@@ -60,12 +89,8 @@ export function parseMermaidFlowchart(code: string): ParsedMermaidSource {
       }
     }
 
-    for (const match of trimmed.matchAll(EDGE_RE)) {
-      const from = match[1];
-      const to = match[2];
-      if (from && to) {
-        edges.push({ from, to });
-      }
+    for (const edge of parseEdgesFromLine(trimmed)) {
+      edges.push(edge);
     }
   }
 

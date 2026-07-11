@@ -54,5 +54,5 @@ export { createTargetAdapter } from './target/factory.js';
 export { WikiAdapter } from './target/wiki-adapter.js';
 export { DriveAdapter } from './target/drive-adapter.js';
 export { FeishuApiError } from './api-error.js';
-export { replaceDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
+export { replaceDocumentMarkdown, appendDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
 
