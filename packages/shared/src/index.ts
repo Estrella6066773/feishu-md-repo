@@ -14,3 +14,4 @@ export * from './binding-display.js';
 export * from './async.js';
 export { formatSyncProgressText, syncProgressPercent } from './sync-progress-format.js';
 export * from './table-column-width.js';
+export * from './diagram/index.js';
