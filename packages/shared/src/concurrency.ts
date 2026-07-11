@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-const DEFAULT_SYNC_DOC_WRITE_CONCURRENCY = 4;
+const DEFAULT_SYNC_DOC_WRITE_CONCURRENCY = 2;
 const MAX_SYNC_DOC_WRITE_CONCURRENCY = 16;
 
 /** 跨文档正文写入并发数（不同 document_id 可并行；单文档内仍串行） */

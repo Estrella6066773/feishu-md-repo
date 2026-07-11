@@ -33,10 +33,34 @@ export function formatFeishuErrorMessage(error: unknown): string {
 
 const FEISHU_API_MAX_RETRIES = 4;
 const FEISHU_API_RETRY_BASE_MS = 800;
-const FEISHU_API_RATE_LIMIT_DELAY_MS = 500;
+const FEISHU_API_RATE_LIMIT_DELAY_MS = 600;
 const FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS = 60_000;
+/** 全局同时在飞的飞书 Open API 请求数（多文档并行时避免叠加触发 99991400） */
+const FEISHU_API_MAX_IN_FLIGHT = 2;
 
 const syncApiLog = createLogger('sync');
+
+let apiInFlight = 0;
+const apiFlightWaiters: Array<() => void> = [];
+
+async function acquireApiFlightSlot(): Promise<void> {
+  if (apiInFlight < FEISHU_API_MAX_IN_FLIGHT) {
+    apiInFlight += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    apiFlightWaiters.push(() => {
+      apiInFlight += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseApiFlightSlot(): void {
+  apiInFlight -= 1;
+  const next = apiFlightWaiters.shift();
+  if (next) next();
+}
 
 const TRANSIENT_NETWORK_CODES = new Set([
   'ECONNRESET',
@@ -48,36 +72,36 @@ const TRANSIENT_NETWORK_CODES = new Set([
 
 export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
   const persistOnRateLimit = getFeishuApiRetryPolicy().persistOnRateLimit === true;
-  let lastError: unknown;
   let attempt = 0;
 
   while (true) {
+    await acquireApiFlightSlot();
     try {
       const result = await task();
       // Docx / Wiki write APIs are limited to ~3 QPS per app/document.
       await sleep(FEISHU_API_RATE_LIMIT_DELAY_MS);
       return result;
     } catch (error) {
-      lastError = error;
-      const retryable = isRetryableFeishuRequestError(error);
+      const normalized = normalizeFeishuClientError(error);
+      const retryable = isRetryableFeishuRequestError(normalized) || isRetryableFeishuRequestError(error);
       if (!retryable) {
         syncApiLog.warn(
-          `飞书 API 请求最终失败: ${describeRetryableError(error)}`,
+          `飞书 API 请求最终失败: ${describeRetryableError(normalized)}`,
           undefined,
-          error,
+          normalized,
         );
-        throw normalizeFeishuClientError(error);
+        throw normalized;
       }
 
-      const rateLimit = isRateLimitError(error);
+      const rateLimit = isRateLimitError(normalized) || isRateLimitError(error);
       const shouldPersist = persistOnRateLimit && rateLimit;
       if (!shouldPersist && attempt >= FEISHU_API_MAX_RETRIES) {
         syncApiLog.warn(
-          `飞书 API 请求最终失败: ${describeRetryableError(error)}`,
+          `飞书 API 请求最终失败: ${describeRetryableError(normalized)}`,
           undefined,
-          error,
+          normalized,
         );
-        throw normalizeFeishuClientError(error);
+        throw normalized;
       }
 
       const delayMs = Math.min(
@@ -89,9 +113,11 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
         ? `持续重试 (${attempt})`
         : `重试 (${attempt}/${FEISHU_API_MAX_RETRIES})`;
       syncApiLog.warn(
-        `飞书 API 请求失败，${delayMs}ms 后${retryLabel}: ${describeRetryableError(error)}`,
+        `飞书 API 请求失败，${delayMs}ms 后${retryLabel}: ${describeRetryableError(normalized)}`,
       );
       await sleep(delayMs);
+    } finally {
+      releaseApiFlightSlot();
     }
   }
 }
@@ -106,6 +132,17 @@ export function isRetryableFeishuRequestError(error: unknown): boolean {
       || error.code === 99991400
       || error.code === 99991672
     );
+  }
+
+  const payload = extractFeishuApiErrorPayload(error);
+  if (
+    payload?.code === 1061045
+    || payload?.code === 11232
+    || payload?.code === 2200
+    || payload?.code === 99991400
+    || payload?.code === 99991672
+  ) {
+    return true;
   }
 
   const networkCode = extractNetworkErrorCode(error);
@@ -140,6 +177,15 @@ export function isRateLimitError(error: unknown): boolean {
       || error.code === 99991400
       || error.code === 99991672
     );
+  }
+
+  const payload = extractFeishuApiErrorPayload(error);
+  if (
+    payload?.code === 1061045
+    || payload?.code === 99991400
+    || payload?.code === 99991672
+  ) {
+    return true;
   }
 
   if (error && typeof error === 'object' && 'response' in error) {

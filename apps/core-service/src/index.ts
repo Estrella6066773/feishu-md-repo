@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { createDb, failUnfinishedCommentImportLogs, failUnfinishedSyncLogs } from '@feishu-md/db';
-import { createLogger } from '@feishu-md/shared';
+import { createLogger, getLogLevel, isDebugEnabled } from '@feishu-md/shared';
 import { loadConfig } from './config.js';
 import { createApp } from './app.js';
 import { BindingTaskRegistry } from './binding-task-registry.js';
@@ -51,6 +51,7 @@ const server = serve(
   (info) => {
     serviceLog.info(`feishu-md core-service listening on http://${info.address}:${info.port}`);
     serviceLog.info(`data directory: ${config.dataDir}`);
+    serviceLog.info(`log level: ${getLogLevel()}${isDebugEnabled() ? '（debug 已开启）' : ''}`);
   },
 );
 

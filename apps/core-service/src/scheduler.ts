@@ -29,6 +29,18 @@ export class SyncQueue {
     } else {
       this.pending.push(task);
     }
+    const depth = this.getQueueDepth();
+    queueLog.debug('任务入队', {
+      bindingId: task.bindingId,
+      logId: task.logId,
+      kind: task.kind,
+      trigger: task.trigger,
+      queueDepth: depth,
+      front: options?.front === true,
+    });
+    if (depth >= 10) {
+      queueLog.warn('队列积压较深，后续任务将排队等待', { queueDepth: depth });
+    }
     void this.drain();
   }
 
@@ -40,22 +52,87 @@ export class SyncQueue {
     return this.activeTask;
   }
 
+  getPendingCount(): number {
+    return this.pending.length;
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  getStatus(): {
+    running: boolean;
+    pendingCount: number;
+    depth: number;
+    activeTask: {
+      bindingId: string;
+      logId: string;
+      kind: BindingQueueTaskKind;
+      trigger: string;
+      startedAt: string;
+    } | null;
+  } {
+    const active = this.activeTask;
+    return {
+      running: this.running,
+      pendingCount: this.pending.length,
+      depth: this.getQueueDepth(),
+      activeTask: active
+        ? {
+            bindingId: active.bindingId,
+            logId: active.logId,
+            kind: active.kind,
+            trigger: active.trigger,
+            startedAt: active.startedAt,
+          }
+        : null,
+    };
+  }
+
   private async drain(): Promise<void> {
-    if (this.running) return;
+    if (this.running) {
+      queueLog.debug('队列已在 drain 中，跳过重复调用', { queueDepth: this.getQueueDepth() });
+      return;
+    }
     this.running = true;
+    queueLog.debug('队列开始 drain', { pendingCount: this.pending.length });
     while (this.pending.length > 0) {
       const task = this.pending.shift();
       if (!task) continue;
       this.activeTask = task;
+      const taskStartedMs = Date.now();
+      queueLog.info('队列任务开始', {
+        bindingId: task.bindingId,
+        logId: task.logId,
+        kind: task.kind,
+        trigger: task.trigger,
+        queueDepth: this.pending.length,
+      });
       try {
         await task.run();
+        queueLog.info('队列任务完成', {
+          bindingId: task.bindingId,
+          logId: task.logId,
+          kind: task.kind,
+          durationMs: Date.now() - taskStartedMs,
+        });
       } catch (error) {
-        queueLog.error('队列任务失败', { bindingId: task.bindingId, logId: task.logId }, error);
+        queueLog.error(
+          '队列任务失败',
+          {
+            bindingId: task.bindingId,
+            logId: task.logId,
+            kind: task.kind,
+            durationMs: Date.now() - taskStartedMs,
+          },
+          error,
+        );
       } finally {
         this.activeTask = null;
       }
     }
     this.running = false;
+    queueLog.debug('队列 drain 结束');
   }
 }
 

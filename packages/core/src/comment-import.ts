@@ -16,6 +16,7 @@ import {
   readDocCommentExport,
   removeCommentImportManifest,
   removeStaleDocCommentExports,
+  runWithFeishuApiRetryPolicy,
   toFeishuDocumentUrl,
   withRateLimit,
   writeCommentImportManifest,
@@ -66,6 +67,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     documentCount: docMappings.length,
   });
 
+  return runWithFeishuApiRetryPolicy({ persistOnRateLimit: true }, async () => {
   const runStartedAt = new Date().toISOString();
   const existingManifest = await readCommentImportManifest(binding.repoPath);
   const manifestDocuments: FeishuCommentImportManifest['documents'] = [];
@@ -79,6 +81,8 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
   for (const mapping of docMappings) {
     throwIfAborted(shouldAbort);
     const gitPath = mapping.gitPath.replace(/\\/g, '/');
+    const docStartedMs = Date.now();
+    commentLog.debug('开始处理文档评论', { gitPath });
     const feishuDocToken = mapping.feishuDocToken ?? mapping.feishuNodeToken;
     const documentUrl = toFeishuDocumentUrl({
       feishuTargetType: mapping.feishuTargetType,
@@ -91,6 +95,10 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       const comments = await listAllDocumentComments(client, feishuDocToken, 'docx');
       if (comments.length === 0) {
         skippedNoCommentCount += 1;
+        commentLog.debug('文档无评论，跳过', {
+          gitPath,
+          durationMs: Date.now() - docStartedMs,
+        });
         const removed = await deleteDocCommentExport(binding.repoPath, gitPath);
         if (removed) {
           folderChanged = true;
@@ -102,6 +110,11 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       const existing = await readDocCommentExport(binding.repoPath, gitPath);
       if (existing && isDocumentCommentExportUnchanged(existing, comments)) {
         skippedUnchangedCount += 1;
+        commentLog.debug('评论无变化，跳过写入', {
+          gitPath,
+          commentCount: comments.length,
+          durationMs: Date.now() - docStartedMs,
+        });
         const storageFile = commentStorageFileName(gitPath);
         manifestDocuments.push({
           gitPath,
@@ -161,6 +174,12 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       if (written) {
         folderChanged = true;
       }
+      commentLog.debug('评论导出完成', {
+        gitPath,
+        written,
+        commentCount: comments.length,
+        durationMs: Date.now() - docStartedMs,
+      });
 
       manifestDocuments.push({
         gitPath,
@@ -264,6 +283,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
     removedStaleFileCount,
     failedDocuments,
   };
+  });
 }
 
 function buildCommentImportMessage(options: {

@@ -103,11 +103,19 @@ export async function replaceDocumentMarkdown(
     }
 
     const whiteboardId = await insertBoardBlock(client, documentId, insertIndex);
+    syncLog.debug('开始导入画板图表', {
+      documentId,
+      whiteboardId,
+      diagramType: segment.diagramType,
+      codeLineCount: segment.code.split('\n').length,
+      sourcePath: options?.sourcePath,
+    });
     try {
       await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
       await new Promise((resolve) => setTimeout(resolve, 800));
       try {
         await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
+        syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
       } catch (sectionError) {
         syncLog.warn(
           `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,

@@ -225,9 +225,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       repairVerified,
       repairSkipped,
       repairFixed,
-    } = forceRewriteAll
-      ? await runWithFeishuApiRetryPolicy({ persistOnRateLimit: true }, runExecutePlan)
-      : await runExecutePlan();
+    } = await runWithFeishuApiRetryPolicy({ persistOnRateLimit: true }, runExecutePlan);
 
     throwIfAborted(shouldAbort);
     await progress?.markAllDocumentsDone();
@@ -632,6 +630,9 @@ async function executePlan(options: {
 
     await runTasksWithConcurrency(pendingDocUpdates, concurrency, async (pending) => {
       throwIfAborted(shouldAbort);
+      const docStartedMs = Date.now();
+      await progress?.documentStarted(pending.gitPath);
+      log.debug('开始处理文档正文', { gitPath: pending.gitPath });
 
       try {
         const rewritten = rewriteInternalMarkdownLinks(
@@ -668,6 +669,10 @@ async function executePlan(options: {
           if (repairSyncMode && rewriteDecision.verified) {
             repairSkipped += 1;
           }
+          log.debug('跳过文档正文写入（内容未变化）', {
+            gitPath: pending.gitPath,
+            durationMs: Date.now() - docStartedMs,
+          });
           return;
         }
         if (repairSyncMode) {
@@ -675,7 +680,6 @@ async function executePlan(options: {
         }
 
         await writeDocumentContentResilient({
-          enabled: forceRewriteAll,
           gitPath: pending.gitPath,
           log,
           shouldAbort,
@@ -694,6 +698,10 @@ async function executePlan(options: {
             contentSha: rewrittenSha,
           });
         }
+        log.debug('文档正文写入完成', {
+          gitPath: pending.gitPath,
+          durationMs: Date.now() - docStartedMs,
+        });
       } catch (error) {
         const detail = formatFeishuErrorMessage(error);
         throw new Error(`同步文档失败 file=${pending.gitPath}: ${detail}`, { cause: error });
@@ -1066,7 +1074,6 @@ function isDocumentRateLimitError(error: unknown): boolean {
 }
 
 async function writeDocumentContentResilient(options: {
-  enabled: boolean;
   gitPath: string;
   log: Logger;
   shouldAbort?: () => boolean;
@@ -1080,7 +1087,7 @@ async function writeDocumentContentResilient(options: {
       await options.write();
       return;
     } catch (error) {
-      if (!options.enabled || !isDocumentRateLimitError(error)) {
+      if (!isDocumentRateLimitError(error)) {
         throw error;
       }
 

@@ -90,7 +90,14 @@ export class SyncCoordinator {
     const { bindingId, logId, trigger, startedAt, fullResync, forceRewriteAll, preempt } = options;
     let generation = this.registry.getGeneration(bindingId);
     if (preempt) {
+      const previousGeneration = generation;
       generation = await preemptBindingTasks(this.db, this.registry, this.queue, bindingId);
+      coordLog.debug('手动同步抢占绑定任务', {
+        bindingId,
+        logId,
+        previousGeneration,
+        generation,
+      });
     }
 
     const task: QueuedBindingTask = {
@@ -130,6 +137,7 @@ export class SyncCoordinator {
     const shouldAbort = () => this.registry.isStale(bindingId, generation);
 
     if (shouldAbort()) {
+      log.debug('同步任务入队时已过期，跳过执行', { generation });
       await markQueuedTaskCancelled(this.db, {
         bindingId,
         logId,
@@ -201,6 +209,10 @@ export class SyncCoordinator {
           log.info('定时检查无更新，跳过同步', { toSha: latestSha });
           return;
         }
+        log.debug('定时检查有更新，继续同步', {
+          lastSyncedSha: binding.lastSyncedSha,
+          latestSha,
+        });
       }
 
       const result = await runSync({

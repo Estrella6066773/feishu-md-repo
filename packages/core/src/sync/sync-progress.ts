@@ -42,6 +42,11 @@ export class SyncProgressReporter {
     await this.flush(true, this.buildMessage());
   }
 
+  async documentStarted(gitPath: string): Promise<void> {
+    this.currentGitPath = gitPath.replace(/\\/g, '/');
+    await this.flush(false, this.buildMessage());
+  }
+
   async documentCompleted(gitPath: string): Promise<void> {
     this.done += 1;
     this.currentGitPath = gitPath.replace(/\\/g, '/');

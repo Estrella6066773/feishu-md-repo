@@ -88,7 +88,7 @@ export function createApp(options: {
   botManager: BotManager;
 }) {
   const app = new Hono();
-  const { db, config, scheduler, syncCoordinator, commentImportCoordinator, botManager } = options;
+  const { db, config, queue, scheduler, syncCoordinator, commentImportCoordinator, botManager } = options;
   const httpLog = createLogger('http');
 
   app.use(
@@ -131,6 +131,8 @@ export function createApp(options: {
       version: '0.1.0',
       apiVersion: CORE_API_VERSION,
       features: [...CORE_API_FEATURES],
+      queue: queue.getStatus(),
+      botConnection: botManager.getStatus(),
     }),
   );
 

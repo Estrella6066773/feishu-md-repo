@@ -1145,6 +1145,7 @@ export async function applyMermaidSubgraphSections(
 ): Promise<void> {
   const parsed = parseMermaidGraph(mermaidCode);
   if (parsed.subgraphs.length === 0) {
+    syncLog.debug('Mermaid 无 subgraph，仅转换 group 为 section', { whiteboardId });
     const boardNodes = await listBoardNodes(client, whiteboardId);
     await convertGroupNodesToSections(client, whiteboardId, boardNodes);
     return;
@@ -1152,12 +1153,23 @@ export async function applyMermaidSubgraphSections(
 
   let boardNodes = await listBoardNodes(client, whiteboardId);
   const plans = planSubgraphSections(boardNodes, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
+  syncLog.debug('subgraph 分区规划完成', {
+    whiteboardId,
+    subgraphCount: parsed.subgraphs.length,
+    planCount: plans.length,
+    edgeCount: parsed.edges.length,
+  });
   if (plans.length === 0) {
     await convertGroupNodesToSections(client, whiteboardId, boardNodes);
     return;
   }
 
   const { batch, deleteIds } = buildSectionBatch(boardNodes, plans, parsed.nodeLabels, parsed.edges);
+  syncLog.debug('subgraph 分区批次已构建', {
+    whiteboardId,
+    createNodeCount: batch.length,
+    deleteNodeCount: deleteIds.length,
+  });
   await batchDeleteNodes(client, whiteboardId, deleteIds);
   await createBoardNodes(client, whiteboardId, batch);
 

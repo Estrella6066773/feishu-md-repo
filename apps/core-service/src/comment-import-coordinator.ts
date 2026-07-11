@@ -63,7 +63,14 @@ export class CommentImportCoordinator {
     const { bindingId, logId, trigger, startedAt, preempt } = options;
     let generation = this.registry.getGeneration(bindingId);
     if (preempt) {
+      const previousGeneration = generation;
       generation = await preemptBindingTasks(this.db, this.registry, this.queue, bindingId);
+      commentCoordLog.debug('手动评论导入抢占绑定任务', {
+        bindingId,
+        logId,
+        previousGeneration,
+        generation,
+      });
     }
 
     const task: QueuedBindingTask = {
@@ -99,6 +106,7 @@ export class CommentImportCoordinator {
     const shouldAbort = () => this.registry.isStale(bindingId, generation);
 
     if (shouldAbort()) {
+      log.debug('评论导入任务入队时已过期，跳过执行', { generation });
       await markQueuedTaskCancelled(this.db, {
         bindingId,
         logId,
