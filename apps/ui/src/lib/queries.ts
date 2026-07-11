@@ -143,16 +143,21 @@ export function exportDocumentToMarkdown(documentUrl: string) {
   });
 }
 
-export function appendDiagramToDocument(documentUrl: string, mermaidCode: string) {
+export function appendDiagramToDocument(
+  documentUrl: string,
+  mermaidCode: string,
+  legend?: unknown,
+) {
   return apiFetch<{
     ok: boolean;
     documentId: string;
     whiteboardId: string;
     insertedBlockCount: number;
     usedStrippedStyles?: boolean;
+    coloredNodeCount?: number;
   }>('/api/diagram/append-to-document', {
     method: 'POST',
-    body: JSON.stringify({ documentUrl, mermaidCode }),
+    body: JSON.stringify({ documentUrl, mermaidCode, legend }),
   });
 }
 

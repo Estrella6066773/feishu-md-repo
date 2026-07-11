@@ -34,6 +34,8 @@ export {
   detectDiagramFenceLang,
   detectMermaidDiagramType,
   MERMAID_DIAGRAM_TYPE,
+  prepareFeishuMermaidCode,
+  stripMermaidClassStyles,
   type MarkdownDocumentSegment,
 } from './mermaid-markdown.js';
 export {
@@ -66,12 +68,16 @@ export { parseFeishuDocumentUrl, type ParsedDocumentUrl, type FeishuDocumentUrlS
 export {
   appendMarkdownToDocument,
   appendMermaidBoardToDocument,
-  stripMermaidClassStyles,
   type AppendMarkdownToDocumentOptions,
   type AppendMarkdownToDocumentResult,
   type AppendMermaidBoardOptions,
   type AppendMermaidBoardResult,
 } from './append-markdown.js';
+export {
+  applyLegendColorsToBoard,
+  buildLabelStyleMap,
+  type ApplyLegendColorsResult,
+} from './board-legend-colors.js';
 export {
   splitMarkdownByImages,
   extractMarkdownImageRefs,

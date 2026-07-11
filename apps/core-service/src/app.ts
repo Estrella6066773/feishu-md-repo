@@ -373,6 +373,7 @@ export function createApp(options: {
     const body = (await c.req.json().catch(() => ({}))) as {
       documentUrl?: string;
       mermaidCode?: string;
+      legend?: unknown;
       /** @deprecated 兼容旧客户端；优先使用 mermaidCode */
       markdown?: string;
     };
@@ -394,11 +395,13 @@ export function createApp(options: {
       const result = await appendMermaidBoardToDocument(client, {
         documentUrl: body.documentUrl.trim(),
         mermaidCode,
+        legend: Array.isArray(body.legend) ? (body.legend as never) : undefined,
       });
       httpLog.info('成品画板已追加到云文档', {
         documentId: result.documentId,
         whiteboardId: result.whiteboardId,
         usedStrippedStyles: result.usedStrippedStyles,
+        coloredNodeCount: result.coloredNodeCount,
       });
       return c.json({
         ok: true,
@@ -406,6 +409,7 @@ export function createApp(options: {
         whiteboardId: result.whiteboardId,
         insertedBlockCount: result.insertedBlockCount,
         usedStrippedStyles: result.usedStrippedStyles,
+        coloredNodeCount: result.coloredNodeCount,
       });
     } catch (error) {
       return c.json({ error: formatExportError(error) }, 400);

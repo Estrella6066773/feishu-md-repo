@@ -117,3 +117,47 @@ export function detectMermaidDiagramType(code: string, fenceLang: string): numbe
 
   return MERMAID_DIAGRAM_TYPE.auto;
 }
+
+/** 去掉 classDef / :::class，飞书画板 Mermaid 导入通常不支持这些样式语法 */
+export function stripMermaidClassStyles(code: string): string {
+  return code
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim();
+      return !/^classDef\b/i.test(trimmed) && !/^class\b/i.test(trimmed);
+    })
+    .map((line) => line.replace(/\s*:::\s*[A-Za-z][A-Za-z0-9_]*\s*$/, ''))
+    .join('\n')
+    .trim();
+}
+
+/**
+ * 飞书 createPlantuml（Mermaid）导入前清洗。
+ * - 去掉 classDef（飞书不支持，颜色改由导入后给画板块上色）
+ * - flowchart → graph（飞书对 graph 识别更稳）
+ * - 标签内尖括号 / 非常用数学符号，避免 2891001
+ */
+export function prepareFeishuMermaidCode(code: string): string {
+  let result = stripMermaidClassStyles(code);
+  result = result.replace(/<br\s*\/?>/gi, ' ');
+
+  const lines = result.split('\n');
+  const firstIdx = lines.findIndex((line) => line.trim().length > 0);
+  if (firstIdx >= 0) {
+    lines[firstIdx] = lines[firstIdx]!.replace(/^\s*flowchart\b/i, 'graph');
+  }
+  result = lines.join('\n');
+
+  // 仅处理双引号标签内容，避免改动节点形状语法（如 id{决策}）
+  result = result.replace(/"(?:[^"\\]|\\.)*"/g, (quoted) =>
+    quoted
+      .replace(/</g, '＜')
+      .replace(/>/g, '＞')
+      .replace(/\u2212/g, '-') // −
+      .replace(/\u2264/g, '<=') // ≤
+      .replace(/\u2265/g, '>=') // ≥
+      .replace(/\u00d7/g, 'x') // ×
+      .replace(/\u2013|\u2014/g, '-'), // – —
+  );
+  return result.trim();
+}

@@ -8,6 +8,7 @@ import {
   listDocumentBlocks,
   type DocxBlockListItem,
 } from './docx-block-service.js';
+import { prepareFeishuMermaidCode } from './mermaid-markdown.js';
 
 const syncLog = createLogger('sync');
 
@@ -316,22 +317,29 @@ export async function insertBoardBlock(
   });
 }
 
-/** 将 Mermaid / 流程图代码导入画板 */
+/**
+ * 将 Mermaid / 流程图代码导入画板。
+ * 官方约定：syntax_type=2（Mermaid）时 diagram_type 须为 0（自动识别）；
+ * 传入非 0 易触发 2891001「No diagram type detected matching given configuration」。
+ * `_diagramType` 仅保留调用方兼容，实际始终传 0。
+ */
 export async function importBoardMermaidDiagram(
   client: FeishuClient,
   whiteboardId: string,
   mermaidCode: string,
-  diagramType = 0,
+  _diagramType = 0,
 ): Promise<void> {
   await clearBoardNodes(client, whiteboardId);
+
+  const plantUmlCode = prepareFeishuMermaidCode(mermaidCode);
 
   const response = await withRateLimit(() =>
     client.board.v1.whiteboardNode.createPlantuml({
       path: { whiteboard_id: whiteboardId },
       data: {
-        plant_uml_code: mermaidCode,
+        plant_uml_code: plantUmlCode,
         syntax_type: 2,
-        diagram_type: diagramType,
+        diagram_type: 0,
         style_type: 1,
       },
     }),

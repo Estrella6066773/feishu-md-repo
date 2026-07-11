@@ -200,11 +200,12 @@ export function DiagramFormatTool() {
     setAppendError(null);
     setAppendSuccess(null);
     try {
-      const result = await appendDiagramToDocument(targetDocumentUrl.trim(), styledMermaid);
-      const styleNote = result.usedStrippedStyles
-        ? '（飞书侧已去掉 classDef 样式以保证导入成功）'
-        : '';
-      setAppendSuccess(`已在文档末尾追加成品画板${styleNote}`);
+      const result = await appendDiagramToDocument(targetDocumentUrl.trim(), styledMermaid, legend);
+      const colorNote =
+        typeof result.coloredNodeCount === 'number' && result.coloredNodeCount > 0
+          ? `，已为 ${result.coloredNodeCount} 个画板块写入图例颜色`
+          : '（导入后按图例给画板块上色；若为 0 请检查标签前缀是否匹配）';
+      setAppendSuccess(`已在文档末尾追加成品画板${colorNote}`);
     } catch (err) {
       setAppendError(err instanceof Error ? err.message : '导入云文档失败');
     } finally {
@@ -521,7 +522,7 @@ export function DiagramFormatTool() {
                 <div className="toolbox-append-panel form-stack">
                   <CardHeader
                     title="导入到云文档"
-                    description="仅在文档末尾追加一块成品画板，不含标题与图例表"
+                    description="追加成品画板；颜色按图例写入画板块，不依赖 Mermaid classDef"
                   />
                   <Field label="目标飞书云文档 URL" hint="支持 feishu.cn/docx 与 feishu.cn/wiki 链接">
                     <input
@@ -545,6 +546,7 @@ export function DiagramFormatTool() {
                       <li>已在「设置」中配置飞书应用凭证</li>
                       <li>应用对该文档有编辑权限（含画板节点创建）</li>
                       <li>只追加画板，不会写入图例表，也不会覆盖已有正文</li>
+                      <li>飞书不支持 Mermaid classDef；导入后会按当前图例给画板块写入填充色</li>
                     </ul>
                   </div>
                   {appendError ? (
