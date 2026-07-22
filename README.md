@@ -1,52 +1,215 @@
 # Feishu MD Repo
 
-本地桌面应用：将 Git 仓库（GitHub 远程或本机）与飞书知识库（Wiki）/ 云空间（Drive）同步。
+本地桌面应用：把 **Git 仓库**（本机路径或有云远程）同步到 **飞书知识库（Wiki）** 或 **云空间（Drive）**，并在飞书侧提供文档树镜像、画板图表、群播报、指令触发与评论回流。
 
-## 架构
+| 项 | 说明 |
+|----|------|
+| 版本 | `0.1.0` |
+| 形态 | pnpm monorepo；Tauri 桌面壳 + React 面板 + 本机 Hono 服务 |
+| 数据 | 凭证与映射存本机 SQLite，默认不联网托管 |
+| 相关文档 | [SECURITY.md](./SECURITY.md) · [CONTRIBUTING.md](./CONTRIBUTING.md) |
 
-- `apps/desktop` — Tauri 2 桌面壳
-- `apps/ui` — React 管理面板（嵌入桌面，也可单独在浏览器中开发）
-- `apps/core-service` — 本地 Hono API + 同步 Worker
-- `packages/*` — 共享业务逻辑（Git、飞书、转换、数据库）
+---
 
-## 环境要求
+## 1. 项目介绍
+
+### 1.1 要解决什么问题
+
+团队文档常同时存在两套入口：
+
+- **Git**：版本清晰、可审查、适合 Markdown / 仓库型文档；
+- **飞书**：阅读与协作方便，但与仓库内容容易脱节。
+
+本项目在本机把二者接起来：**以 Git 中的跟踪文件为准**，按绑定规则推送到飞书；必要时再把飞书上的评论拉回仓库，并可用机器人在群里触发同步或接收结果播报。
+
+### 1.2 适用场景
+
+- 设计 / 程序文档写在 Git，希望知识库里始终有一份可读镜像；
+- 有云仓库（如 GitHub）定时拉取后更新飞书，无需每人装客户端写回；
+- 本地库提交后自动同步（`post-commit` hook）；
+- 需要在飞书里看到 Mermaid 流程图、CSV/表格、文档总览思维导图；
+- 希望群里用指令同步，并把成功 / 失败与 commit 详情播报到指定群或用户。
+
+### 1.3 设计原则（简要）
+
+| 原则 | 含义 |
+|------|------|
+| Git 为准 | 只同步 Git 已跟踪路径；不扫未跟踪工作区文件 |
+| 本地优先 | 核心服务默认只监听 `127.0.0.1`；密钥不进仓库 |
+| 映射复用 | Git 路径与飞书节点 token 持久对应，避免每次重建 |
+| 可观测 | 同步分阶段进度、日志、队列状态、机器人连接状态 |
+| 可中断 | 同绑定上新的手动任务可抢占进行中的旧任务 |
+
+### 1.4 不在范围内
+
+- 不把飞书文档当作可写回 Git 的双向权威编辑器（正文方向以 Git → 飞书为主；评论可反向导入）；
+- 不托管多用户云端账号体系；每人在本机配置飞书自建应用；
+- 不替代飞书权限体系本身——应用仍须被加为知识库成员或文件夹协作者。
+
+---
+
+## 2. 核心概念
+
+### 2.1 绑定（Binding）
+
+一次「仓库 ↔ 飞书位置」的配置，交叉三个维度：
+
+| 维度 | 取值 | 说明 |
+|------|------|------|
+| 来源 | 本地库 / 有云库 | 本地读 `HEAD`；有云先 `fetch` 再读远程分支 |
+| 模式 | 工作区 / 仓库 | 见下文「同步模式」 |
+| 目标 | Wiki / Drive | Wiki 推荐（尤其仓库模式）；Drive 仅支持文件夹 token |
+
+另可配置：触发方式、忽略规则、强制更新 glob、绑定级播报目标等。
+
+### 2.2 同步模式
+
+**工作区模式**
+
+- 默认同步 `.md` / `.markdown` 与 `.csv`；
+- CSV 可写入飞书原生表格；
+- 其它非 Markdown 默认不同步（`mirrorNonMdFiles: false`），不会仅为非 MD 文件镜像整棵目录树。
+
+**仓库模式**
+
+- 每个含 README 的目录 → 飞书一篇文档（正文来自 README，标题为目录名；根目录可用绑定名称）；
+- 独立的 Markdown / CSV 也会作为单独文档同步；
+- 子文档通过 Wiki **父 `node_token`** 嵌套（文档可作容器，**不是**云空间 folder）。
+
+### 2.3 目标类型
+
+- **Wiki（推荐）**：填写 `space_id`，可选父 `node_token`，同步结果挂在其下；
+- **Drive**：仅支持 `folder_token`（`fld` 开头），不支持用文档 token 作父节点。
+
+### 2.4 路径筛选（两重）
+
+同步时不会把仓库里所有 blob 无差别转译到飞书：
+
+1. **Git 规则**：以目标 commit 为准，`git ls-files --with-tree` 取已跟踪路径，并排除 `.gitattributes` 中 `export-ignore` 的文件（本地库与有云库同一套语义）；
+2. **项目规则**：再按绑定的 `ignoreGlobs` 过滤；系统默认额外排除 `node_modules` 与 `.git`。
+
+### 2.5 本地库 vs 有云库（触发）
+
+| 类型 | 默认触发 | 同步时 Git 行为 |
+|------|----------|-----------------|
+| **本地库** | `post-commit` hook；可选定时检查（默认约 10 分钟，可单独设置） | 读本地 `HEAD`，不 fetch 远程 |
+| **有云库** | 默认每约 10 分钟定时检查（可在绑定里单独设置） | `git fetch origin <分支>` 后读 `origin/<分支>` |
+
+有云库**不会**安装 post-commit hook；只有远程有新 commit，且在定时 / 手动 / 机器人触发 fetch 后才会更新飞书。另可随时在面板或机器人侧发起手动同步、完全重新搭建、强制重写正文等。旧绑定行为异常时，可在面板重新保存一次以应用默认触发配置。
+
+---
+
+## 3. 功能一览
+
+### 3.1 同步主链路
+
+- 绑定 CRUD（来源 × 模式 × 目标）；
+- 手动同步 / 完全重新搭建（队列执行）；
+- **立即同步**可按父节点子数量检测飞书侧缺失的已映射文件并自动补建（每父目录 list 一次；若同父目录下删一篇又新建无关文档导致子数量不变，则不会触发补建）；
+- **Wiki**：创建 docx 子节点；**Drive**：`create_folder` + 创建文档；
+- **正文**：官方 Markdown convert + 分段插入；本地/Git 图片读二进制写入 Image Block（不镜像到云空间、不在文档中保留 GitHub 链接）；
+- 文内 Mermaid / flowchart 等代码块 → 插入画板块并用 API 绘制（可含图例着色）；
+- GFM 表格与 CSV → 原生表格（Drive 下也可选择上传原文件）；
+- 节点映射持久化；同步结束后更新根级「**同步文档总览**」画板思维导图。
+
+### 3.2 协作与机器人
+
+- **同步播报**：向配置的群 / 用户推送成功或失败（主消息摘要 + 话题内 commit 与文件详情；可开安静模式）；
+- **飞书指令**：长连接监听如 `同步` / `status` / `导入评论`；
+- **用户权限**：管理员 / 管理者 / 成员 / 黑名单（见下文）；
+- **评论导入**：从已同步文档拉取评论（含回复、划词引用、表情），增量写入仓库 `.feishu/comments/`；可定时联动或面板手动触发。
+
+### 3.3 工具箱
+
+- 将飞书云文档导出为 Markdown（可含内嵌思维导图）；
+- 图表格式化（Mermaid 着色等），并可追加到指定云文档。
+
+### 3.4 Markdown 中的流程图 / 图表
+
+同步正文时，下列 fenced 代码块会**自动插入飞书画板块**并绘制，而不是当作普通代码块：
+
+````markdown
+```mermaid
+flowchart LR
+    A[规划路线] --> B[移动城市]
+    B --> C[停下交互]
+```
+````
+
+也支持 ` ```flowchart `、` ```graph ` 语言标记，或首行以 `flowchart` / `graph` 开头的无语言标记块。支持的类型包括流程图、思维导图、时序图等（由飞书画板 Mermaid 导入接口解析）。
+
+---
+
+## 4. 架构
+
+```text
+┌─────────────────┐     HTTP (本机)      ┌──────────────────────┐
+│  desktop (Tauri) │                     │   core-service       │
+│  └─ ui (React)   │ ──────────────────► │   Hono API + Worker  │
+└─────────────────┘                      │   队列 / 定时 / 机器人 │
+                                         └──────────┬───────────┘
+                                                    │
+              ┌─────────────────────────────────────┼─────────────────────────┐
+              ▼                     ▼               ▼                         ▼
+        packages/core         packages/feishu   packages/git            packages/db
+        同步引擎               开放平台适配       路径 / hook / fetch     Drizzle + SQLite
+              │                     │               │
+              └──────────┬──────────┴───────────────┘
+                         ▼
+                 packages/converter · packages/shared
+```
+
+| 路径 | 职责 |
+|------|------|
+| `apps/desktop` | Tauri 2 桌面壳 |
+| `apps/ui` | 管理面板：仪表盘、绑定、日志、工具箱、设置（也可单独在浏览器开发） |
+| `apps/core-service` | 本机 API、同步/评论队列、定时器、机器人长连接、任务抢占 |
+| `packages/core` | `runSync` 等业务引擎（规划 → 结构 → 正文 → 清理 → 总览） |
+| `packages/feishu` | Wiki / Drive / docx / 画板 / IM / 评论 / 导出 |
+| `packages/git` | 同步路径、本地 hook、有云 fetch |
+| `packages/converter` | Markdown / CSV 等转换 |
+| `packages/db` | SQLite schema 与访问 |
+| `packages/shared` | 类型契约、播报策略、图表工具、API 版本号 |
+
+同步进度阶段：`planning` → `structure` → `content` → `cleanup` → `overview` → `done`。
+
+核心服务健康检查含 `apiVersion` 与能力列表（见 `packages/shared` 中 `CORE_API_VERSION` / `CORE_API_FEATURES`），便于 UI 判断本机服务是否过旧。
+
+---
+
+## 5. 环境要求与开发
+
+### 5.1 环境要求
 
 - Node.js 20+
 - pnpm 9+（见下方安装说明）
 - Git
 - Rust（仅打包桌面应用时需要）
 
-### 安装 pnpm（通过 npm）
+### 5.2 安装 pnpm
 
-本仓库使用 [pnpm](https://pnpm.io/) 管理 monorepo 依赖。若尚未安装 pnpm，在已安装 Node.js 的前提下，可用 npm 全局安装：
+本仓库使用 [pnpm](https://pnpm.io/) 管理 monorepo 依赖。若尚未安装，在已安装 Node.js 的前提下：
 
 ```bash
 npm install -g pnpm@9
+pnpm -v   # 应显示 9.x
 ```
 
-安装完成后验证：
-
-```bash
-pnpm -v
-```
-
-应显示 `9.x`。之后在本项目根目录执行 `pnpm install` 即可。
-
-**Windows 提示**：若终端提示找不到 `pnpm` 命令，可关闭并重新打开终端；仍无效时，可临时用 npx 代替（无需全局安装）：
+**Windows**：若提示找不到 `pnpm`，可关闭并重开终端；或临时用：
 
 ```bash
 npx pnpm@9 install
 npx pnpm@9 dev:service
 ```
 
-也可启用 Node 自带的 Corepack（Node.js 16.13+）：
+也可启用 Corepack（Node.js 16.13+）：
 
 ```bash
 corepack enable
 corepack prepare pnpm@9.15.9 --activate
 ```
 
-## 开发
+### 5.3 启动开发
 
 ```bash
 pnpm install
@@ -61,11 +224,11 @@ pnpm dev:ui
 pnpm dev:desktop
 ```
 
-### 常见问题：端口 8787 已被占用
+### 5.4 常见问题：端口 8787 已被占用
 
-若启动 `pnpm dev:service` 出现 `EADDRINUSE: address already in use 127.0.0.1:8787`，说明**已有 core-service 在运行**（常见于上次未关闭的终端）。可任选其一：
+若出现 `EADDRINUSE: address already in use 127.0.0.1:8787`，说明已有 core-service 在运行。可任选其一：
 
-1. **直接使用现有服务**（推荐）：浏览器打开 UI 即可，无需再启一份。
+1. **直接使用现有服务**（推荐）：打开 UI 即可；
 2. **结束占用进程**（Windows）：
    ```bash
    netstat -ano | findstr :8787
@@ -73,7 +236,9 @@ pnpm dev:desktop
    ```
 3. **改用其他端口**：复制 `apps/core-service/.env.example` 为 `.env`，设置 `FEISHU_MD_PORT=8788` 后重启。
 
-## 飞书应用权限（自建应用）
+---
+
+## 6. 飞书应用权限（自建应用）
 
 在 [飞书开放平台](https://open.feishu.cn/app) 为应用至少开通：
 
@@ -91,57 +256,17 @@ pnpm dev:desktop
 
 并将应用添加为目标 **知识库成员** 或 **云空间文件夹协作者**，否则会出现 403 / 1770040 等权限错误。
 
-## 功能概览
+---
 
-- 绑定 CRUD（本地/有云 Git、工作区/仓库模式、Wiki/Drive 目标）
-- 手动同步 / 完全重新搭建（队列执行）；**立即同步**会按父节点子数量检测飞书侧缺失的已映射文件并自动补建（每父目录 list 一次，不对每个文件单独查询是否存在）。若在同一父目录下删除一篇已同步文档又新建一篇无关文档（子数量不变），则不会触发补建。
-- **Wiki**：`POST /wiki/v2/spaces/:space_id/nodes` 创建 docx 子节点
-- **Drive**：`create_folder` + `docx/documents` 创建目录与文档
-- **正文写入**：`docx/document/convert`（Markdown）+ 分段插入；本地/Git 图片读取二进制后直接写入 Image Block（`docx_image` + `replace_image`），不镜像到云空间、不在文档中保留 GitHub 链接；文内 Mermaid 流程图/图表代码块会插入画板块并用 API 绘制
-- 本地 Git post-commit hook（仅本地库）/ 有云库定时 fetch 远程
-- 节点映射持久化（避免重复创建）
-- **同步文档总览**：每次同步在飞书根级创建/更新「同步文档总览」文档，内含画板思维导图，展示当前已同步的文档树结构
-- **同步播报**：向配置的群/用户推送成功/失败消息（主消息摘要 + 话题内 commit 与文件详情，见下文）
-- **飞书指令**：长连接监听 `同步` / `status` / `导入评论` 等指令
-- **评论导入**：从飞书拉取已同步文档的全部评论（含回复、划词引用、表情），与本地比对后仅更新有变化的文件，写入仓库 `.feishu/comments/`；`manifest.json` 使用 `updatedAt`（最近更新时间）；支持定时检查联动与面板手动触发
+## 7. 机器人配置（播报 + 指令）
 
-## 数据目录
+1. 启动 `pnpm dev:service`，确保 WS 长连接可建立；
+2. 飞书开放平台：开通 `im:message`，订阅 `im.message.receive_v1`，方式选 **长连接**；
+3. 管理面板 → 设置 → **飞书用户权限**：添加管理员等用户（`open_id` + 权限级别）；
+4. 配置播报目标（每个目标可单独设置播报范围，如某群仅接收自动更新）与群 `chat_id` 白名单（可选）；
+5. 将机器人拉入目标群；群内需 `@机器人 同步`（可在设置中关闭 @ 要求）。
 
-默认：`%AppData%/Roaming/feishu-md-repo/app.db`（Windows）
-
-可通过环境变量 `FEISHU_MD_DATA_DIR` 覆盖。数据库内含飞书凭证、绑定与节点映射，**切勿**复制到仓库或公开分享。
-
-## 保密与安全
-
-- 飞书 `app_secret` 通过管理面板写入**本地 SQLite**，不会写入仓库
-- 核心服务默认只监听 `127.0.0.1:8787`，请勿对公网直接暴露
-- 提交前运行 `pnpm check:secrets` 扫描误提交的密钥或 `.db` 文件
-
-详细说明见 [SECURITY.md](./SECURITY.md)。
-
-## 版本控制与提交
-
-仓库尚未包含 `node_modules`、`.env`、本地 `*.db` 等（见 `.gitignore`）。
-
-```bash
-git init
-pnpm check:secrets
-pnpm typecheck
-git add .
-git commit -m "chore: 初始化项目"
-```
-
-提交信息格式与 PR 约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
-
-## 机器人配置（播报 + 指令）
-
-1. 启动 `pnpm dev:service`，确保 WS 长连接可建立
-2. 飞书开放平台：开通 `im:message`，订阅 `im.message.receive_v1`，方式选 **长连接**
-3. 管理面板 → 设置 → **飞书用户权限**：添加管理员等用户（open_id + 权限级别）
-4. 配置播报目标（每个目标可单独设置播报范围，如某群仅接收自动更新）与群 `chat_id` 白名单（可选）
-5. 将机器人拉入目标群；群内需 `@机器人 同步`（可在设置中关闭 @ 要求）
-
-### 用户权限级别
+### 7.1 用户权限级别
 
 | 级别 | 说明 |
 |------|------|
@@ -151,11 +276,11 @@ git commit -m "chore: 初始化项目"
 | 黑名单 | 禁止使用一切机器人功能 |
 | 默认组 | 未出现在名单中的用户（不写入数据库），无法使用指令 |
 
-群聊中响应指令时 **仅依据用户权限级别** 判定（不再使用 open_id 白名单；未配置权限名单时回退旧版白名单逻辑）。
+群聊中响应指令时 **仅依据用户权限级别** 判定（不再使用 `open_id` 白名单；未配置权限名单时回退旧版白名单逻辑）。
 
-### 同步播报格式
+### 7.2 同步播报格式
 
-同步成功后，机器人向配置的群或用户发送消息，结构如下：
+同步成功后，机器人向配置的群或用户发送消息：
 
 **主消息**（出现在群会话时间线）：
 
@@ -168,7 +293,7 @@ git commit -m "chore: 初始化项目"
 - 操作数：5
 ```
 
-**话题回复 1**（每个 commit 一条，仅在群支持话题时发送；详情不在主会话刷屏）：
+**话题回复 1**（每个 commit 一条，仅在群支持话题时发送）：
 
 - 标题行：短哈希 + subject（Markdown 三级标题）
 - 正文：Git 提交说明原文（Markdown，保留换行）
@@ -177,7 +302,7 @@ git commit -m "chore: 初始化项目"
 
 若群不支持话题（飞书错误码 230071），则**只发主消息**，不发送话题内详情。
 
-### 安静模式
+### 7.3 安静模式
 
 在播报目标的策略中开启**安静模式**（仅群聊）后：
 
@@ -187,41 +312,37 @@ git commit -m "chore: 初始化项目"
 
 若群不支持话题，安静模式无法创建话题，将**自动回退**为普通播报（主消息 + 单次话题回复）。关闭安静模式后，已保存的 `thread_id` 不再使用，下次开启会重新创建话题。
 
-## 同步路径筛选（两重屏蔽）
+---
 
-同步时**不会**扫描工作区未跟踪文件，也不会把仓库里所有 blob 无差别转译到飞书：
+## 8. 数据目录与安全
 
-1. **Git 规则（一重）**：以目标 commit 为准，用 `git ls-files --with-tree` 取 Git 已跟踪路径，并排除 `.gitattributes` 中标记了 `export-ignore` 的文件。本地库与有云库均走同一套 Git 语义。
-2. **项目规则（二重）**：在转移步骤再按绑定配置的 `ignoreGlobs` 过滤（管理面板「项目忽略规则」，每行一条 glob）。系统默认还会额外排除 `node_modules` 与 `.git`。
+### 8.1 数据目录
 
-**工作区模式**默认同步 Markdown（`.md` / `.markdown`）与 CSV（`.csv`）文件；CSV 会插入为飞书原生表格（多列展示）。其它非 Markdown 文件默认不同步（`mirrorNonMdFiles: false`），不会因非 Markdown 文件而镜像整棵目录树。
+默认（Windows）：`%AppData%/Roaming/feishu-md-repo/app.db`
 
-**仓库模式**：每个含 README 的目录对应飞书里的一篇**文档**；正文来自 README，标题为目录名（根目录取绑定名称）。独立的 Markdown 与 CSV 文件也会作为单独文档同步。子文档通过 Wiki **父 node_token** 嵌套（文档可作容器，**不是**云空间 folder）。
+可通过环境变量 `FEISHU_MD_DATA_DIR` 覆盖。库内含飞书凭证、绑定与节点映射，**切勿**复制到仓库或公开分享。
 
-**目标类型**：
-- **Wiki（推荐，尤其仓库模式）**：填写 `space_id`，可选 **父 node_token**（某篇文档或节点的 token，如 `Dunxd…`），同步结果挂在其下。
-- **Drive**：仅支持 **folder_token**（`fld` 开头）的云空间文件夹，不支持文档 token 作父节点。
+主要表用途：绑定配置、节点映射、同步日志、评论导入日志、飞书删除事件、应用设置（凭证 / 机器人 / 用户权限等）。
 
-## 本地库 vs 有云库（触发方式）
+### 8.2 保密要点
 
-| 类型 | 默认触发 | 同步时 Git 行为 |
-|------|----------|-----------------|
-| **本地库** | `post-commit` hook；可选定时检查（默认 10 分钟，可单独设置） | 读取本地 `HEAD`，不 fetch 远程 |
-| **有云库** | 默认每 10 分钟定时检查（可在绑定里单独设置） | `git fetch origin <分支>` 后读 `origin/<分支>` |
+- 飞书 `app_secret` 通过管理面板写入**本地 SQLite**，不会写入仓库；
+- 核心服务默认只监听 `127.0.0.1:8787`，请勿对公网直接暴露；
+- 提交前运行 `pnpm check:secrets` 扫描误提交的密钥或 `.db` 文件。
 
-有云库**不会**安装 post-commit hook；只有远程有新 commit，且在定时/手动/机器人触发 fetch 后才会更新飞书。已有旧绑定若行为不对，请在面板重新保存一次以应用默认触发配置。
+详细说明见 [SECURITY.md](./SECURITY.md)。
 
-### Markdown 中的流程图 / 图表
+---
 
-同步正文时，下列 fenced 代码块会**自动插入飞书画板块**并绘制，而不是当作普通代码块：
+## 9. 版本控制与提交
 
-````markdown
-```mermaid
-flowchart LR
-    A[规划路线] --> B[移动城市]
-    B --> C[停下交互]
+仓库不包含 `node_modules`、`.env`、本地 `*.db` 等（见 `.gitignore`）。
+
+```bash
+pnpm check:secrets
+pnpm typecheck
+git add .
+git commit -m "chore: …"
 ```
-````
 
-也支持 ` ```flowchart `、` ```graph ` 语言标记，或首行以 `flowchart` / `graph` 开头的无语言标记块。支持的类型包括流程图、思维导图、时序图等（由飞书画板 Mermaid 导入接口解析）。
-
+提交信息格式与 PR 约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
