@@ -251,10 +251,15 @@ code {
 
 /* 卡片内嵌表格：与标题区留出间距，四周圆角边框 */
 .card-embedded-table {
-  overflow: hidden;
+  overflow-x: auto;
   border-radius: 0.75rem;
   border: 1px solid var(--color-border-subtle);
   background: color-mix(in srgb, var(--color-surface-elevated) 80%, transparent);
+}
+
+.card-embedded-table .data-table {
+  width: max-content;
+  min-width: 100%;
 }
 
 .card-embedded-table .data-table th:first-child,

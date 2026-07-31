@@ -121,12 +121,12 @@ export function BotManagerCard({
     <Card>
       <CardHeader
         title="机器人管理"
-        description="维护多个飞书应用作为机器人身份。选中一个作为默认，项目绑定可单独指定使用某个机器人。"
+        description="飞书应用凭证的唯一配置入口：每个机器人档案对应一个飞书应用（App ID 与 Secret，Secret 仅存于本机）。选中一个作为默认，项目绑定可单独指定使用某个机器人。"
       />
 
       {bots.length === 0 ? (
         <Alert tone="warning" title="尚未配置机器人">
-          请先添加机器人档案，并选中一个作为默认。未配置机器人时，系统使用下方「飞书应用凭证」。
+          请先添加机器人档案并选中一个作为默认。系统将以默认机器人的身份访问飞书并负责指令长连接；项目绑定也可单独指定使用某个机器人。
         </Alert>
       ) : (
         <div className="target-list">

@@ -14,13 +14,13 @@ import { queryKeys } from '@/hooks/queryKeys';
 import { fetchSyncLogs } from '@/lib/queries';
 
 export function DashboardPage() {
-  const health = useHealthQuery(15_000);
+  const health = useHealthQuery();
   const settings = useSettingsQuery();
   const bindings = useBindingsQuery();
   const logs = useQuery({
     queryKey: queryKeys.syncLogs,
     queryFn: () => fetchSyncLogs(),
-    refetchInterval: 15_000,
+    refetchInterval: 3_000,
   });
 
   const bindingMap = useBindingNameMap(bindings.data);
@@ -28,6 +28,9 @@ export function DashboardPage() {
   const recentFailures = (logs.data ?? []).filter((log) => log.status === 'failed').length;
   const recentSuccess = (logs.data ?? []).filter((log) => log.status === 'success').length;
   const serviceOnline = useServiceOnline(health);
+  const credentialConfigured = (settings.data?.feishuBots ?? []).some(
+    (bot) => bot.appSecretConfigured,
+  );
 
   return (
     <div className="page-stack-lg">
@@ -115,7 +118,7 @@ export function DashboardPage() {
                   飞书设置
                 </span>
                 <span className="quick-link-label">
-                  {settings.data?.feishu?.appSecretConfigured ? '已配置' : '待配置'}
+                  {credentialConfigured ? '已配置' : '待配置'}
                 </span>
               </Link>
             </div>

@@ -18,6 +18,7 @@ export function UserPermissionsCard(props: {
 }) {
   const queryClient = useQueryClient();
   const [permissions, setPermissions] = useState<FeishuUserPermission[]>(props.initial);
+  const [dirty, setDirty] = useState(false);
   const [draftOpenId, setDraftOpenId] = useState('');
   const [draftRole, setDraftRole] = useState<FeishuUserRole>('member');
   const [draftLabel, setDraftLabel] = useState('');
@@ -25,12 +26,17 @@ export function UserPermissionsCard(props: {
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
-    setPermissions(props.initial);
-  }, [props.initial]);
+    if (!dirty) {
+      setPermissions(props.initial);
+    }
+  }, [props.initial, dirty]);
 
   const saveMutation = useMutation({
     mutationFn: saveFeishuUserPermissions,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings'] }),
+    onSuccess: () => {
+      setDirty(false);
+      void queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
   });
 
   function toggleDraftBinding(id: string) {
@@ -40,6 +46,7 @@ export function UserPermissionsCard(props: {
   }
 
   function toggleExistingBinding(index: number, id: string) {
+    setDirty(true);
     setPermissions((prev) =>
       prev.map((item, i) => {
         if (i !== index || item.role !== 'manager') return item;
@@ -73,6 +80,7 @@ export function UserPermissionsCard(props: {
       label: draftLabel.trim() || undefined,
       bindingIds: draftRole === 'manager' ? [...draftBindingIds] : undefined,
     };
+    setDirty(true);
     setPermissions((prev) => [...prev, entry]);
     setDraftOpenId('');
     setDraftLabel('');
@@ -81,6 +89,7 @@ export function UserPermissionsCard(props: {
   }
 
   function removeUser(index: number) {
+    setDirty(true);
     setPermissions((prev) => prev.filter((_, i) => i !== index));
   }
 

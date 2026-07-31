@@ -15,7 +15,7 @@ const navItems = [
   { to: '/bindings', label: '绑定管理', icon: IconLink, desc: 'Git 与飞书目标' },
   { to: '/logs', label: '同步日志', icon: IconLogs, desc: '历史同步记录' },
   { to: '/toolbox', label: '飞书工具箱', icon: IconToolbox, desc: '文档导出与图表格式化' },
-  { to: '/settings', label: '设置', icon: IconSettings, desc: '凭证与机器人' },
+  { to: '/settings', label: '设置', icon: IconSettings, desc: '机器人凭证与播报' },
 ] as const;
 
 const pageMeta: Record<string, { title: string; desc: string }> = {
@@ -23,13 +23,13 @@ const pageMeta: Record<string, { title: string; desc: string }> = {
   '/bindings': { title: '绑定管理', desc: '配置 Git 来源、同步模式与飞书 Wiki / Drive 目标' },
   '/logs': { title: '同步日志', desc: '最近 100 条同步任务记录' },
   '/toolbox': { title: '飞书工具箱', desc: '文档导出与 Mermaid 图表格式化' },
-  '/settings': { title: '设置', desc: '飞书应用凭证、播报与指令监听' },
+  '/settings': { title: '设置', desc: '机器人凭证、播报与指令监听' },
 };
 
 export function AppShell() {
   const location = useLocation();
   const meta = pageMeta[location.pathname] ?? { title: 'Feishu MD Repo', desc: '' };
-  const health = useHealthQuery(30_000);
+  const health = useHealthQuery();
   const settings = useSettingsQuery();
   const serviceOnline = useServiceOnline(health);
 

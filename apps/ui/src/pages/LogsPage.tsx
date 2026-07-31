@@ -25,7 +25,7 @@ export function LogsPage() {
       const hasActive = (query.state.data ?? []).some(
         (log) => log.status === 'running' || log.status === 'pending',
       );
-      return hasActive ? 1_000 : 10_000;
+      return hasActive ? 1_000 : 3_000;
     },
   });
 

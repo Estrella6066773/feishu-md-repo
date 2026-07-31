@@ -1,11 +1,10 @@
-import type { Binding, BotSettings, CommentImportLogEntry, FeishuCredentials, FeishuUserPermission, SyncLogEntry } from '@feishu-md/shared';
+import type { Binding, BotSettings, CommentImportLogEntry, FeishuUserPermission, SyncLogEntry } from '@feishu-md/shared';
 import { isCoreServiceCompatible, pollUntilTerminal } from '@feishu-md/shared';
 import { apiFetch } from './api';
 
 export { isCoreServiceCompatible } from '@feishu-md/shared';
 
 export interface SettingsResponse {
-  feishu?: { appId: string; appSecretConfigured: boolean };
   feishuBots?: PublicFeishuBot[];
   bot?: BotSettings;
   userPermissions?: FeishuUserPermission[];
@@ -24,13 +23,6 @@ export interface PublicFeishuBot {
 
 export function fetchSettings() {
   return apiFetch<SettingsResponse>('/api/settings');
-}
-
-export function saveFeishuCredentials(credentials: FeishuCredentials) {
-  return apiFetch<{ ok: boolean }>('/api/settings/feishu', {
-    method: 'PUT',
-    body: JSON.stringify(credentials),
-  });
 }
 
 export function saveBotSettings(settings: BotSettings) {

@@ -12,43 +12,42 @@ import { Field } from '@/components/ui/Field';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Toggle } from '@/components/ui/Toggle';
 import { UserPermissionsCard } from '@/components/UserPermissionsCard';
-import { fetchBindings, saveBotSettings, saveFeishuCredentials } from '@/lib/queries';
+import { fetchBindings, saveBotSettings } from '@/lib/queries';
 import { useBindingsQuery, useHealthQuery, useSettingsQuery } from '@/hooks/useCoreQueries';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const settings = useSettingsQuery();
-  const health = useHealthQuery(15_000);
+  const health = useHealthQuery();
   const bindings = useBindingsQuery();
 
-  const [appId, setAppId] = useState('');
-  const [appSecret, setAppSecret] = useState('');
   const [botSettings, setBotSettings] = useState<BotSettings>(DEFAULT_BOT_SETTINGS);
+  const [botFormDirty, setBotFormDirty] = useState(false);
 
   useEffect(() => {
-    if (settings.data?.bot) {
+    if (!botFormDirty && settings.data?.bot) {
       setBotSettings(settings.data.bot);
     }
-  }, [settings.data?.bot]);
-
-  const saveCredentialsMutation = useMutation({
-    mutationFn: saveFeishuCredentials,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['settings'] });
-      setAppSecret('');
-    },
-  });
+  }, [settings.data?.bot, botFormDirty]);
 
   const saveBotMutation = useMutation({
     mutationFn: saveBotSettings,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings'] }),
+    onSuccess: () => {
+      setBotFormDirty(false);
+      void queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
   });
+
+  function updateBotSettings(updater: (prev: BotSettings) => BotSettings) {
+    setBotFormDirty(true);
+    setBotSettings(updater);
+  }
 
   const connection = settings.data?.botConnection;
 
   return (
     <div className="page-stack-lg max-w-3xl">
-      <PageHeader title="设置" description="配置飞书应用凭证、同步播报与指令监听。" />
+      <PageHeader title="设置" description="配置机器人凭证、同步播报与指令监听。" />
 
       <ServiceHealthAlert
         variant="settings"
@@ -71,70 +70,16 @@ export function SettingsPage() {
         </div>
       </Card>
 
-      <Card>
-        <form
-          className="form-stack"
-          onSubmit={(event) => {
-            event.preventDefault();
-            saveCredentialsMutation.mutate({ appId, appSecret });
-          }}
-        >
-          <CardHeader title="飞书应用凭证" description="App Secret 仅存于本机数据库，不会在界面明文回显。" />
-
-          {settings.data?.feishu?.appSecretConfigured ? (
-            <Alert tone="success">已配置 app_secret，更新时重新填写 App ID 与 Secret 即可覆盖。</Alert>
-          ) : (
-            <Alert tone="warning" title="尚未配置">
-              请先在飞书开放平台创建自建应用，并开通 Wiki / Drive / 机器人相关权限。
-            </Alert>
-          )}
-
-          <Field label="App ID">
-            <input
-              className="field-input"
-              value={appId}
-              onChange={(e) => setAppId(e.target.value)}
-              placeholder={settings.data?.feishu?.appId ?? 'cli_xxx'}
-              required
-            />
-          </Field>
-          <Field label="App Secret">
-            <input
-              className="field-input"
-              type="password"
-              value={appSecret}
-              onChange={(e) => setAppSecret(e.target.value)}
-              placeholder="保存后不会再次显示"
-              required
-            />
-          </Field>
-
-          {saveCredentialsMutation.isError ? (
-            <Alert tone="danger">
-              {saveCredentialsMutation.error instanceof Error
-                ? saveCredentialsMutation.error.message
-                : '保存失败'}
-            </Alert>
-          ) : null}
-
-          <div>
-            <Button type="submit" variant="primary" disabled={saveCredentialsMutation.isPending}>
-              {saveCredentialsMutation.isPending ? '保存中…' : '保存凭证'}
-            </Button>
-          </div>
-        </form>
-      </Card>
-
-      <UserPermissionsCard
-        initial={settings.data?.userPermissions ?? []}
-        bindings={bindings.data ?? []}
-      />
-
       <BotManagerCard
         bots={settings.data?.feishuBots ?? []}
         defaultBotId={botSettings.defaultBotId}
         onSetDefault={(botId) => saveBotMutation.mutate({ ...botSettings, defaultBotId: botId })}
         setDefaultPending={saveBotMutation.isPending}
+      />
+
+      <UserPermissionsCard
+        initial={settings.data?.userPermissions ?? []}
+        bindings={bindings.data ?? []}
       />
 
       <Card>
@@ -167,7 +112,7 @@ export function SettingsPage() {
             label="启用机器人能力"
             description="总开关：关闭后既不播报也不监听指令"
             checked={botSettings.enabled}
-            onChange={(checked) => setBotSettings((prev) => ({ ...prev, enabled: checked }))}
+            onChange={(checked) => updateBotSettings((prev) => ({ ...prev, enabled: checked }))}
           />
 
           <div className="section-divider section-block">
@@ -176,19 +121,19 @@ export function SettingsPage() {
             <Toggle
               label="启用同步结果播报"
               checked={botSettings.broadcastEnabled}
-              onChange={(checked) => setBotSettings((prev) => ({ ...prev, broadcastEnabled: checked }))}
+              onChange={(checked) => updateBotSettings((prev) => ({ ...prev, broadcastEnabled: checked }))}
               disabled={!botSettings.enabled}
             />
             <Toggle
               label="成功时播报"
               checked={botSettings.broadcastOnSuccess}
-              onChange={(checked) => setBotSettings((prev) => ({ ...prev, broadcastOnSuccess: checked }))}
+              onChange={(checked) => updateBotSettings((prev) => ({ ...prev, broadcastOnSuccess: checked }))}
               disabled={!botSettings.enabled || !botSettings.broadcastEnabled}
             />
             <Toggle
               label="失败时播报"
               checked={botSettings.broadcastOnFailure}
-              onChange={(checked) => setBotSettings((prev) => ({ ...prev, broadcastOnFailure: checked }))}
+              onChange={(checked) => updateBotSettings((prev) => ({ ...prev, broadcastOnFailure: checked }))}
               disabled={!botSettings.enabled || !botSettings.broadcastEnabled}
             />
             </div>
@@ -202,7 +147,7 @@ export function SettingsPage() {
                 }}
                 disabled={!botSettings.enabled || !botSettings.broadcastEnabled}
                 onChange={(broadcastTargets) =>
-                  setBotSettings((prev) => ({
+                  updateBotSettings((prev) => ({
                     ...prev,
                     broadcastTargets,
                   }))
@@ -217,14 +162,14 @@ export function SettingsPage() {
               <Toggle
                 label="启用飞书消息指令"
                 checked={botSettings.commandListenEnabled}
-                onChange={(checked) => setBotSettings((prev) => ({ ...prev, commandListenEnabled: checked }))}
+                onChange={(checked) => updateBotSettings((prev) => ({ ...prev, commandListenEnabled: checked }))}
                 disabled={!botSettings.enabled}
               />
               <Toggle
                 label="群聊中需 @ 机器人才响应"
                 checked={botSettings.commandRequireMentionInGroup}
                 onChange={(checked) =>
-                  setBotSettings((prev) => ({ ...prev, commandRequireMentionInGroup: checked }))
+                  updateBotSettings((prev) => ({ ...prev, commandRequireMentionInGroup: checked }))
                 }
                 disabled={!botSettings.enabled || !botSettings.commandListenEnabled}
               />
@@ -235,7 +180,7 @@ export function SettingsPage() {
                 className="field-input min-h-20"
                 value={botSettings.commandAllowedChatIds.join('\n')}
                 onChange={(e) =>
-                  setBotSettings((prev) => ({
+                  updateBotSettings((prev) => ({
                     ...prev,
                     commandAllowedChatIds: e.target.value
                       .split('\n')
@@ -251,7 +196,7 @@ export function SettingsPage() {
                 className="field-input"
                 value={botSettings.defaultBindingId ?? ''}
                 onChange={(e) =>
-                  setBotSettings((prev) => ({
+                  updateBotSettings((prev) => ({
                     ...prev,
                     defaultBindingId: e.target.value || undefined,
                   }))
