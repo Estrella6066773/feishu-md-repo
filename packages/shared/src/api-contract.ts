@@ -1,9 +1,10 @@
 /** 递增此版本号以提示 UI 重启 core-service（旧进程可能缺少新路由） */
-export const CORE_API_VERSION = 6;
+export const CORE_API_VERSION = 7;
 
 export const CORE_API_FEATURES = [
   'settings-feishu',
   'settings-bot',
+  'settings-bots',
   'settings-user-permissions',
   'bindings-crud',
   'sync-log-detail',

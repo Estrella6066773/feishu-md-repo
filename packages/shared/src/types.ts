@@ -92,6 +92,8 @@ export interface Binding {
   options: WorkspaceOptions | RepositoryOptions;
   /** 机器人播报：绑定级目标群聊/用户。空数组仍表示“不使用全局目标”。未配置(undefined) 回退到全局 broadcastTargets。 */
   bindingSpecificBroadcastTargets?: BotBroadcastTarget[];
+  /** 项目级指定使用的机器人档案 ID；未指定(undefined) 使用系统默认机器人 */
+  botId?: string;
   lastSyncedSha?: string;
   lastSyncedAt?: string;
   createdAt: string;
@@ -157,6 +159,15 @@ export interface FeishuCredentials {
   appSecret: string;
 }
 
+/** 设置页配置的飞书机器人档案；项目绑定可按 ID 引用 */
+export interface FeishuBotProfile {
+  id: string;
+  /** 显示名称 */
+  name: string;
+  appId: string;
+  appSecret: string;
+}
+
 export type BotTargetType = 'chat' | 'user';
 
 /** 播报目标级策略；未填字段继承全局 BotSettings 对应项 */
@@ -199,11 +210,15 @@ export interface BotSettings {
   commandRequireMentionInGroup: boolean;
   /** 「同步」指令默认绑定的 binding；为空则同步全部 */
   defaultBindingId?: string;
+  /** 默认使用的机器人档案 ID；指令监听 WS 固定使用该机器人 */
+  defaultBotId?: string;
 }
 
 export interface AppSettings {
   feishu?: FeishuCredentials;
   bot?: BotSettings;
+  /** 配置的飞书机器人档案列表 */
+  feishuBots?: FeishuBotProfile[];
   /** 飞书用户权限名单（不含 default 组） */
   userPermissions?: FeishuUserPermission[];
   dataDir?: string;

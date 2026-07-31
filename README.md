@@ -79,7 +79,7 @@
 ### 2.3 目标类型
 
 - **Wiki（推荐）**：填写 `space_id`，可选父 `node_token`，同步结果挂在其下；
-- **Drive**：仅支持 `folder_token`（`fld` 开头），不支持用文档 token 作父节点。
+- **Drive**：仅支持 `folder_token`（`fld` 开头），不支持用文档 token 作父节点。使用 `tenant_access_token` 时只能操作**本应用创建**的文件夹（其下的文件同理）；若目标文件夹由他人创建，需把应用加为该文件夹协作者或改用 `user_access_token`。
 
 ### 2.4 路径筛选（两重）
 
@@ -121,7 +121,7 @@
 
 ### 3.3 工具箱
 
-- 将飞书云文档导出为 Markdown（可含内嵌思维导图）；
+- 将飞书云文档导出为 Markdown（优先官方导出接口，表格与样式还原更完整；含画板的文档自动改用自渲染以保留思维导图）；
 - 图表格式化（Mermaid 着色等），并可追加到指定云文档。
 
 ### 3.4 Markdown 中的流程图 / 图表
@@ -244,12 +244,13 @@ pnpm dev:desktop
 
 | 能力 | 权限 scope |
 |------|------------|
-| 知识库节点 | `wiki:wiki` 或 `wiki:node:create` |
+| 知识库节点（创建 / 移动 / 更新标题 / 删除） | `wiki:wiki` 或 `wiki:node:create`（删除节点接口声明同一 scope） |
 | 云空间文件夹 / 文件 | `drive:drive` 或 `space:folder:create` |
-| 新版文档读写 | `docx:document` |
-| Markdown 转换（官方 convert 接口） | `docx:document` |
+| 新版文档读写（创建 / 更新正文 / 修改标题） | `docx:document` |
+| Markdown 转换（官方 convert 接口） | `docx:document.block:convert` |
 | 文档内图片上传 | `docs:document.media:upload` |
 | 文档评论读取（导入到本地） | `docs:document.comment:read` 或 `docs:doc:readonly` |
+| 导出文档 Markdown（官方导出接口，工具箱） | `docs:document.content:read` |
 | 画板节点（同步文档总览思维导图） | `board:whiteboard:node:read`、`board:whiteboard:node:create`、`board:whiteboard:node:delete` |
 | 机器人消息 | `im:message` |
 | 接收消息事件 | 订阅 `im.message.receive_v1`，订阅方式选 **长连接** |

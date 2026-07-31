@@ -1,6 +1,7 @@
 import type { FeishuClient, FeishuTargetAdapter, NodeRef, DirectChildRef } from '../client.js';
 import type { FeishuTarget } from '@feishu-md/shared';
 import { createLogger } from '@feishu-md/shared';
+import { FeishuApiError, withRateLimit } from '../api-error.js';
 import {
   createDriveDocument,
   createDriveFolder,
@@ -11,7 +12,8 @@ import {
   moveDriveFile,
   replaceDocumentMarkdown,
 } from '../drive-service.js';
-import { driveNodeExists } from '../node-exists.js';
+import { updateDocxDocumentTitle } from '../docx-content.js';
+import { driveNodeExists, isNotFoundResponse } from '../node-exists.js';
 
 const adapterLog = createLogger('drive-adapter');
 
@@ -69,12 +71,27 @@ export class DriveAdapter implements FeishuTargetAdapter {
     existing?: NodeRef,
   ): Promise<NodeRef> {
     adapterLog.debug('确保 Drive 文档', { gitPath, operation: 'ensure_doc' });
-    if (existing?.docToken && (await this.nodeExists(existing))) {
-      return existing;
-    }
 
-    if (existing && (await this.nodeExists(existing))) {
-      return existing;
+    // 复用映射节点：合并「节点存在校验」与「标题同步」，避免重复请求
+    const documentId = existing?.docToken ?? existing?.token;
+    if (documentId && existing) {
+      const response = await withRateLimit(() =>
+        this.client.docx.v1.document.get({ path: { document_id: documentId } }),
+      );
+      if (response.code === 0) {
+        const currentTitle = response.data?.document?.title;
+        if (currentTitle && currentTitle !== title) {
+          adapterLog.info('更新 Drive 文档标题', { gitPath, from: currentTitle, to: title });
+          await updateDocxDocumentTitle(this.client, documentId, title);
+        }
+        return existing;
+      }
+      if (!isNotFoundResponse(response.code, response.msg)) {
+        throw new FeishuApiError(
+          `Get drive docx document failed: ${response.msg ?? 'unknown error'}`,
+          response.code,
+        );
+      }
     }
 
     const parentFolderToken = parentToken ?? this.rootFolderToken;

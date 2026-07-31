@@ -31,10 +31,15 @@ export function formatFeishuErrorMessage(error: unknown): string {
   return String(error);
 }
 
-const FEISHU_API_MAX_RETRIES = 4;
-const FEISHU_API_RETRY_BASE_MS = 800;
-const FEISHU_API_RATE_LIMIT_DELAY_MS = 600;
-const FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS = 60_000;
+/**
+ * 飞书 docx 写接口官方约 3 QPS/应用（及单篇文档并发编辑约 3 次/秒），超限返回 99991400。
+ * 成功后间隔取 350ms（约 2.8 QPS），略低于上限，减少空等；撞限仍走指数退避持续重试。
+ * @see https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/document-block/create
+ */
+const FEISHU_API_MAX_RETRIES = 6;
+const FEISHU_API_RETRY_BASE_MS = 400;
+const FEISHU_API_RATE_LIMIT_DELAY_MS = 350;
+const FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS = 30_000;
 /** 全局同时在飞的飞书 Open API 请求数（多文档并行时避免叠加触发 99991400） */
 const FEISHU_API_MAX_IN_FLIGHT = 2;
 
@@ -78,7 +83,7 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
     await acquireApiFlightSlot();
     try {
       const result = await task();
-      // Docx / Wiki write APIs are limited to ~3 QPS per app/document.
+      // Docx / Wiki 写接口约 3 QPS；间隔与 FEISHU_API_RATE_LIMIT_DELAY_MS 对齐
       await sleep(FEISHU_API_RATE_LIMIT_DELAY_MS);
       return result;
     } catch (error) {

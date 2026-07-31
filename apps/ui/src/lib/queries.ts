@@ -6,11 +6,20 @@ export { isCoreServiceCompatible } from '@feishu-md/shared';
 
 export interface SettingsResponse {
   feishu?: { appId: string; appSecretConfigured: boolean };
+  feishuBots?: PublicFeishuBot[];
   bot?: BotSettings;
   userPermissions?: FeishuUserPermission[];
   botConnection?: { connected: boolean; listening: boolean };
   dataDir: string;
   coreServiceUrl: string;
+}
+
+/** 脱敏后的机器人档案（不含 appSecret） */
+export interface PublicFeishuBot {
+  id: string;
+  name: string;
+  appId: string;
+  appSecretConfigured: boolean;
 }
 
 export function fetchSettings() {
@@ -32,6 +41,28 @@ export function saveBotSettings(settings: BotSettings) {
       body: JSON.stringify(settings),
     },
   );
+}
+
+export function fetchBots() {
+  return apiFetch<PublicFeishuBot[]>('/api/settings/bots');
+}
+
+export function createBot(input: { name: string; appId: string; appSecret: string }) {
+  return apiFetch<{ ok: boolean; bot: PublicFeishuBot }>('/api/settings/bots', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateBot(id: string, input: { name: string; appId: string; appSecret?: string }) {
+  return apiFetch<{ ok: boolean; bot: PublicFeishuBot }>(`/api/settings/bots/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteBot(id: string) {
+  return apiFetch<{ ok: boolean }>(`/api/settings/bots/${id}`, { method: 'DELETE' });
 }
 
 export function saveFeishuUserPermissions(permissions: FeishuUserPermission[]) {

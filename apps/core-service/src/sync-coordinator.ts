@@ -35,6 +35,17 @@ export class SyncCoordinator {
     fullResync = false,
     forceRewriteAll = false,
   ): string {
+    // 定时触发：同绑定已有同步在跑或排队时直接跳过，避免叠队拖慢进度
+    if (trigger === 'schedule' && this.hasInFlightSync(bindingId)) {
+      coordLog.info('定时同步跳过：该绑定已有同步任务进行中或排队中', {
+        bindingId,
+        queueDepth: this.queue.getQueueDepth(),
+        runningLogId: this.registry.getRunning(bindingId)?.logId,
+        runningKind: this.registry.getRunning(bindingId)?.kind,
+      });
+      return '';
+    }
+
     const logId = randomUUID();
     const startedAt = new Date().toISOString();
     const preempt = isManualPreemptTrigger(trigger);
@@ -76,6 +87,11 @@ export class SyncCoordinator {
     });
 
     return logId;
+  }
+
+  private hasInFlightSync(bindingId: string): boolean {
+    if (this.queue.hasSyncForBinding(bindingId)) return true;
+    return this.registry.getRunning(bindingId)?.kind === 'sync';
   }
 
   private async scheduleBindingSync(options: {

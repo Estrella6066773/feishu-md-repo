@@ -60,6 +60,14 @@ export class SyncQueue {
     return this.running;
   }
 
+  /** 该绑定是否已有同步任务在跑或在排队（含当前 active） */
+  hasSyncForBinding(bindingId: string): boolean {
+    if (this.activeTask?.bindingId === bindingId && this.activeTask.kind === 'sync') {
+      return true;
+    }
+    return this.pending.some((task) => task.bindingId === bindingId && task.kind === 'sync');
+  }
+
   getStatus(): {
     running: boolean;
     pendingCount: number;

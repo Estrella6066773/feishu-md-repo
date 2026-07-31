@@ -20,7 +20,7 @@ function isRemoteNodeNotFound(error: unknown): boolean {
   return false;
 }
 
-function isNotFoundResponse(code?: number, message?: string): boolean {
+export function isNotFoundResponse(code?: number, message?: string): boolean {
   if (
     code === 404
     || code === 99991663

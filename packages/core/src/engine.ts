@@ -7,10 +7,10 @@ import type { DbClient } from '@feishu-md/db';
 import {
   deleteNodeMapping,
   deleteNodeMappingsByBindingAndPrefix,
-  getFeishuCredentials,
   getNodeMappingByGitPath,
   insertSyncLog,
   listNodeMappings,
+  resolveFeishuCredentials,
   updateBinding,
   updateSyncLog,
   upsertNodeMapping,
@@ -118,7 +118,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
   try {
     throwIfAborted(shouldAbort);
     await progress?.setPhase('planning');
-    const credentials = await getFeishuCredentials(db);
+    const credentials = await resolveFeishuCredentials(db, binding);
     if (!credentials) {
       throw new Error('Feishu credentials are not configured');
     }
@@ -1092,7 +1092,7 @@ async function writeDocumentContentResilient(options: {
       }
 
       attempt += 1;
-      const delayMs = Math.min(800 * 2 ** Math.min(attempt - 1, 8), 60_000);
+      const delayMs = Math.min(400 * 2 ** Math.min(attempt - 1, 8), 30_000);
       options.log.warn(
         `文档写入遇飞书频控，${delayMs}ms 后重试整篇 (${attempt}): ${options.gitPath}`,
       );

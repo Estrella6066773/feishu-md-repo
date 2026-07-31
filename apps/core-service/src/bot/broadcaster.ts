@@ -1,5 +1,5 @@
 import type { DbClient } from '@feishu-md/db';
-import { getBotSettings, getFeishuCredentials, listNodeMappings } from '@feishu-md/db';
+import { getBotSettings, listNodeMappings, resolveFeishuCredentials } from '@feishu-md/db';
 import type { Binding, BotBroadcastTarget, BotSettings, SyncTriggerType } from '@feishu-md/shared';
 import {
   buildQuietBroadcastMessages,
@@ -56,7 +56,7 @@ export class BotBroadcaster {
     );
     if (targets.length === 0) return;
 
-    const credentials = await getFeishuCredentials(this.db);
+    const credentials = await resolveFeishuCredentials(this.db, context.binding);
     if (!credentials) return;
 
     const client = createFeishuClient(credentials);
@@ -84,7 +84,7 @@ export class BotBroadcaster {
     if (!botSettings.enabled || !botSettings.broadcastEnabled) return;
     if (botSettings.broadcastTargets.length === 0) return;
 
-    const credentials = await getFeishuCredentials(this.db);
+    const credentials = await resolveFeishuCredentials(this.db);
     if (!credentials) return;
 
     const client = createFeishuClient(credentials);

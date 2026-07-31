@@ -69,6 +69,33 @@ export async function createEmptyDocument(
   return documentId;
 }
 
+/**
+ * 文档标题是 Page Block 的文本元素，document_id 即 Page Block 的 block_id，
+ * 通过 patch 该块更新标题。
+ * @see https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/faq 如何修改文档标题
+ */
+export async function updateDocxDocumentTitle(
+  client: FeishuClient,
+  documentId: string,
+  title: string,
+): Promise<void> {
+  syncLog.debug('更新文档标题', { documentId, title });
+  const response = await withRateLimit(() =>
+    client.docx.v1.documentBlock.patch({
+      path: {
+        document_id: documentId,
+        block_id: documentId,
+      },
+      data: {
+        update_text_elements: {
+          elements: [{ text_run: { content: title.slice(0, 800) } }],
+        },
+      },
+    }),
+  );
+  assertFeishuResponse(response, 'Update docx document title');
+}
+
 export async function replaceDocumentMarkdown(
   client: FeishuClient,
   documentId: string,
@@ -359,6 +386,75 @@ async function insertMarkdownSegmentWithImages(
   return insertedCount;
 }
 
+/** 官方限制：单次 descendant.create 最多插入 1000 个块 */
+const CONVERT_BATCH_SIZE = 1000;
+
+interface InsertBatch {
+  firstLevelIds: string[];
+  blocks: ConvertBlock[];
+}
+
+/** 按第一级块切分批：每批块总数不超过 1000，且父子关系保持在同一批 */
+function buildInsertBatches(
+  blocks: ConvertBlock[],
+  firstLevelBlockIds: string[],
+): InsertBatch[] {
+  const blockMap = new Map(
+    blocks.filter((block) => block.block_id).map((block) => [block.block_id!, block]),
+  );
+
+  function collectDescendants(rootId: string): ConvertBlock[] {
+    const collected: ConvertBlock[] = [];
+    const stack = [rootId];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      const block = blockMap.get(id);
+      if (!block) continue;
+      collected.push(block);
+      const children = block.children ?? [];
+      // 反序入栈，保持子块在批次内的文档顺序
+      for (let i = children.length - 1; i >= 0; i -= 1) {
+        stack.push(children[i]!);
+      }
+    }
+    return collected;
+  }
+
+  const batches: InsertBatch[] = [];
+  let current: InsertBatch = { firstLevelIds: [], blocks: [] };
+  const usedBlockIds = new Set<string>();
+
+  for (const firstLevelId of firstLevelBlockIds) {
+    const descendants = collectDescendants(firstLevelId).filter(
+      (block) => block.block_id && !usedBlockIds.has(block.block_id),
+    );
+
+    // 单个复合块（巨型表格 / 深层嵌套列表）无法在批内拆分
+    if (descendants.length > CONVERT_BATCH_SIZE) {
+      throw new FeishuApiError(
+        `Converted block subtree exceeds the ${CONVERT_BATCH_SIZE}-block single-request limit`,
+      );
+    }
+
+    if (current.blocks.length + descendants.length > CONVERT_BATCH_SIZE && current.blocks.length > 0) {
+      batches.push(current);
+      current = { firstLevelIds: [], blocks: [] };
+    }
+
+    current.firstLevelIds.push(firstLevelId);
+    for (const block of descendants) {
+      current.blocks.push(block);
+      usedBlockIds.add(block.block_id!);
+    }
+  }
+
+  if (current.blocks.length > 0) {
+    batches.push(current);
+  }
+
+  return batches;
+}
+
 async function insertConvertedMarkdownAt(
   client: FeishuClient,
   documentId: string,
@@ -384,30 +480,38 @@ async function insertConvertedMarkdownAt(
     throw new FeishuApiError('Convert markdown returned no blocks');
   }
 
-  const createResponse = await withRateLimit(() =>
-    client.docx.v1.documentBlockDescendant.create({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
-      },
-      data: {
-        children_id: firstLevelBlockIds,
-        index,
-        descendants: blocks,
-      },
-    }),
-  );
-  assertFeishuResponse(createResponse, 'Insert converted docx blocks');
+  const batches = buildInsertBatches(blocks, firstLevelBlockIds);
+  const allBlockIdRelations: Array<{
+    temporary_block_id?: string;
+    block_id?: string;
+  }> = [];
+  let insertIndex = index;
+
+  for (const batch of batches) {
+    const createResponse = await withRateLimit(() =>
+      client.docx.v1.documentBlockDescendant.create({
+        path: {
+          document_id: documentId,
+          block_id: documentId,
+        },
+        data: {
+          children_id: batch.firstLevelIds,
+          index: insertIndex,
+          descendants: batch.blocks,
+        },
+      }),
+    );
+    assertFeishuResponse(createResponse, 'Insert converted docx blocks');
+    allBlockIdRelations.push(...(createResponse.data?.block_id_relations ?? []));
+    insertIndex += batch.firstLevelIds.length;
+  }
 
   // FAQ §10：convert 插入 Image Block 后，用真实 block_id 逐张 upload_all + replace_image
   if (options?.resolveImage && markdownContainsImages(markdown)) {
     const imageBlockIds = await resolveImageBlockIdsAfterConvertInsert(client, documentId, {
       convertBlocks: blocks,
       firstLevelBlockIds,
-      blockIdRelations: (createResponse.data?.block_id_relations ?? []) as Array<{
-        temporary_block_id?: string;
-        block_id?: string;
-      }>,
+      blockIdRelations: allBlockIdRelations,
       insertIndex: index,
       insertedTopLevelCount: firstLevelBlockIds.length,
     });

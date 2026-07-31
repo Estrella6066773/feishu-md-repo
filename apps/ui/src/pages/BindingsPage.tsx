@@ -306,6 +306,7 @@ function BindingForm(props: {
   const [forceUpdateMode, setForceUpdateMode] = useState<ForceUpdateMode>('all');
   const [bindingTargets, setBindingTargets] = useState<BotBroadcastTarget[]>([]);
   const [hasExplicitBindingTargets, setHasExplicitBindingTargets] = useState(false);
+  const [botId, setBotId] = useState<string | undefined>(undefined);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleMinutes, setScheduleMinutes] = useState(DEFAULT_SCHEDULE_MINUTES);
   const [commentImportOnSchedule, setCommentImportOnSchedule] = useState(false);
@@ -329,6 +330,7 @@ function BindingForm(props: {
       const explicitTargets = binding.bindingSpecificBroadcastTargets;
       setHasExplicitBindingTargets(explicitTargets !== undefined);
       setBindingTargets(explicitTargets ?? []);
+      setBotId(binding.botId);
       setScheduleEnabled(binding.triggers.scheduleEnabled);
       setScheduleMinutes(binding.triggers.scheduleMinutes);
       setCommentImportOnSchedule(binding.triggers.commentImportOnSchedule ?? binding.triggers.scheduleEnabled);
@@ -348,6 +350,7 @@ function BindingForm(props: {
       setForceUpdateMode(defaultOptionsForMode('workspace').forceUpdateMode ?? 'all');
       setHasExplicitBindingTargets(false);
       setBindingTargets([]);
+      setBotId(undefined);
       const defaults = defaultTriggersForSourceType('local');
       setScheduleEnabled(defaults.scheduleEnabled);
       setScheduleMinutes(defaults.scheduleMinutes);
@@ -434,6 +437,7 @@ function BindingForm(props: {
             triggers: buildBindingTriggers(),
             options: syncModeChanged ? defaultOptionsForMode(syncMode) : buildBindingOptions(),
             bindingSpecificBroadcastTargets: hasExplicitBindingTargets ? bindingTargets : undefined,
+            botId,
           });
         }}
       >
@@ -665,6 +669,35 @@ function BindingForm(props: {
             <option value="manual">手动更新</option>
             <option value="automatic">自动更新</option>
             <option value="all">都有效</option>
+          </select>
+        </Field>
+
+        <Field
+          label="机器人"
+          className="form-grid-span-2"
+          hint={
+            botId
+              ? '该项目的同步、评论导入与播报将使用指定机器人身份。需确保该机器人在对应 Wiki/Drive 有相应权限。'
+              : '不指定时使用系统默认机器人；指定后该项目的同步、评论导入与播报使用指定机器人身份。'
+          }
+        >
+          <select
+            className="field-input"
+            value={botId ?? ''}
+            onChange={(e) => setBotId(e.target.value || undefined)}
+          >
+            <option value="">
+              不指定（随系统默认
+              {globalBroadcastDefaults.defaultBotId
+                ? `：${(settings.data?.feishuBots ?? []).find((bot) => bot.id === globalBroadcastDefaults.defaultBotId)?.name ?? '默认机器人'}`
+                : ''}
+              ）
+            </option>
+            {(settings.data?.feishuBots ?? []).map((bot) => (
+              <option key={bot.id} value={bot.id}>
+                {bot.name}
+              </option>
+            ))}
           </select>
         </Field>
 

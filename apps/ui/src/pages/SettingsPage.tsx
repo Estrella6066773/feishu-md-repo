@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { BroadcastTargetEditor } from '@/components/BroadcastTargetEditor';
+import { BotManagerCard } from '@/components/BotManagerCard';
 import { DEFAULT_BOT_SETTINGS, BOT_COMMAND_SUMMARY, type BotSettings } from '@feishu-md/shared';
 import { ServiceHealthAlert } from '@/components/ServiceHealthAlert';
 import { BotConnectionBadge } from '@/components/ConnectionStatusBadge';
@@ -129,6 +130,13 @@ export function SettingsPage() {
         bindings={bindings.data ?? []}
       />
 
+      <BotManagerCard
+        bots={settings.data?.feishuBots ?? []}
+        defaultBotId={botSettings.defaultBotId}
+        onSetDefault={(botId) => saveBotMutation.mutate({ ...botSettings, defaultBotId: botId })}
+        setDefaultPending={saveBotMutation.isPending}
+      />
+
       <Card>
         <form
           className="form-stack"
@@ -139,7 +147,7 @@ export function SettingsPage() {
         >
           <CardHeader
             title="机器人播报与指令"
-            description="同步完成后推送消息；通过长连接接收「同步」等指令。"
+            description="同步完成后推送消息；通过长连接接收「同步」等指令。默认机器人负责指令长连接。"
             action={
               <BotConnectionBadge
                 connected={connection?.connected}

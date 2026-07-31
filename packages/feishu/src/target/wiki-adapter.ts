@@ -6,9 +6,11 @@ import {
   createWikiFolderNode,
   deleteWikiNode,
   findWikiChildByTitle,
+  getWikiNodeByToken,
   listWikiChildNodes,
   moveWikiNode,
   replaceDocumentMarkdown,
+  updateWikiNodeTitle,
 } from '../wiki-service.js';
 import { wikiNodeExists } from '../node-exists.js';
 
@@ -73,12 +75,25 @@ export class WikiAdapter implements FeishuTargetAdapter {
     existing?: NodeRef,
   ): Promise<NodeRef> {
     adapterLog.debug('确保 Wiki 文档', { gitPath, operation: 'ensure_doc' });
-    if (existing?.docToken && (await this.nodeExists(existing))) {
-      return existing;
-    }
 
-    if (existing && (await this.nodeExists(existing))) {
-      return existing;
+    // 复用映射节点：合并「节点存在校验」与「标题同步」，避免重复请求
+    if (existing?.nodeToken || existing?.token) {
+      const resolved = await getWikiNodeByToken(
+        this.client,
+        existing.nodeToken ?? existing.token,
+        existing.nodeType === 'docx' ? 'docx' : 'wiki',
+      );
+      if (resolved) {
+        if (resolved.title && resolved.title !== title) {
+          adapterLog.info('更新 Wiki 文档标题', { gitPath, from: resolved.title, to: title });
+          await updateWikiNodeTitle(this.client, {
+            spaceId: this.spaceId,
+            nodeToken: resolved.nodeToken,
+            title,
+          });
+        }
+        return existing;
+      }
     }
 
     const matched = await findWikiChildByTitle(this.client, this.spaceId, parentToken, title);

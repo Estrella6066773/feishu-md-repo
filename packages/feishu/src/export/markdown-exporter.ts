@@ -1,12 +1,15 @@
 import type { FeishuClient } from '../client.js';
-import { assertFeishuResponse, FeishuApiError, withRateLimit } from '../api-error.js';
+import { assertFeishuResponse, FeishuApiError, formatFeishuErrorMessage, withRateLimit } from '../api-error.js';
 import { parseFeishuDocumentUrl } from './document-url.js';
 import { getWikiNodeByToken } from '../wiki-service.js';
+import { createLogger } from '@feishu-md/shared';
 import {
   exportBoardNodesToMermaid,
   listWhiteboardNodes,
 } from './board-export.js';
 import { detectDiagramFenceLang } from '../mermaid-markdown.js';
+
+const exporterLog = createLogger('markdown-export');
 
 export interface ExportDocumentOptions {
   documentUrl: string;
@@ -79,9 +82,70 @@ export async function exportDocumentToMarkdown(
   }
 
   const documentId = await resolveDocumentId(client, parsed);
-  const metadata = await fetchDocumentMetadata(client, documentId);
   const blocks = await fetchAllBlocks(client, documentId);
 
+  // 官方 Markdown 导出不支持画板内容；含画板的文档保留自渲染（画板 → Mermaid）
+  if (blocks.some((block) => block.block_type === DOCX_BLOCK_TYPE.BOARD)) {
+    return renderDocumentMarkdown(client, documentId, blocks, options);
+  }
+
+  try {
+    const response = await withRateLimit(() =>
+      client.docs.v1.content.get({
+        params: {
+          doc_token: documentId,
+          doc_type: 'docx',
+          content_type: 'markdown',
+        },
+      }),
+    );
+    assertFeishuResponse(response, 'Export docx document markdown');
+
+    const content = response.data?.content;
+    if (content?.trim()) {
+      return await buildOfficialExportResult(client, documentId, content, options);
+    }
+    exporterLog.warn('官方 Markdown 导出返回空内容，回退自渲染', { documentId });
+  } catch (error) {
+    exporterLog.warn(
+      `官方 Markdown 导出失败，回退自渲染: ${formatFeishuErrorMessage(error)}`,
+      { documentId },
+    );
+  }
+
+  return renderDocumentMarkdown(client, documentId, blocks, options);
+}
+
+/** 官方接口返回的 Markdown 已含首行标题（`# 标题`），仅在 includeTitle=false 时移除 */
+async function buildOfficialExportResult(
+  client: FeishuClient,
+  documentId: string,
+  content: string,
+  options: ExportDocumentOptions,
+): Promise<ExportDocumentResult> {
+  const metadata = await fetchDocumentMetadata(client, documentId);
+  const title = metadata.title || '未命名文档';
+  let markdown = content.trim();
+  if (options.includeTitle === false) {
+    markdown = stripLeadingTitle(markdown, title);
+  }
+  return { title, markdown };
+}
+
+function stripLeadingTitle(markdown: string, title: string): string {
+  const heading = `# ${title}`;
+  if (!markdown.startsWith(heading)) return markdown;
+  return markdown.slice(heading.length).replace(/^\n+/, '').trimStart();
+}
+
+/** 自渲染路径：保留画板 → Mermaid、引用块等官方接口不覆盖的能力 */
+async function renderDocumentMarkdown(
+  client: FeishuClient,
+  documentId: string,
+  blocks: DocxBlock[],
+  options: ExportDocumentOptions,
+): Promise<ExportDocumentResult> {
+  const metadata = await fetchDocumentMetadata(client, documentId);
   const context: ExportContext = {
     client,
     documentId,

@@ -9,6 +9,7 @@ import type {
   AppSettings,
   Binding,
   FeishuCredentials,
+  FeishuBotProfile,
   FeishuTarget,
   BindingTriggers,
   NodeMapping,
@@ -65,6 +66,7 @@ function parseBinding(row: typeof schema.bindings.$inferSelect): Binding {
     bindingSpecificBroadcastTargets: parseBindingBroadcastTargets(
       row.bindingBroadcastTargetsJson,
     ),
+    botId: row.botId ?? undefined,
     lastSyncedSha: row.lastSyncedSha ?? undefined,
     lastSyncedAt: row.lastSyncedAt ?? undefined,
     createdAt: row.createdAt,
@@ -98,6 +100,7 @@ export async function insertBinding(db: DbClient, binding: Binding): Promise<voi
       bindingBroadcastTargetsJson: serializeBindingBroadcastTargets(
         binding.bindingSpecificBroadcastTargets,
       ),
+      botId: binding.botId,
       lastSyncedSha: binding.lastSyncedSha,
       lastSyncedAt: binding.lastSyncedAt,
       createdAt: binding.createdAt,
@@ -136,6 +139,7 @@ export async function updateBinding(db: DbClient, binding: Binding): Promise<voi
       bindingBroadcastTargetsJson: serializeBindingBroadcastTargets(
         binding.bindingSpecificBroadcastTargets,
       ),
+      botId: binding.botId,
       lastSyncedSha: binding.lastSyncedSha,
       lastSyncedAt: binding.lastSyncedAt,
       updatedAt: binding.updatedAt,
@@ -383,14 +387,49 @@ export async function setFeishuCredentials(
   await setAppSetting(db, 'feishu_credentials', credentials);
 }
 
+export async function getFeishuBots(db: DbClient): Promise<FeishuBotProfile[]> {
+  const stored = await getAppSetting<FeishuBotProfile[]>(db, 'feishu_bots');
+  return stored ?? [];
+}
+
+export async function setFeishuBots(db: DbClient, bots: FeishuBotProfile[]): Promise<void> {
+  await setAppSetting(db, 'feishu_bots', bots);
+}
+
+/**
+ * 按优先级解析应使用的飞书凭证：
+ * 1. binding 指定的机器人档案（项目级）
+ * 2. 全局默认机器人（defaultBotId）
+ * 3. 旧版全局 feishu_credentials（兼容）
+ */
+export async function resolveFeishuCredentials(
+  db: DbClient,
+  binding?: Pick<Binding, 'botId'> | null,
+): Promise<FeishuCredentials | null> {
+  const bots = await getFeishuBots(db);
+  const settings = await getBotSettings(db);
+
+  const targetId = binding?.botId ?? settings.defaultBotId;
+  if (targetId) {
+    const profile = bots.find((bot) => bot.id === targetId);
+    if (profile) {
+      return { appId: profile.appId, appSecret: profile.appSecret };
+    }
+  }
+
+  return getFeishuCredentials(db);
+}
+
 export async function getAppSettings(db: DbClient): Promise<AppSettings> {
   const feishu = await getFeishuCredentials(db);
   const bot = await getBotSettings(db);
+  const feishuBots = await getFeishuBots(db);
   const userPermissions = await getFeishuUserPermissions(db);
   const dataDir = await getAppSetting<string>(db, 'data_dir');
   return {
     feishu: feishu ?? undefined,
     bot,
+    feishuBots,
     userPermissions,
     dataDir: dataDir ?? undefined,
   };

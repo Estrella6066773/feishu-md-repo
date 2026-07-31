@@ -1,7 +1,7 @@
 import type { Binding, CommentImportTriggerType } from '@feishu-md/shared';
 import { createLogger, isReservedSyncGitPath } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
-import { getFeishuCredentials, listNodeMappings, updateCommentImportLog } from '@feishu-md/db';
+import { listNodeMappings, resolveFeishuCredentials, updateCommentImportLog } from '@feishu-md/db';
 import {
   assertFeishuResponse,
   commentStorageFileName,
@@ -47,7 +47,7 @@ export interface CommentImportResult {
 
 export async function runCommentImport(options: RunCommentImportOptions): Promise<CommentImportResult> {
   const { binding, db, trigger, logId, shouldAbort } = options;
-  const credentials = await getFeishuCredentials(db);
+  const credentials = await resolveFeishuCredentials(db, binding);
   if (!credentials) {
     throw new Error('飞书凭证未配置');
   }

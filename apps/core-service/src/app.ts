@@ -8,13 +8,16 @@ import {
   getBinding,
   getBotSettings,
   getCommentImportLog,
+  getFeishuBots,
   getFeishuUserPermissions,
   insertBinding,
   listBindings,
   listCommentImportLogs,
   listSyncLogs,
   getSyncLog,
+  resolveFeishuCredentials,
   setBotSettings,
+  setFeishuBots,
   setFeishuCredentials,
   setFeishuUserPermissions,
   updateBinding,
@@ -24,6 +27,7 @@ import type {
   BotSettings,
   CommentImportRequest,
   FeishuCredentials,
+  FeishuBotProfile,
   FeishuUserPermission,
   SyncRequest,
 } from '@feishu-md/shared';
@@ -76,6 +80,21 @@ function shouldSkipHttpAccessLog(method: string, status: number): boolean {
     return false;
   }
   return status < 400;
+}
+
+/** 脱敏后的机器人档案（不返回 appSecret） */
+function toPublicBot(bot: FeishuBotProfile): {
+  id: string;
+  name: string;
+  appId: string;
+  appSecretConfigured: boolean;
+} {
+  return {
+    id: bot.id,
+    name: bot.name,
+    appId: bot.appId,
+    appSecretConfigured: Boolean(bot.appSecret),
+  };
 }
 
 export function createApp(options: {
@@ -144,6 +163,7 @@ export function createApp(options: {
       feishu: settings.feishu
         ? { appId: settings.feishu.appId, appSecretConfigured: Boolean(settings.feishu.appSecret) }
         : undefined,
+      feishuBots: (settings.feishuBots ?? []).map(toPublicBot),
       bot: settings.bot ?? DEFAULT_BOT_SETTINGS,
       userPermissions: settings.userPermissions ?? [],
       botConnection: botStatus,
@@ -170,10 +190,99 @@ export function createApp(options: {
 
   app.put('/api/settings/bot', async (c) => {
     const body = (await c.req.json()) as BotSettings;
+    if (body.defaultBotId) {
+      const bots = await getFeishuBots(db);
+      if (!bots.some((bot) => bot.id === body.defaultBotId)) {
+        return c.json({ error: '指定的默认机器人不存在，请先创建机器人档案' }, 400);
+      }
+    }
     await setBotSettings(db, { ...DEFAULT_BOT_SETTINGS, ...body });
     await botManager.refresh();
     httpLog.info('机器人设置已更新', { enabled: body.enabled });
     return c.json({ ok: true, connection: botManager.getStatus() });
+  });
+
+  app.get('/api/settings/bots', async (c) => {
+    const bots = await getFeishuBots(db);
+    return c.json(bots.map(toPublicBot));
+  });
+
+  app.post('/api/settings/bots', async (c) => {
+    const body = (await c.req.json()) as Partial<FeishuBotProfile>;
+    const name = body.name?.trim();
+    const appId = body.appId?.trim();
+    const appSecret = body.appSecret?.trim();
+    if (!name || !appId || !appSecret) {
+      return c.json({ error: 'name、appId 与 appSecret 均为必填' }, 400);
+    }
+    const bots = await getFeishuBots(db);
+    if (bots.some((bot) => bot.appId === appId)) {
+      return c.json({ error: '该 App ID 已存在，请勿重复添加' }, 400);
+    }
+    const bot: FeishuBotProfile = { id: randomUUID(), name, appId, appSecret };
+    bots.push(bot);
+    await setFeishuBots(db, bots);
+    httpLog.info('机器人档案已创建', { botId: bot.id, botName: bot.name, appId });
+    return c.json({ ok: true, bot: toPublicBot(bot) }, 201);
+  });
+
+  app.put('/api/settings/bots/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = (await c.req.json()) as Partial<FeishuBotProfile>;
+    const bots = await getFeishuBots(db);
+    const index = bots.findIndex((bot) => bot.id === id);
+    if (index < 0) return c.json({ error: 'Not found' }, 404);
+    const existing = bots[index];
+    if (!existing) return c.json({ error: 'Not found' }, 404);
+    const name = body.name?.trim();
+    const appId = body.appId?.trim();
+    if (!name || !appId) {
+      return c.json({ error: 'name 与 appId 均为必填' }, 400);
+    }
+    if (bots.some((bot) => bot.id !== id && bot.appId === appId)) {
+      return c.json({ error: '该 App ID 已被其他机器人使用' }, 400);
+    }
+    const next: FeishuBotProfile = {
+      id,
+      name,
+      appId,
+      // appSecret 缺省表示不修改（编辑时不回显）
+      appSecret: body.appSecret?.trim() || existing.appSecret,
+    };
+    bots[index] = next;
+    await setFeishuBots(db, bots);
+    await botManager.refresh();
+    httpLog.info('机器人档案已更新', { botId: id, botName: next.name });
+    return c.json({ ok: true, bot: toPublicBot(next) });
+  });
+
+  app.delete('/api/settings/bots/:id', async (c) => {
+    const id = c.req.param('id');
+    const bots = await getFeishuBots(db);
+    const bot = bots.find((item) => item.id === id);
+    if (!bot) return c.json({ error: 'Not found' }, 404);
+
+    const referencingBindings = (await listBindings(db)).filter(
+      (binding) => binding.botId === id,
+    );
+    if (referencingBindings.length > 0) {
+      return c.json(
+        {
+          error: `该机器人正被项目「${referencingBindings.map((binding) => binding.name).join('、')}」使用，请先在对应项目中更换机器人`,
+          referencingBindingNames: referencingBindings.map((binding) => binding.name),
+        },
+        409,
+      );
+    }
+
+    const settings = await getBotSettings(db);
+    if (settings.defaultBotId === id) {
+      await setBotSettings(db, { ...settings, defaultBotId: undefined });
+    }
+    await setFeishuBots(db, bots.filter((item) => item.id !== id));
+    await botManager.refresh();
+    httpLog.info('机器人档案已删除', { botId: id, botName: bot.name });
+    return c.json({ ok: true });
   });
 
   app.get('/api/settings/user-permissions', async (c) => {
@@ -353,7 +462,7 @@ export function createApp(options: {
       return c.json({ error: 'documentUrl is required' }, 400);
     }
 
-    const credentials = await getAppSettings(db).then((settings) => settings.feishu);
+    const credentials = await resolveFeishuCredentials(db);
     if (!credentials?.appId || !credentials?.appSecret) {
       return c.json({ error: '飞书凭证未配置' }, 400);
     }
@@ -385,7 +494,7 @@ export function createApp(options: {
       return c.json({ error: '请先完成图表转换，再导入云文档' }, 400);
     }
 
-    const credentials = await getAppSettings(db).then((settings) => settings.feishu);
+    const credentials = await resolveFeishuCredentials(db);
     if (!credentials?.appId || !credentials?.appSecret) {
       return c.json({ error: '飞书凭证未配置' }, 400);
     }
