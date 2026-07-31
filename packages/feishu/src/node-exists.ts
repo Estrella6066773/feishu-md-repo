@@ -56,10 +56,12 @@ export async function driveNodeExists(client: FeishuClient, ref: NodeRef): Promi
     if (ref.nodeType === 'docx') {
       const documentId = ref.docToken ?? ref.token;
       if (!documentId) return false;
-      const response = await withRateLimit(() =>
-        client.docx.v1.document.get({
-          path: { document_id: documentId },
-        }),
+      const response = await withRateLimit(
+        () =>
+          client.docx.v1.document.get({
+            path: { document_id: documentId },
+          }),
+        { read: true },
       );
       if (response.code === 0) return true;
       if (isNotFoundResponse(response.code, response.msg)) return false;
@@ -69,12 +71,14 @@ export async function driveNodeExists(client: FeishuClient, ref: NodeRef): Promi
     const fileToken = ref.token;
     if (!fileToken) return false;
     const docType = ref.nodeType === 'folder' ? 'folder' : 'file';
-    const response = await withRateLimit(() =>
-      client.drive.v1.meta.batchQuery({
-        data: {
-          request_docs: [{ doc_token: fileToken, doc_type: docType }],
-        },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.drive.v1.meta.batchQuery({
+          data: {
+            request_docs: [{ doc_token: fileToken, doc_type: docType }],
+          },
+        }),
+      { read: true },
     );
     if (response.code !== 0) {
       return isNotFoundResponse(response.code, response.msg);

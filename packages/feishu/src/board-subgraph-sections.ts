@@ -87,10 +87,12 @@ async function withWhiteboardRetry<T>(
 
 async function listBoardNodes(client: FeishuClient, whiteboardId: string): Promise<BoardNodeRecord[]> {
   return withWhiteboardRetry('List board nodes for subgraph sections', async () => {
-    const response = await withRateLimit(() =>
-      client.board.v1.whiteboardNode.list({
-        path: { whiteboard_id: whiteboardId },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.board.v1.whiteboardNode.list({
+          path: { whiteboard_id: whiteboardId },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'List board nodes for subgraph sections');
     return (response.data as { nodes?: BoardNodeRecord[] } | undefined)?.nodes ?? [];

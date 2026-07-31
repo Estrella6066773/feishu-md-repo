@@ -90,14 +90,16 @@ export async function exportDocumentToMarkdown(
   }
 
   try {
-    const response = await withRateLimit(() =>
-      client.docs.v1.content.get({
-        params: {
-          doc_token: documentId,
-          doc_type: 'docx',
-          content_type: 'markdown',
-        },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.docs.v1.content.get({
+          params: {
+            doc_token: documentId,
+            doc_type: 'docx',
+            content_type: 'markdown',
+          },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'Export docx document markdown');
 
@@ -192,21 +194,25 @@ async function fetchDocumentMetadata(
   client: FeishuClient,
   documentId: string,
 ): Promise<{ title?: string }> {
-  const response = await withRateLimit(() =>
-    client.docx.v1.document.get({
-      path: { document_id: documentId },
-    }),
+  const response = await withRateLimit(
+    () =>
+      client.docx.v1.document.get({
+        path: { document_id: documentId },
+      }),
+    { read: true },
   );
   assertFeishuResponse(response, 'Get document metadata');
   return { title: response.data?.document?.title };
 }
 
 async function fetchAllBlocks(client: FeishuClient, documentId: string): Promise<DocxBlock[]> {
-  const response = await withRateLimit(() =>
-    client.docx.v1.documentBlock.list({
-      path: { document_id: documentId },
-      params: { page_size: 500 },
-    }),
+  const response = await withRateLimit(
+    () =>
+      client.docx.v1.documentBlock.list({
+        path: { document_id: documentId },
+        params: { page_size: 500 },
+      }),
+    { read: true },
   );
   assertFeishuResponse(response, 'List document blocks');
   return (response.data?.items ?? []) as DocxBlock[];

@@ -7,10 +7,12 @@ export async function listWhiteboardNodes(
   client: FeishuClient,
   whiteboardId: string,
 ): Promise<UnknownRecord[]> {
-  const response = await withRateLimit(() =>
-    client.board.v1.whiteboardNode.list({
-      path: { whiteboard_id: whiteboardId },
-    }),
+  const response = await withRateLimit(
+    () =>
+      client.board.v1.whiteboardNode.list({
+        path: { whiteboard_id: whiteboardId },
+      }),
+    { read: true },
   );
   assertFeishuResponse(response, 'List board nodes');
   return ((response.data as UnknownRecord | undefined)?.nodes as UnknownRecord[] | undefined) ?? [];

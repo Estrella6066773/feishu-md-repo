@@ -75,8 +75,10 @@ export class DriveAdapter implements FeishuTargetAdapter {
     // 复用映射节点：合并「节点存在校验」与「标题同步」，避免重复请求
     const documentId = existing?.docToken ?? existing?.token;
     if (documentId && existing) {
-      const response = await withRateLimit(() =>
-        this.client.docx.v1.document.get({ path: { document_id: documentId } }),
+      const response = await withRateLimit(
+        () =>
+          this.client.docx.v1.document.get({ path: { document_id: documentId } }),
+        { read: true },
       );
       if (response.code === 0) {
         const currentTitle = response.data?.document?.title;

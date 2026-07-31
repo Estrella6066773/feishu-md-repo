@@ -35,36 +35,68 @@ export function formatFeishuErrorMessage(error: unknown): string {
  * 飞书 docx 写接口官方约 3 QPS/应用（及单篇文档并发编辑约 3 次/秒），超限返回 99991400。
  * 成功后间隔取 350ms（约 2.8 QPS），略低于上限，减少空等；撞限仍走指数退避持续重试。
  * @see https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/document-block/create
+ *
+ * 读写分级：写接口（create/patch/delete/upload 等）保守限流（2 并发 + 350ms 间隔）；
+ * 读接口（list/get 等）频控等级通常更高（5~50 QPS），放宽为独立信号量且成功后不等待，
+ * 避免大型仓库同步时读吞吐被写节奏拖慢。
  */
 const FEISHU_API_MAX_RETRIES = 6;
 const FEISHU_API_RETRY_BASE_MS = 400;
 const FEISHU_API_RATE_LIMIT_DELAY_MS = 350;
 const FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS = 30_000;
-/** 全局同时在飞的飞书 Open API 请求数（多文档并行时避免叠加触发 99991400） */
-const FEISHU_API_MAX_IN_FLIGHT = 2;
+/** 全局同时在飞的飞书 Open API 写请求数（多文档并行时避免叠加触发 99991400） */
+const FEISHU_API_MAX_WRITE_IN_FLIGHT = 2;
+/** 全局同时在飞的飞书 Open API 读请求数（读接口频控等级通常更高） */
+const FEISHU_API_MAX_READ_IN_FLIGHT = 8;
+/** 服务端建议等待秒数的上限，防止异常响应头导致过长等待 */
+const FEISHU_API_RATE_LIMIT_RESET_MAX_SECONDS = 120;
 
 const syncApiLog = createLogger('sync');
 
-let apiInFlight = 0;
-const apiFlightWaiters: Array<() => void> = [];
+export interface FeishuRateLimitOptions {
+  /** 标记该请求为读接口（list/get），放宽并发且成功后不 sleep */
+  read?: boolean;
+}
 
-async function acquireApiFlightSlot(): Promise<void> {
-  if (apiInFlight < FEISHU_API_MAX_IN_FLIGHT) {
-    apiInFlight += 1;
+const READ_IN_FLIGHT = { value: 0 };
+const WRITE_IN_FLIGHT = { value: 0 };
+const readFlightWaiters: Array<() => void> = [];
+const writeFlightWaiters: Array<() => void> = [];
+
+async function acquireFlightSlot(kind: 'read' | 'write'): Promise<void> {
+  const counter = kind === 'read' ? READ_IN_FLIGHT : WRITE_IN_FLIGHT;
+  const limit = kind === 'read' ? FEISHU_API_MAX_READ_IN_FLIGHT : FEISHU_API_MAX_WRITE_IN_FLIGHT;
+  const waiters = kind === 'read' ? readFlightWaiters : writeFlightWaiters;
+
+  if (counter.value < limit) {
+    counter.value += 1;
     return;
   }
   await new Promise<void>((resolve) => {
-    apiFlightWaiters.push(() => {
-      apiInFlight += 1;
+    waiters.push(() => {
+      counter.value += 1;
       resolve();
     });
   });
 }
 
-function releaseApiFlightSlot(): void {
-  apiInFlight -= 1;
-  const next = apiFlightWaiters.shift();
+function releaseFlightSlot(kind: 'read' | 'write'): void {
+  const counter = kind === 'read' ? READ_IN_FLIGHT : WRITE_IN_FLIGHT;
+  const waiters = kind === 'read' ? readFlightWaiters : writeFlightWaiters;
+  counter.value -= 1;
+  const next = waiters.shift();
   if (next) next();
+}
+
+/** 从 axios 风格错误中读取服务端建议的限流等待秒数（x-ogw-ratelimit-reset） */
+function extractRatelimitResetSeconds(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const response = (error as { response?: { headers?: Record<string, unknown> } }).response;
+  const raw = response?.headers?.['x-ogw-ratelimit-reset'];
+  if (raw == null) return undefined;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return Math.min(seconds, FEISHU_API_RATE_LIMIT_RESET_MAX_SECONDS);
 }
 
 const TRANSIENT_NETWORK_CODES = new Set([
@@ -75,16 +107,23 @@ const TRANSIENT_NETWORK_CODES = new Set([
   'EAI_AGAIN',
 ]);
 
-export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
+export async function withRateLimit<T>(
+  task: () => Promise<T>,
+  options?: FeishuRateLimitOptions,
+): Promise<T> {
   const persistOnRateLimit = getFeishuApiRetryPolicy().persistOnRateLimit === true;
+  const kind = options?.read === true ? 'read' : 'write';
   let attempt = 0;
 
   while (true) {
-    await acquireApiFlightSlot();
+    await acquireFlightSlot(kind);
     try {
       const result = await task();
-      // Docx / Wiki 写接口约 3 QPS；间隔与 FEISHU_API_RATE_LIMIT_DELAY_MS 对齐
-      await sleep(FEISHU_API_RATE_LIMIT_DELAY_MS);
+      // Docx / Wiki 写接口约 3 QPS；间隔与 FEISHU_API_RATE_LIMIT_DELAY_MS 对齐。
+      // 读接口频控等级更高，成功后不等待，避免拖慢批量读取。
+      if (kind === 'write') {
+        await sleep(FEISHU_API_RATE_LIMIT_DELAY_MS);
+      }
       return result;
     } catch (error) {
       const normalized = normalizeFeishuClientError(error);
@@ -109,8 +148,12 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
         throw normalized;
       }
 
+      // 限流时优先按服务端建议（x-ogw-ratelimit-reset）等待，其次指数退避
+      const resetSeconds = rateLimit ? extractRatelimitResetSeconds(error) : undefined;
       const delayMs = Math.min(
-        FEISHU_API_RETRY_BASE_MS * 2 ** Math.min(attempt, 8),
+        resetSeconds != null
+          ? resetSeconds * 1000
+          : FEISHU_API_RETRY_BASE_MS * 2 ** Math.min(attempt, 8),
         shouldPersist ? FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS : 30_000,
       );
       attempt += 1;
@@ -122,20 +165,20 @@ export async function withRateLimit<T>(task: () => Promise<T>): Promise<T> {
       );
       await sleep(delayMs);
     } finally {
-      releaseApiFlightSlot();
+      releaseFlightSlot(kind);
     }
   }
 }
 
 export function isRetryableFeishuRequestError(error: unknown): boolean {
   if (error instanceof FeishuApiError) {
-    // 频控 / 素材并发 / 服务端临时错误 / 租户校验瞬时失败（2200）
+    // 频控 / 素材并发 / 服务端临时错误 / 租户校验瞬时失败（2200）。
+    // 注意：99991672（权限不足）不在此列，重试无法解决，直接抛错暴露问题。
     return (
       error.code === 1061045
       || error.code === 11232
       || error.code === 2200
       || error.code === 99991400
-      || error.code === 99991672
     );
   }
 
@@ -145,7 +188,6 @@ export function isRetryableFeishuRequestError(error: unknown): boolean {
     || payload?.code === 11232
     || payload?.code === 2200
     || payload?.code === 99991400
-    || payload?.code === 99991672
   ) {
     return true;
   }
@@ -180,7 +222,6 @@ export function isRateLimitError(error: unknown): boolean {
     return (
       error.code === 1061045
       || error.code === 99991400
-      || error.code === 99991672
     );
   }
 
@@ -188,7 +229,6 @@ export function isRateLimitError(error: unknown): boolean {
   if (
     payload?.code === 1061045
     || payload?.code === 99991400
-    || payload?.code === 99991672
   ) {
     return true;
   }

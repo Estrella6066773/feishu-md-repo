@@ -398,10 +398,12 @@ async function findBoardWhiteboardId(
 }
 
 export async function listBoardNodeIds(client: FeishuClient, whiteboardId: string): Promise<string[]> {
-  const response = await withRateLimit(() =>
-    client.board.v1.whiteboardNode.list({
-      path: { whiteboard_id: whiteboardId },
-    }),
+  const response = await withRateLimit(
+    () =>
+      client.board.v1.whiteboardNode.list({
+        path: { whiteboard_id: whiteboardId },
+      }),
+    { read: true },
   );
   assertFeishuResponse(response, 'List board nodes');
 

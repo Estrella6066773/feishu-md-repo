@@ -57,17 +57,19 @@ export async function listAllDocumentComments(
   let pageToken: string | undefined;
 
   do {
-    const response = await withRateLimit(() =>
-      client.drive.v1.fileComment.list({
-        path: { file_token: fileToken },
-        params: {
-          file_type: fileType,
-          page_size: DEFAULT_PAGE_SIZE,
-          need_reaction: true,
-          user_id_type: USER_ID_TYPE,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.drive.v1.fileComment.list({
+          path: { file_token: fileToken },
+          params: {
+            file_type: fileType,
+            page_size: DEFAULT_PAGE_SIZE,
+            need_reaction: true,
+            user_id_type: USER_ID_TYPE,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'List docx comments');
     const items = response.data?.items ?? [];
@@ -111,20 +113,22 @@ async function loadAllCommentReplies(
   let pageToken = summary.page_token;
 
   while (true) {
-    const response = await withRateLimit(() =>
-      client.drive.v1.fileCommentReply.list({
-        path: {
-          file_token: fileToken,
-          comment_id: summary.comment_id!,
-        },
-        params: {
-          file_type: fileType,
-          page_size: DEFAULT_PAGE_SIZE,
-          need_reaction: true,
-          user_id_type: USER_ID_TYPE,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.drive.v1.fileCommentReply.list({
+          path: {
+            file_token: fileToken,
+            comment_id: summary.comment_id!,
+          },
+          params: {
+            file_type: fileType,
+            page_size: DEFAULT_PAGE_SIZE,
+            need_reaction: true,
+            user_id_type: USER_ID_TYPE,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'List comment replies');
     const items = response.data?.items ?? [];

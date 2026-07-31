@@ -1,5 +1,5 @@
 export * from './client.js';
-export { FeishuApiError, formatFeishuErrorMessage, assertFeishuResponse, withRateLimit, isRetryableFeishuRequestError, isRateLimitError } from './api-error.js';
+export { FeishuApiError, formatFeishuErrorMessage, assertFeishuResponse, withRateLimit, isRetryableFeishuRequestError, isRateLimitError, type FeishuRateLimitOptions } from './api-error.js';
 export { runWithFeishuApiRetryPolicy, getFeishuApiRetryPolicy, type FeishuApiRetryPolicy } from './api-retry-policy.js';
 export { formatSyncLog, syncContextFromOptions, type SyncLogContext } from './sync-log.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';

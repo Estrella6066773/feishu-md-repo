@@ -176,10 +176,12 @@ function buildColoredShapePayload(node: BoardNodeRecord, style: DiagramNodeStyle
 }
 
 async function listBoardNodes(client: FeishuClient, whiteboardId: string): Promise<BoardNodeRecord[]> {
-  const response = await withRateLimit(() =>
-    client.board.v1.whiteboardNode.list({
-      path: { whiteboard_id: whiteboardId },
-    }),
+  const response = await withRateLimit(
+    () =>
+      client.board.v1.whiteboardNode.list({
+        path: { whiteboard_id: whiteboardId },
+      }),
+    { read: true },
   );
   assertFeishuResponse(response, 'List board nodes for legend colors');
   return (response.data as { nodes?: BoardNodeRecord[] } | undefined)?.nodes ?? [];

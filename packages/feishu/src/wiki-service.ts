@@ -23,10 +23,12 @@ export async function getWikiNodeByToken(
 
   for (const objType of objTypes) {
     try {
-      const response = await withRateLimit(() =>
-        client.wiki.v2.space.getNode({
-          params: { token, obj_type: objType },
-        }),
+      const response = await withRateLimit(
+        () =>
+          client.wiki.v2.space.getNode({
+            params: { token, obj_type: objType },
+          }),
+        { read: true },
       );
       if (response.code !== 0) {
         if (isWikiNodeNotFound(response.msg)) continue;
@@ -188,15 +190,17 @@ export async function listWikiChildNodes(
   wikiApiLog.debug('列出 Wiki 子节点', { parentToken: parentNodeToken ?? '(根)' });
 
   do {
-    const response = await withRateLimit(() =>
-      client.wiki.v2.spaceNode.list({
-        path: { space_id: spaceId },
-        params: {
-          page_size: 50,
-          parent_node_token: parentNodeToken,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.wiki.v2.spaceNode.list({
+          path: { space_id: spaceId },
+          params: {
+            page_size: 50,
+            parent_node_token: parentNodeToken,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'List wiki child nodes');
     items.push(...(response.data?.items ?? []));
@@ -312,12 +316,14 @@ export async function deleteWikiNode(
 
 async function pollWikiDeleteTask(client: RequestableClient, taskId: string): Promise<void> {
   for (let attempt = 1; attempt <= WIKI_DELETE_POLL_ATTEMPTS; attempt += 1) {
-    const response = await withRateLimit(() =>
-      client.request({
-        method: 'GET',
-        url: `/open-apis/wiki/v2/tasks/${encodeURIComponent(taskId)}`,
-        params: { task_type: WIKI_DELETE_TASK_TYPE },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.request({
+          method: 'GET',
+          url: `/open-apis/wiki/v2/tasks/${encodeURIComponent(taskId)}`,
+          params: { task_type: WIKI_DELETE_TASK_TYPE },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'Get wiki delete node task');
 

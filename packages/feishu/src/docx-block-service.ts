@@ -37,14 +37,16 @@ export async function listDocumentBlocks(
   let pageToken: string | undefined;
 
   do {
-    const listResponse = await withRateLimit(() =>
-      client.docx.v1.documentBlock.list({
-        path: { document_id: documentId },
-        params: {
-          page_size: DOCX_PAGE_BLOCK_LIST_SIZE,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      }),
+    const listResponse = await withRateLimit(
+      () =>
+        client.docx.v1.documentBlock.list({
+          path: { document_id: documentId },
+          params: {
+            page_size: DOCX_PAGE_BLOCK_LIST_SIZE,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
     );
     assertFeishuResponse(listResponse, action);
     items.push(...((listResponse.data?.items ?? []) as DocxBlockListItem[]));

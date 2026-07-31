@@ -99,14 +99,16 @@ export async function listDriveFolderChildren(
   let pageToken: string | undefined;
 
   do {
-    const response = await withRateLimit(() =>
-      client.drive.v1.file.list({
-        params: {
-          folder_token: folderToken,
-          page_size: 200,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      }),
+    const response = await withRateLimit(
+      () =>
+        client.drive.v1.file.list({
+          params: {
+            folder_token: folderToken,
+            page_size: 200,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
     );
     assertFeishuResponse(response, 'List drive folder children');
 

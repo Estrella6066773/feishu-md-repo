@@ -42,10 +42,12 @@ export async function getImMessage(
   client: FeishuClient,
   messageId: string,
 ): Promise<ImMessageDetail | null> {
-  const response = await withRateLimit(() =>
-    client.im.v1.message.get({
-      path: { message_id: messageId },
-    }),
+  const response = await withRateLimit(
+    () =>
+      client.im.v1.message.get({
+        path: { message_id: messageId },
+      }),
+    { read: true },
   );
   if (response.code !== 0) {
     return null;
