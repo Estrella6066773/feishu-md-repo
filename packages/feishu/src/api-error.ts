@@ -148,14 +148,16 @@ export async function withRateLimit<T>(
         throw normalized;
       }
 
-      // 限流时优先按服务端建议（x-ogw-ratelimit-reset）等待，其次指数退避
+      // 限流时优先按服务端建议（x-ogw-ratelimit-reset）等待（已受 120s 上限约束），
+      // 其次指数退避
       const resetSeconds = rateLimit ? extractRatelimitResetSeconds(error) : undefined;
-      const delayMs = Math.min(
+      const delayMs =
         resetSeconds != null
           ? resetSeconds * 1000
-          : FEISHU_API_RETRY_BASE_MS * 2 ** Math.min(attempt, 8),
-        shouldPersist ? FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS : 30_000,
-      );
+          : Math.min(
+              FEISHU_API_RETRY_BASE_MS * 2 ** Math.min(attempt, 8),
+              shouldPersist ? FEISHU_API_PERSISTENT_RETRY_MAX_DELAY_MS : 30_000,
+            );
       attempt += 1;
       const retryLabel = shouldPersist
         ? `持续重试 (${attempt})`
