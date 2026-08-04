@@ -1,12 +1,14 @@
 import { useState } from 'react';
+import { BoardTerrainTool } from '@/pages/toolbox/BoardTerrainTool';
 import { DiagramFormatTool } from '@/pages/toolbox/DiagramFormatTool';
 import { ExportMarkdownTool } from '@/pages/toolbox/ExportMarkdownTool';
 
-type ToolboxTab = 'export' | 'diagram';
+type ToolboxTab = 'export' | 'diagram' | 'terrain';
 
 const TABS: Array<{ id: ToolboxTab; label: string; desc: string }> = [
   { id: 'export', label: '文档导出', desc: '飞书云文档 → Markdown' },
   { id: 'diagram', label: '图表格式化', desc: 'Mermaid → 着色文档' },
+  { id: 'terrain', label: '画板地形', desc: '画板 → 地形几何体 JSON' },
 ];
 
 export function ToolboxPage() {
@@ -30,7 +32,13 @@ export function ToolboxPage() {
         ))}
       </div>
 
-      {activeTab === 'export' ? <ExportMarkdownTool /> : <DiagramFormatTool />}
+      {activeTab === 'export' ? (
+        <ExportMarkdownTool />
+      ) : activeTab === 'diagram' ? (
+        <DiagramFormatTool />
+      ) : (
+        <BoardTerrainTool />
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 # 设计-API契约
 
 - 状态：待校验
-- 最后更新：2026-08-01
+- 最后更新：2026-08-03
 - 覆盖需求：[非功能需求](../01-需求/非功能需求.md)（NFR-obs-01 / NFR-obs-04）
 
 ## 1. 契约载体
@@ -23,9 +23,9 @@ UI 与 core-service 共享 `packages/shared/src/api-contract.ts` 中的类型与
 
 ## 3. 能力列表
 
-当前 `CORE_API_FEATURES`（版本 7）：
+当前 `CORE_API_FEATURES`（版本 8）：
 
-`settings-feishu`、`settings-bot`、`settings-bots`、`settings-user-permissions`、`bindings-crud`、`sync-log-detail`、`export-markdown`、`import-comments`、`comment-import-log-detail`、`diagram-append-document`
+`settings-feishu`、`settings-bot`、`settings-bots`、`settings-user-permissions`、`bindings-crud`、`sync-log-detail`、`export-markdown`、`import-comments`、`comment-import-log-detail`、`diagram-append-document`、`board-terrain-extract`
 
 ## 4. 约定
 

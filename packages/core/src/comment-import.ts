@@ -89,6 +89,7 @@ export async function runCommentImport(options: RunCommentImportOptions): Promis
       feishuNodeToken: mapping.feishuNodeToken,
       feishuDocToken: mapping.feishuDocToken,
       feishuNodeType: mapping.feishuNodeType,
+      feishuUrl: mapping.feishuUrl,
     });
 
     try {

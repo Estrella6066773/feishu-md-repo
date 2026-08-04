@@ -30,6 +30,7 @@ export const nodeMappings = sqliteTable('node_mappings', {
   feishuDocToken: text('feishu_doc_token'),
   feishuNodeType: text('feishu_node_type', { enum: ['folder', 'docx', 'file'] }).notNull(),
   feishuParentToken: text('feishu_parent_token'),
+  feishuUrl: text('feishu_url'),
   contentSha: text('content_sha'),
 });
 

@@ -383,7 +383,8 @@ export async function ensureWhiteboardInDocument(
   return insertBoardBlock(client, documentId, index);
 }
 
-async function findBoardWhiteboardId(
+/** 在 docx 正文中查找第一个画板块的 whiteboard_id；无画板块返回 null */
+export async function findBoardWhiteboardId(
   client: FeishuClient,
   documentId: string,
 ): Promise<string | null> {

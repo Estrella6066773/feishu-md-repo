@@ -477,6 +477,7 @@ async function executePlan(options: {
             feishuDocToken: folder.docToken,
             feishuNodeType: 'folder',
             feishuParentToken: parentToken,
+            feishuUrl: folder.url ?? existing?.feishuUrl,
           });
           count += 1;
           break;
@@ -537,6 +538,7 @@ async function executePlan(options: {
                   feishuDocToken: undefined,
                   feishuNodeType: 'file',
                   feishuParentToken: parentToken,
+                  feishuUrl: fileRef.url,
                   contentSha,
                 });
                 count += 1;
@@ -585,6 +587,7 @@ async function executePlan(options: {
             feishuDocToken: docToken,
             feishuNodeType: 'docx',
             feishuParentToken: parentToken,
+            feishuUrl: doc.url ?? existing?.feishuUrl,
           });
           count += 1;
           break;
@@ -809,6 +812,7 @@ function mappingToNodeRef(mapping: Awaited<ReturnType<typeof getNodeMappingByGit
     nodeToken: mapping.feishuNodeToken,
     docToken: mapping.feishuDocToken ?? (mapping.feishuNodeType === 'docx' ? mapping.feishuNodeToken : undefined),
     nodeType: mapping.feishuNodeType,
+    url: mapping.feishuUrl,
   };
 }
 

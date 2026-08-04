@@ -22,10 +22,17 @@ export function assertFeishuResponse<T extends { code?: number; msg?: string }>(
   return response;
 }
 
+/** 常见飞书错误码的中文说明，用于给用户可读的排查提示 */
+const FEISHU_ERROR_CODE_HINTS: Record<number, string> = {
+  1061004: '权限不足（forbidden）：应用对该文件夹/文档没有操作权限，请确认应用已被添加为云空间文件夹协作者或知识库管理员',
+  99991672: '权限不足：应用缺少所需权限或被拒绝访问，请在飞书开放平台确认已申请并发布对应权限',
+};
+
 /** 将飞书 API 或一般 Error 格式化为日志可读字符串 */
 export function formatFeishuErrorMessage(error: unknown): string {
   if (error instanceof FeishuApiError) {
-    return `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}`;
+    const hint = error.code != null ? FEISHU_ERROR_CODE_HINTS[error.code] : undefined;
+    return `${error.message}${error.code != null ? ` [code ${error.code}]` : ''}${hint ? `：${hint}` : ''}`;
   }
   if (error instanceof Error) return error.message;
   return String(error);

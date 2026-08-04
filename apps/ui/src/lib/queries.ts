@@ -69,14 +69,14 @@ export function fetchBindings() {
 }
 
 export function createBinding(binding: Partial<Binding>) {
-  return apiFetch<Binding>('/api/bindings', {
+  return apiFetch<Binding & { remoteUrlWarning?: string }>('/api/bindings', {
     method: 'POST',
     body: JSON.stringify(binding),
   });
 }
 
 export function updateBinding(id: string, binding: Partial<Binding>) {
-  return apiFetch<Binding>(`/api/bindings/${id}`, {
+  return apiFetch<Binding & { remoteUrlWarning?: string }>(`/api/bindings/${id}`, {
     method: 'PUT',
     body: JSON.stringify(binding),
   });
@@ -181,6 +181,28 @@ export function appendDiagramToDocument(
   }>('/api/diagram/append-to-document', {
     method: 'POST',
     body: JSON.stringify({ documentUrl, mermaidCode, legend }),
+  });
+}
+
+export function extractBoardTerrain(boardUrl: string, colors: string[]) {
+  return apiFetch<{
+    ok: boolean;
+    whiteboardId: string;
+    shapes: Array<{
+      id: string;
+      kind: 'ellipse' | 'rect';
+      color: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      angle: number;
+    }>;
+    totalNodeCount: number;
+    matchedShapeCount: number;
+  }>('/api/toolbox/board-terrain/extract', {
+    method: 'POST',
+    body: JSON.stringify({ boardUrl, colors }),
   });
 }
 

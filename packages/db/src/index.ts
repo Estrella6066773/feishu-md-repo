@@ -283,6 +283,7 @@ export async function getNodeMappingByGitPath(
     feishuDocToken: row.feishuDocToken ?? undefined,
     feishuNodeType: row.feishuNodeType,
     feishuParentToken: row.feishuParentToken ?? undefined,
+    feishuUrl: row.feishuUrl ?? undefined,
     contentSha: row.contentSha ?? undefined,
   };
 }
@@ -297,6 +298,7 @@ export async function upsertNodeMapping(db: DbClient, mapping: NodeMapping): Pro
         feishuDocToken: mapping.feishuDocToken,
         feishuNodeType: mapping.feishuNodeType,
         feishuParentToken: mapping.feishuParentToken,
+        feishuUrl: mapping.feishuUrl,
         contentSha: mapping.contentSha,
       })
       .where(eq(schema.nodeMappings.id, existing.id));
@@ -312,6 +314,7 @@ export async function upsertNodeMapping(db: DbClient, mapping: NodeMapping): Pro
     feishuDocToken: mapping.feishuDocToken,
     feishuNodeType: mapping.feishuNodeType,
     feishuParentToken: mapping.feishuParentToken,
+    feishuUrl: mapping.feishuUrl,
     contentSha: mapping.contentSha,
   });
 }
@@ -352,6 +355,7 @@ export async function listNodeMappings(db: DbClient, bindingId: string): Promise
     feishuDocToken: row.feishuDocToken ?? undefined,
     feishuNodeType: row.feishuNodeType,
     feishuParentToken: row.feishuParentToken ?? undefined,
+    feishuUrl: row.feishuUrl ?? undefined,
     contentSha: row.contentSha ?? undefined,
   }));
 }

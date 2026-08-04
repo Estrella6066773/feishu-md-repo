@@ -21,6 +21,8 @@ export interface NodeRef {
   docToken?: string;
   /** Wiki node_token when applicable. */
   nodeToken?: string;
+  /** 飞书侧返回的权威访问链接（含租户域名），用于播报/链接生成 */
+  url?: string;
 }
 
 export interface DirectChildRef {

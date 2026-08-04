@@ -62,21 +62,24 @@ export function BindingsPage() {
   const [formMode, setFormMode] = useState<'hidden' | 'create' | 'edit'>('hidden');
   const [editingBinding, setEditingBinding] = useState<Binding | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [remoteUrlNotice, setRemoteUrlNotice] = useState<string | null>(null);
 
   const createMutation = useMutation({
     mutationFn: createBinding,
-    onSuccess: () => {
+    onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.bindings });
       closeForm();
+      setRemoteUrlNotice(data.remoteUrlWarning ?? null);
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : '创建失败'),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Partial<Binding> }) => updateBinding(id, payload),
-    onSuccess: () => {
+    onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.bindings });
       closeForm();
+      setRemoteUrlNotice(data.remoteUrlWarning ?? null);
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : '保存失败'),
   });
@@ -129,6 +132,16 @@ export function BindingsPage() {
           onDismiss={clearTaskNotice}
         >
           {taskNotice.message}
+        </DismissibleAlert>
+      ) : null}
+
+      {remoteUrlNotice ? (
+        <DismissibleAlert
+          tone="warning"
+          title="远程仓库提示"
+          onDismiss={() => setRemoteUrlNotice(null)}
+        >
+          {remoteUrlNotice}
         </DismissibleAlert>
       ) : null}
 
@@ -186,7 +199,7 @@ export function BindingsPage() {
                   </div>
                   <div className="binding-path">{binding.repoPath}</div>
                   <div className="binding-meta">
-                    分支 {binding.branch}
+                    分支 {binding.branch || '自动检测'}
                     {binding.triggers.scheduleEnabled
                       ? ` · 每 ${binding.triggers.scheduleMinutes} 分钟检查${binding.triggers.commentImportOnSchedule ? '（含评论导入）' : ''}`
                       : binding.sourceType === 'local'
@@ -295,7 +308,7 @@ function BindingForm(props: {
   const [sourceType, setSourceType] = useState<RepoSourceType>('local');
   const [repoPath, setRepoPath] = useState('');
   const [remoteUrl, setRemoteUrl] = useState('');
-  const [branch, setBranch] = useState('main');
+  const [branch, setBranch] = useState('');
   const [syncMode, setSyncMode] = useState<SyncMode>('workspace');
   const [targetType, setTargetType] = useState<FeishuTarget['type']>('wiki');
   const [wikiSpaceId, setWikiSpaceId] = useState('');
@@ -339,7 +352,7 @@ function BindingForm(props: {
       setSourceType('local');
       setRepoPath('');
       setRemoteUrl('');
-      setBranch('main');
+      setBranch('');
       setSyncMode('workspace');
       setTargetType('wiki');
       setWikiSpaceId('');
@@ -431,7 +444,7 @@ function BindingForm(props: {
             sourceType,
             repoPath: repoPath.trim(),
             remoteUrl: sourceType === 'cloud' ? remoteUrl.trim() : undefined,
-            branch: branch.trim() || 'main',
+            branch: branch.trim(),
             syncMode,
             feishuTarget,
             triggers: buildBindingTriggers(),
@@ -535,7 +548,7 @@ function BindingForm(props: {
           />
         </Field>
         {sourceType === 'cloud' ? (
-          <Field label="远程 URL" className="form-grid-span-2" hint="HTTPS 或 SSH 地址均可">
+          <Field label="远程 URL" className="form-grid-span-2" hint="HTTPS 或 SSH 地址均可；带或不带末尾的 .git 都支持，两种写法视为同一仓库">
             <input
               className="field-input"
               value={remoteUrl}
@@ -544,12 +557,15 @@ function BindingForm(props: {
             />
           </Field>
         ) : null}
-        <Field label="分支">
+        <Field
+          label="分支"
+          hint="留空则自动检测仓库当前分支；新仓库默认分支常见为 main 或 master"
+        >
           <input
             className="field-input"
             value={branch}
             onChange={(e) => setBranch(e.target.value)}
-            placeholder="main"
+            placeholder="留空自动检测（main / master）"
           />
         </Field>
         <Field label="同步模式">

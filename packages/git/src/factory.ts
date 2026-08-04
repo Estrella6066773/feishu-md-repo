@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createLogger } from '@feishu-md/shared';
 import { simpleGit, type SimpleGit } from 'simple-git';
+import { remoteUrlsEqual } from './remote-url.js';
 import type {
   GitProvider,
   GitProviderOptions,
@@ -16,9 +17,11 @@ abstract class BaseGitProvider implements GitProvider {
   protected git: SimpleGit;
   protected branch: string;
   protected repoPath: string;
+  protected remoteUrl?: string;
 
-  constructor(repoPath: string, branch: string) {
+  constructor(repoPath: string, branch: string, remoteUrl?: string) {
     this.repoPath = repoPath;
+    this.remoteUrl = remoteUrl;
     this.git = simpleGit(repoPath);
     this.branch = branch;
   }
@@ -170,7 +173,55 @@ abstract class BaseGitProvider implements GitProvider {
   }
 
   protected async resolveBranchRef(): Promise<string> {
-    return this.branch.startsWith('refs/') ? this.branch : `refs/heads/${this.branch}`;
+    if (this.branch.startsWith('refs/')) return this.branch;
+
+    const configured = `refs/heads/${this.branch}`;
+    if (this.branch && (await this.refExists(configured))) return configured;
+
+    // 配置分支不存在（常见于默认 main 与仓库实际 master 不一致）：回退仓库当前分支
+    const currentBranch = await this.getCurrentBranchName();
+    if (currentBranch) {
+      if (this.branch && currentBranch !== this.branch) {
+        gitLog.warn(
+          `绑定分支 "${this.branch}" 在仓库中不存在，已自动使用仓库当前分支 "${currentBranch}"`,
+          { repoPath: this.repoPath },
+        );
+      }
+      return `refs/heads/${currentBranch}`;
+    }
+
+    // 仓库处于分离头指针等无法确定当前分支时，回退远端默认分支
+    try {
+      await this.git.revparse(['refs/remotes/origin/HEAD']);
+      return 'refs/remotes/origin/HEAD';
+    } catch {
+      // 忽略，交由下方统一报错
+    }
+
+    throw new Error(
+      `无法解析分支 "${this.branch}"：仓库中不存在该分支，且无法确定仓库当前分支或远端默认分支`,
+    );
+  }
+
+  /** 判断引用是否存在 */
+  protected async refExists(ref: string): Promise<boolean> {
+    try {
+      await this.git.revparse([ref]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 当前检出分支名；非分支（分离头指针）或读取失败时返回 null */
+  protected async getCurrentBranchName(): Promise<string | null> {
+    try {
+      const output = await this.git.revparse(['--abbrev-ref', 'HEAD']);
+      const name = output.trim();
+      return name && name !== 'HEAD' ? name : null;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -223,19 +274,71 @@ export class LocalGitProvider extends BaseGitProvider {
 
 export class CloudGitProvider extends BaseGitProvider {
   constructor(options: GitProviderOptions) {
-    super(options.repoPath, options.branch);
+    super(options.repoPath, options.branch, options.remoteUrl);
   }
 
   async fetchLatest(): Promise<void> {
-    await this.git.fetch(['origin', this.branch]);
+    const remote = await this.resolveFetchRemote();
+    const branch = await this.resolveRemoteBranchName(remote);
+    // 显式 refspec 保证拉取结果写入 refs/remotes/origin/<branch>，供 getRemoteHeadSha 使用
+    await this.git.fetch([remote, `${branch}:refs/remotes/origin/${branch}`]);
+  }
+
+  /**
+   * 确定 fetch 目标：
+   * 本地 origin 与填写的远程 URL 归一化一致时优先使用 origin（本机凭据已验证，拉取最稳）；
+   * 不一致或本地缺失 origin 时才使用填写的远程 URL，并记录警告。
+   */
+  private async resolveFetchRemote(): Promise<string> {
+    if (!this.remoteUrl) return 'origin';
+
+    const originUrl = await readLocalOriginUrl(this.repoPath);
+    if (!originUrl) return this.remoteUrl;
+
+    if (remoteUrlsEqual(originUrl, this.remoteUrl)) return 'origin';
+
+    gitLog.warn(
+      `填写的远程 URL 与本地 origin（${originUrl}）不一致，将以填写的远程 URL 拉取`,
+      { repoPath: this.repoPath },
+    );
+    return this.remoteUrl;
+  }
+
+  /**
+   * 确定要拉取的远端分支：
+   * 优先配置分支（存在于远端时）；否则回退到本地当前分支（配置默认 main 而远端实际为 master 的常见场景）。
+   */
+  private async resolveRemoteBranchName(remote: string): Promise<string> {
+    const candidates = this.branch ? [this.branch] : [];
+    const currentBranch = await this.getCurrentBranchName();
+    if (currentBranch && !candidates.includes(currentBranch)) {
+      candidates.push(currentBranch);
+    }
+
+    for (const branch of candidates) {
+      try {
+        const output = await this.git.raw(['ls-remote', '--heads', remote, branch]);
+        if (output.trim()) return branch;
+      } catch {
+        // 网络不可用时尝试下一候选
+      }
+    }
+
+    if (currentBranch) return currentBranch;
+    return this.branch || 'HEAD';
   }
 
   async getRemoteHeadSha(): Promise<string | null> {
+    const ref = `refs/remotes/origin/${this.branch}`;
     try {
-      const ref = `refs/remotes/origin/${this.branch}`;
       return await this.git.revparse([ref]);
     } catch {
-      return null;
+      // 配置分支不存在：回退远端默认分支指向的引用
+      try {
+        return await this.git.revparse(['refs/remotes/origin/HEAD']);
+      } catch {
+        return null;
+      }
     }
   }
 
@@ -268,5 +371,17 @@ export async function fetchRemoteForSync(git: GitProvider): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     gitLog.warn(`git fetch 失败，使用本地已有远程分支快照继续: ${message}`);
+  }
+}
+
+/** 读取本地仓库配置的 origin 远程地址；未配置或读取失败时返回 null */
+export async function readLocalOriginUrl(repoPath: string): Promise<string | null> {
+  try {
+    const git = simpleGit(repoPath);
+    const remotes = await git.getRemotes(true);
+    const origin = remotes.find((remote) => remote.name === 'origin');
+    return origin?.refs?.fetch ?? origin?.refs?.push ?? null;
+  } catch {
+    return null;
   }
 }

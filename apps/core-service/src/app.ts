@@ -41,8 +41,8 @@ import {
   CORE_API_FEATURES,
   CORE_API_VERSION,
 } from '@feishu-md/shared';
-import { installLocalHook, removeLocalHook } from '@feishu-md/git';
-import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, formatExportError } from '@feishu-md/feishu';
+import { installLocalHook, readLocalOriginUrl, removeLocalHook, remoteUrlsEqual } from '@feishu-md/git';
+import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, extractBoardTerrainShapes, resolveBoardTerrainWhiteboardId, formatExportError } from '@feishu-md/feishu';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
@@ -328,8 +328,8 @@ export function createApp(options: {
       name: body.name ?? '未命名绑定',
       sourceType: body.sourceType ?? 'local',
       repoPath: body.repoPath ?? '',
-      remoteUrl: body.remoteUrl,
-      branch: body.branch ?? 'main',
+      remoteUrl: body.remoteUrl?.trim() || undefined,
+      branch: body.branch !== undefined ? body.branch.trim() : 'main',
       syncMode,
       feishuTarget: body.feishuTarget ?? { type: 'wiki', wikiSpaceId: '' },
       triggers: normalizeBindingTriggers(body.triggers, body.sourceType ?? 'local'),
@@ -346,8 +346,9 @@ export function createApp(options: {
     applyLocalGitHook(binding, getPublicBaseUrl(config));
 
     await scheduler.refresh(db, syncCoordinator, commentImportCoordinator);
+    const remoteUrlWarning = await checkCloudRemoteConsistency(binding);
     httpLog.info('绑定已创建', { bindingId: binding.id, bindingName: binding.name });
-    return c.json(binding, 201);
+    return c.json({ ...binding, remoteUrlWarning }, 201);
   });
 
   app.put('/api/bindings/:id', async (c) => {
@@ -359,6 +360,8 @@ export function createApp(options: {
       ...existing,
       ...body,
       id: existing.id,
+      remoteUrl: body.remoteUrl !== undefined ? body.remoteUrl.trim() || undefined : existing.remoteUrl,
+      branch: body.branch !== undefined ? body.branch.trim() : existing.branch,
       triggers: normalizeBindingTriggers(
         body.triggers ?? existing.triggers,
         (body.sourceType ?? existing.sourceType) as Binding['sourceType'],
@@ -370,7 +373,8 @@ export function createApp(options: {
     applyLocalGitHook(updated, getPublicBaseUrl(config), existing);
 
     await scheduler.refresh(db, syncCoordinator, commentImportCoordinator);
-    return c.json(updated);
+    const remoteUrlWarning = await checkCloudRemoteConsistency(updated);
+    return c.json({ ...updated, remoteUrlWarning });
   });
 
   app.delete('/api/bindings/:id', async (c) => {
@@ -525,6 +529,75 @@ export function createApp(options: {
     }
   });
 
+  app.post('/api/toolbox/board-terrain/extract', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      boardUrl?: string;
+      whiteboardId?: string;
+      colors?: unknown;
+    };
+    const colors = Array.isArray(body.colors)
+      ? body.colors.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+    if (colors.length === 0) {
+      return c.json({ error: '请至少指定一个识别颜色' }, 400);
+    }
+
+    const credentials = await resolveFeishuCredentials(db);
+    if (!credentials?.appId || !credentials?.appSecret) {
+      return c.json({ error: '飞书凭证未配置' }, 400);
+    }
+    const client = createFeishuClient(credentials);
+
+    let whiteboardId = (body.whiteboardId ?? '').trim();
+    if (!whiteboardId) {
+      const sourceUrl = (body.boardUrl ?? '').trim();
+      if (!sourceUrl) {
+        return c.json({ error: '请填写画板直链或含画板的云文档链接' }, 400);
+      }
+      try {
+        whiteboardId = await resolveBoardTerrainWhiteboardId(client, sourceUrl);
+      } catch (error) {
+        return c.json({ error: formatExportError(error) }, 400);
+      }
+    }
+
+    try {
+      const result = await extractBoardTerrainShapes(client, whiteboardId, colors);
+      return c.json({
+        ok: true,
+        whiteboardId,
+        ...result,
+      });
+    } catch (error) {
+      return c.json({ error: formatExportError(error) }, 400);
+    }
+  });
+
   return app;
+}
+
+/**
+ * 云绑定保存后校验「填写的远程 URL」与「本地仓库 origin」的一致性。
+ * 两种写法（带/不带 .git 等）视为同一仓库；仅在真正不一致或缺失时给出警告，不阻断保存。
+ */
+async function checkCloudRemoteConsistency(binding: Binding): Promise<string | undefined> {
+  if (binding.sourceType !== 'cloud') return undefined;
+
+  const originUrl = await readLocalOriginUrl(binding.repoPath);
+
+  if (binding.remoteUrl) {
+    if (!originUrl) {
+      return '本地仓库未配置 origin，定时拉取将以填写的远程 URL 为准';
+    }
+    if (!remoteUrlsEqual(originUrl, binding.remoteUrl)) {
+      return `填写的远程 URL 与本地仓库 origin（${originUrl}）不一致，定时拉取将以填写的远程 URL 为准`;
+    }
+    return undefined;
+  }
+
+  if (!originUrl) {
+    return '未填写远程 URL 且本地仓库未配置 origin，定时拉取远程将失败，建议补填或配置 origin';
+  }
+  return undefined;
 }
 

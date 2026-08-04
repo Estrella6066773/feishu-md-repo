@@ -109,6 +109,8 @@ export interface NodeMapping {
   feishuDocToken?: string;
   feishuNodeType: FeishuNodeType;
   feishuParentToken?: string;
+  /** 飞书侧返回的权威访问链接（含租户域名），链接生成优先使用 */
+  feishuUrl?: string;
   contentSha?: string;
 }
 

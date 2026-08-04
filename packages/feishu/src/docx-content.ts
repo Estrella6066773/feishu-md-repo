@@ -48,10 +48,16 @@ type ConvertBlock = NonNullable<
   >['blocks']
 >[number];
 
+export interface CreatedDocxDocument {
+  documentId: string;
+  /** 飞书返回的权威访问链接（含租户域名） */
+  url?: string;
+}
+
 export async function createEmptyDocument(
   client: FeishuClient,
   options: { folderToken?: string; title: string },
-): Promise<string> {
+): Promise<CreatedDocxDocument> {
   const response = await withRateLimit(() =>
     client.docx.v1.document.create({
       data: {
@@ -66,7 +72,10 @@ export async function createEmptyDocument(
   if (!documentId) {
     throw new Error('Create docx document returned empty document_id');
   }
-  return documentId;
+  return {
+    documentId,
+    url: (response.data?.document as { url?: string } | undefined)?.url,
+  };
 }
 
 /**

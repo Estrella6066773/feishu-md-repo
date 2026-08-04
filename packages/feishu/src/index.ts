@@ -27,6 +27,7 @@ export {
   replaceBoardLinkMindMap,
   clearBoardNodes,
   listBoardNodeIds,
+  findBoardWhiteboardId,
   type BoardMindMapLinkNode,
 } from './board-service.js';
 export {
@@ -78,6 +79,14 @@ export {
   buildLabelStyleMap,
   type ApplyLegendColorsResult,
 } from './board-legend-colors.js';
+export {
+  extractBoardTerrainShapes,
+  parseFeishuBoardUrl,
+  resolveBoardTerrainWhiteboardId,
+  type BoardTerrainShape,
+  type BoardTerrainShapeKind,
+  type ExtractBoardTerrainResult,
+} from './board-terrain.js';
 export {
   splitMarkdownByImages,
   extractMarkdownImageRefs,

@@ -57,7 +57,7 @@ export async function createDriveDocument(
   options: { parentFolderToken: string; title: string },
 ): Promise<NodeRef> {
   driveApiLog.debug('创建 Drive 文档', { title: options.title });
-  const documentId = await createEmptyDocument(client, {
+  const { documentId, url } = await createEmptyDocument(client, {
     folderToken: options.parentFolderToken,
     title: options.title,
   });
@@ -67,6 +67,7 @@ export async function createDriveDocument(
     docToken: documentId,
     nodeType: 'docx',
     title: options.title,
+    url,
   };
 }
 

@@ -10,6 +10,8 @@ export interface ResolvedWikiNode {
   nodeToken: string;
   docToken: string;
   title?: string;
+  /** 飞书返回的权威访问链接（含租户域名） */
+  url?: string;
 }
 
 /** 通过 wiki node_token 或云文档 document_id 解析知识库节点 */
@@ -44,6 +46,7 @@ export async function getWikiNodeByToken(
         nodeToken: node.node_token,
         docToken,
         title: node.title,
+        url: (node as { url?: string }).url,
       };
     } catch (error) {
       if (error instanceof FeishuApiError && isWikiNodeNotFound(error.message)) {
@@ -100,6 +103,7 @@ export async function createWikiDocxNode(
     title: node.title ?? options.title,
     nodeToken: node.node_token,
     docToken: node.obj_token,
+    url: (node as { url?: string }).url,
   };
 }
 

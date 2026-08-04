@@ -86,7 +86,10 @@ export class DriveAdapter implements FeishuTargetAdapter {
           adapterLog.info('更新 Drive 文档标题', { gitPath, from: currentTitle, to: title });
           await updateDocxDocumentTitle(this.client, documentId, title);
         }
-        return existing;
+        return {
+          ...existing,
+          url: (response.data?.document as { url?: string } | undefined)?.url ?? existing.url,
+        };
       }
       if (!isNotFoundResponse(response.code, response.msg)) {
         throw new FeishuApiError(

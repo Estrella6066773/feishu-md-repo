@@ -92,7 +92,7 @@ export class WikiAdapter implements FeishuTargetAdapter {
             title,
           });
         }
-        return existing;
+        return { ...existing, url: resolved.url ?? existing.url };
       }
     }
 
