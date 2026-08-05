@@ -19,8 +19,13 @@ const syncLog = createLogger('sync');
 
 const IMAGE_BLOCK_TYPE = 27;
 const ALLOWED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
+const FEISHU_DOMAIN = 'https://open.feishu.cn';
 
 type FeishuUploadResponse = { code?: number; msg?: string; data?: { file_token?: string } };
+
+interface LarkTokenManager {
+  getTenantAccessToken(params?: Record<symbol, string>): Promise<string>;
+}
 
 export interface DocxImagePayload {
   data: Uint8Array;
@@ -99,8 +104,20 @@ async function resolveImageBlockIdAtIndex(
 }
 
 /**
+ * 获取飞书 tenant_access_token（由 SDK 管理缓存）。
+ * 绕过 SDK uploadAll 的 multipart 序列化层，后期直接用原生 FormData 构造请求。
+ */
+async function resolveTenantAccessToken(client: FeishuClient): Promise<string> {
+  const tm = (client as unknown as { tokenManager: LarkTokenManager }).tokenManager;
+  return tm.getTenantAccessToken();
+}
+
+/**
  * 飞书官方流程：从 Git 读取二进制 → docx_image upload_all → replace_image。
  * @see https://open.feishu.cn/document/docs/docs/faq 如何插入图片
+ *
+ * 上传层绕过 SDK 的 uploadAll，直接用原生 FormData + fetch 构造标准 multipart 请求，
+ * 确保每个字段格式与飞书官方文档完全一致（size 为字符串、file 为 binary blob）。
  */
 export async function uploadAndBindDocxImageBlock(
   client: FeishuClient,
@@ -115,19 +132,41 @@ export async function uploadAndBindDocxImageBlock(
 
   const uploadFileName = toDocxImageUploadFileName(options.fileName);
   const fileBuffer = Buffer.from(options.data);
+  const fileSize = fileBuffer.byteLength;
 
-  const uploadResponse = await withRateLimit(() =>
-    client.drive.v1.media.uploadAll({
-      data: {
-        file_name: uploadFileName,
-        parent_type: 'docx_image',
-        parent_node: imageBlockId,
-        size: fileBuffer.byteLength,
-        file: fileBuffer,
-        extra: JSON.stringify({ drive_route_token: documentId }),
+  const uploadResponse = await withRateLimit(async () => {
+    const token = await resolveTenantAccessToken(client);
+
+    const form = new FormData();
+    form.append('file_name', uploadFileName);
+    form.append('parent_type', 'docx_image');
+    form.append('parent_node', imageBlockId);
+    form.append('size', String(fileSize));
+    form.append('file', new Blob([fileBuffer], { type: 'application/octet-stream' }), uploadFileName);
+    form.append('extra', JSON.stringify({ drive_route_token: documentId }));
+
+    // 使用全局 fetch（Node 22+ 原生支持 FormData → multipart）
+    const response = await fetch(`${FEISHU_DOMAIN}/open-apis/drive/v1/medias/upload_all`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
       },
-    }),
-  );
+      body: form,
+    });
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      const text = await response.text().catch(() => '');
+      throw new FeishuApiError(
+        `Upload media returned HTTP ${response.status}: ${text.slice(0, 200)}`,
+        response.status,
+      );
+    }
+    return body;
+  });
+
   const fileToken = extractUploadFileToken(uploadResponse, 'Upload docx image media');
 
   await replaceDocxImageToken(client, documentId, imageBlockId, fileToken, context);

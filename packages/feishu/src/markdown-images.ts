@@ -4,7 +4,19 @@ export type MarkdownImageSegment =
   | { kind: 'markdown'; content: string }
   | { kind: 'image'; alt: string; src: string };
 
-const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+/**
+ * 统一图片引用正则：同时匹配两种格式
+ * - Markdown: ![alt](src)
+ * - HTML:    <img src="..." alt="..." />
+ *
+ * img 标签的 src/alt 不在此正则中提取（属性顺序不确定），
+ * 而是从 match[0]（完整标签字符串）中单独用属性正则提取。
+ */
+const IMAGE_RE = /<img\s[^>]*\/?[>]|!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gi;
+
+/** 从 <img> 标签字符串中提取属性 */
+const IMG_SRC_RE = /\bsrc\s*=\s*"([^"]+)"/i;
+const IMG_ALT_RE = /\balt\s*=\s*"([^"]*)"/i;
 
 export interface MarkdownImageRef {
   alt: string;
@@ -12,7 +24,7 @@ export interface MarkdownImageRef {
 }
 
 /**
- * 屏蔽代码块与行内代码，避免其中的 `![](...)` 被当作真实图片引用。
+ * 屏蔽代码块与行内代码，避免其中的图片语法被当作真实引用。
  * 长度不变，便于用 match.index 回指原文。
  */
 function maskNonImageMarkdownRegions(markdown: string): string {
@@ -22,14 +34,34 @@ function maskNonImageMarkdownRegions(markdown: string): string {
   return masked;
 }
 
+function parseImgTagSrc(full: string): string {
+  return (full.match(IMG_SRC_RE)?.[1] ?? '').trim();
+}
+
+function parseImgTagAlt(full: string): string {
+  return (full.match(IMG_ALT_RE)?.[1] ?? '').trim();
+}
+
+function matchSrc(m: RegExpMatchArray): string {
+  const full = m[0];
+  if (full.startsWith('<img')) return parseImgTagSrc(full);
+  return (m[2] ?? '').trim();
+}
+
+function matchAlt(m: RegExpMatchArray): string {
+  const full = m[0];
+  if (full.startsWith('<img')) return parseImgTagAlt(full);
+  return (m[1] ?? '').trim();
+}
+
 export function extractMarkdownImageRefs(markdown: string): MarkdownImageRef[] {
   const masked = maskNonImageMarkdownRegions(markdown);
   const refs: MarkdownImageRef[] = [];
-  MARKDOWN_IMAGE_RE.lastIndex = 0;
-  for (const match of masked.matchAll(MARKDOWN_IMAGE_RE)) {
+  IMAGE_RE.lastIndex = 0;
+  for (const match of masked.matchAll(IMAGE_RE)) {
     refs.push({
-      alt: match[1] ?? '',
-      src: (match[2] ?? '').trim(),
+      alt: matchAlt(match),
+      src: matchSrc(match),
     });
   }
   return refs;
@@ -37,14 +69,15 @@ export function extractMarkdownImageRefs(markdown: string): MarkdownImageRef[] {
 
 /**
  * 将 Markdown 拆成普通正文与图片引用段（含图片时按段插入文档）。
+ * 同时支持 ![alt](src) 和 <img src="..." alt="..." /> 两种格式。
  */
 export function splitMarkdownByImages(markdown: string): MarkdownImageSegment[] {
   const masked = maskNonImageMarkdownRegions(markdown);
   const segments: MarkdownImageSegment[] = [];
   let lastIndex = 0;
 
-  MARKDOWN_IMAGE_RE.lastIndex = 0;
-  for (const match of masked.matchAll(MARKDOWN_IMAGE_RE)) {
+  IMAGE_RE.lastIndex = 0;
+  for (const match of masked.matchAll(IMAGE_RE)) {
     const matchIndex = match.index ?? 0;
     const before = markdown.slice(lastIndex, matchIndex);
     if (before) {
@@ -53,8 +86,8 @@ export function splitMarkdownByImages(markdown: string): MarkdownImageSegment[] 
 
     segments.push({
       kind: 'image',
-      alt: match[1] ?? '',
-      src: (match[2] ?? '').trim(),
+      alt: matchAlt(match),
+      src: matchSrc(match),
     });
 
     lastIndex = matchIndex + match[0].length;
@@ -74,13 +107,22 @@ export function splitMarkdownByImages(markdown: string): MarkdownImageSegment[] 
 
 export function markdownContainsImages(markdown: string): boolean {
   const masked = maskNonImageMarkdownRegions(markdown);
-  MARKDOWN_IMAGE_RE.lastIndex = 0;
-  return MARKDOWN_IMAGE_RE.test(masked);
+  IMAGE_RE.lastIndex = 0;
+  return IMAGE_RE.test(masked);
 }
 
 /** 无法上传图片时，用可读文本替代，避免 convert 生成无效 Image Block */
 export function stripMarkdownImagesToFallback(markdown: string): string {
-  return markdown.replace(MARKDOWN_IMAGE_RE, (_full, alt: string, src: string) => {
+  return markdown.replace(IMAGE_RE, (full, mdAlt, mdSrc) => {
+    let src: string;
+    let alt: string;
+    if (full.startsWith('<img')) {
+      src = parseImgTagSrc(full);
+      alt = parseImgTagAlt(full);
+    } else {
+      src = mdSrc ?? '';
+      alt = mdAlt ?? '';
+    }
     const label = alt.trim();
     if (label) return label;
     return `[图片: ${src.trim()}]`;

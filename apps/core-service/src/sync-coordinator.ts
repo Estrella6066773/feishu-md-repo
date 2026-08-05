@@ -245,6 +245,12 @@ export class SyncCoordinator {
         toSha: result.toSha,
         operationCount: result.operationCount,
       });
+
+      if (trigger === 'schedule' && (result.commits?.length ?? 0) === 0) {
+        log.info('定时刷新无新提交，跳过播报');
+        return;
+      }
+
       await this.broadcaster.notifySyncFinished({
         binding,
         trigger,

@@ -386,16 +386,24 @@ export function formatSyncBroadcastSummary(options: {
     return `❌ 同步失败\n绑定：${options.bindingName}\n触发：${triggerLabel}\n原因：${options.errorMessage ?? '未知错误'}`;
   }
 
+  const isManualRefresh =
+    MANUAL_SYNC_TRIGGERS.includes(options.trigger) &&
+    (options.result?.commits?.length ?? 0) === 0;
+
   const lines = [
     '✅ **同步成功**',
     `- **绑定**：${options.bindingName}`,
     `- **触发**：${triggerLabel}`,
-    formatCommitHashLine(options.result),
   ];
+
+  if (!isManualRefresh) {
+    lines.push(formatCommitHashLine(options.result));
+  }
 
   const changedFileCount = options.result?.changedPaths?.length ?? 0;
   if (changedFileCount > 0) {
-    lines.push(`- **文件**：更新了 ${changedFileCount} 个`);
+    const fileLabel = isManualRefresh ? '已刷新' : '更新了';
+    lines.push(`- **文件**：${fileLabel} ${changedFileCount} 个`);
   }
 
   lines.push(`- **操作数**：${options.result?.operationCount ?? 0}`);
