@@ -25,7 +25,7 @@ UI 与 core-service 共享 `packages/shared/src/api-contract.ts` 中的类型与
 
 当前 `CORE_API_FEATURES`（版本 8）：
 
-`settings-feishu`、`settings-bot`、`settings-bots`、`settings-user-permissions`、`bindings-crud`、`sync-log-detail`、`export-markdown`、`import-comments`、`comment-import-log-detail`、`diagram-append-document`、`board-terrain-extract`
+`settings-feishu`、`settings-bot`、`settings-bots`、`settings-user-permissions`、`bindings-crud`、`sync-log-detail`、`export-markdown`、`import-comments`、`comment-import-log-detail`、`diagram-append-document`
 
 ## 4. 约定
 

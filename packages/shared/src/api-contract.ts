@@ -12,7 +12,6 @@ export const CORE_API_FEATURES = [
   'import-comments',
   'comment-import-log-detail',
   'diagram-append-document',
-  'board-terrain-extract',
 ] as const;
 
 export type CoreApiFeature = (typeof CORE_API_FEATURES)[number];

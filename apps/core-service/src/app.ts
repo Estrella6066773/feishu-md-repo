@@ -42,7 +42,7 @@ import {
   CORE_API_VERSION,
 } from '@feishu-md/shared';
 import { installLocalHook, readLocalOriginUrl, removeLocalHook, remoteUrlsEqual } from '@feishu-md/git';
-import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, extractBoardTerrainShapes, resolveBoardTerrainWhiteboardId, formatExportError } from '@feishu-md/feishu';
+import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, formatExportError } from '@feishu-md/feishu';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
@@ -523,50 +523,6 @@ export function createApp(options: {
         insertedBlockCount: result.insertedBlockCount,
         usedStrippedStyles: result.usedStrippedStyles,
         coloredNodeCount: result.coloredNodeCount,
-      });
-    } catch (error) {
-      return c.json({ error: formatExportError(error) }, 400);
-    }
-  });
-
-  app.post('/api/toolbox/board-terrain/extract', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      boardUrl?: string;
-      whiteboardId?: string;
-      colors?: unknown;
-    };
-    const colors = Array.isArray(body.colors)
-      ? body.colors.map((item) => String(item).trim()).filter(Boolean)
-      : [];
-    if (colors.length === 0) {
-      return c.json({ error: '请至少指定一个识别颜色' }, 400);
-    }
-
-    const credentials = await resolveFeishuCredentials(db);
-    if (!credentials?.appId || !credentials?.appSecret) {
-      return c.json({ error: '飞书凭证未配置' }, 400);
-    }
-    const client = createFeishuClient(credentials);
-
-    let whiteboardId = (body.whiteboardId ?? '').trim();
-    if (!whiteboardId) {
-      const sourceUrl = (body.boardUrl ?? '').trim();
-      if (!sourceUrl) {
-        return c.json({ error: '请填写画板直链或含画板的云文档链接' }, 400);
-      }
-      try {
-        whiteboardId = await resolveBoardTerrainWhiteboardId(client, sourceUrl);
-      } catch (error) {
-        return c.json({ error: formatExportError(error) }, 400);
-      }
-    }
-
-    try {
-      const result = await extractBoardTerrainShapes(client, whiteboardId, colors);
-      return c.json({
-        ok: true,
-        whiteboardId,
-        ...result,
       });
     } catch (error) {
       return c.json({ error: formatExportError(error) }, 400);

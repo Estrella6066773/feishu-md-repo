@@ -184,28 +184,6 @@ export function appendDiagramToDocument(
   });
 }
 
-export function extractBoardTerrain(boardUrl: string, colors: string[]) {
-  return apiFetch<{
-    ok: boolean;
-    whiteboardId: string;
-    shapes: Array<{
-      id: string;
-      kind: 'ellipse' | 'rect';
-      color: string;
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      angle: number;
-    }>;
-    totalNodeCount: number;
-    matchedShapeCount: number;
-  }>('/api/toolbox/board-terrain/extract', {
-    method: 'POST',
-    body: JSON.stringify({ boardUrl, colors }),
-  });
-}
-
 export function fetchHealth() {
   return apiFetch<{
     ok: boolean;

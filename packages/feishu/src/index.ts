@@ -80,14 +80,6 @@ export {
   type ApplyLegendColorsResult,
 } from './board-legend-colors.js';
 export {
-  extractBoardTerrainShapes,
-  parseFeishuBoardUrl,
-  resolveBoardTerrainWhiteboardId,
-  type BoardTerrainShape,
-  type BoardTerrainShapeKind,
-  type ExtractBoardTerrainResult,
-} from './board-terrain.js';
-export {
   splitMarkdownByImages,
   extractMarkdownImageRefs,
   markdownContainsImages,
