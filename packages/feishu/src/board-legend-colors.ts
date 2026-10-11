@@ -1,6 +1,8 @@
 import {
   classifyNode,
   createLogger,
+  normalizeHexColor,
+  parseMermaidClassStyles,
   parseMermaidFlowchart,
   type DiagramNodeStyle,
   type LegendEntry,
@@ -275,6 +277,70 @@ export async function applyLegendColorsToBoard(
   }
 
   colorLog.info('开始按图例上色画板块', {
+    whiteboardId,
+    coloredCount: payloads.length,
+    totalShapeCount: shapes.length,
+  });
+
+  await batchDeleteNodes(client, whiteboardId, deleteIds);
+  await createBoardNodes(client, whiteboardId, payloads);
+
+  return { coloredCount: payloads.length, totalShapeCount: shapes.length };
+}
+
+/**
+ * 源码自带 classDef 时，按节点文案把颜色写回画板。
+ * 调用时机在 subgraph 重建之后：重建会换掉导入节点；若重建时已经写上同一填充色，这里跳过，
+ * 避免再删除节点把 connector 拆掉。没有 subgraph 的图只走这一次。
+ * 同一文案被标了多个 class 时，源码里后出现的 class 生效。
+ * 浅黄 subgraph 外框（#ffffde）不上色，否则分区识别会把它当成普通节点。
+ */
+export async function applyMermaidClassColors(
+  client: FeishuClient,
+  whiteboardId: string,
+  mermaidCode: string,
+): Promise<ApplyLegendColorsResult> {
+  const parsed = parseMermaidClassStyles(mermaidCode);
+  if (parsed.classByNodeId.size === 0) {
+    return { coloredCount: 0, totalShapeCount: 0 };
+  }
+
+  const flowchart = parseMermaidFlowchart(mermaidCode);
+  const labelStyleMap = new Map<string, DiagramNodeStyle>();
+  for (const node of flowchart.nodes) {
+    const className = parsed.classByNodeId.get(node.id);
+    const style = className ? parsed.styleByClass.get(className) : undefined;
+    if (!style || !node.label.trim()) continue;
+    labelStyleMap.set(normalizeLabel(node.label), style);
+  }
+
+  if (labelStyleMap.size === 0) {
+    return { coloredCount: 0, totalShapeCount: 0 };
+  }
+
+  const boardNodes = await listBoardNodes(client, whiteboardId);
+  const shapes = boardNodes.filter(
+    (node) => node.id && node.type && COLORABLE_TYPES.has(node.type),
+  );
+
+  const payloads: UnknownRecord[] = [];
+  const deleteIds: string[] = [];
+
+  for (const shape of shapes) {
+    const currentFill = normalizeHexColor(String(shape.style?.fill_color ?? ''));
+    if (currentFill === '#ffffde') continue;
+    const style = labelStyleMap.get(normalizeLabel(nodeText(shape)));
+    if (!style || !shape.id) continue;
+    if (currentFill === normalizeHexColor(style.fill)) continue;
+    deleteIds.push(shape.id);
+    payloads.push(buildColoredShapePayload(shape, style));
+  }
+
+  if (payloads.length === 0) {
+    return { coloredCount: 0, totalShapeCount: shapes.length };
+  }
+
+  colorLog.info('开始按 classDef 上色画板块', {
     whiteboardId,
     coloredCount: payloads.length,
     totalShapeCount: shapes.length,

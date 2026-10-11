@@ -13,7 +13,8 @@
     "typecheck": "turbo typecheck",
     "check:secrets": "node scripts/check-secrets.mjs",
     "db:generate": "pnpm --filter @feishu-md/db generate",
-    "db:migrate": "pnpm --filter @feishu-md/db migrate"
+    "db:migrate": "pnpm --filter @feishu-md/db migrate",
+    "mcp": "node apps/mcp/start.mjs"
   },
   "devDependencies": {
     "turbo": "^2.5.4",

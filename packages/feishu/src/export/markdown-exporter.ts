@@ -7,7 +7,6 @@ import {
   exportBoardNodesToMermaid,
   listWhiteboardNodes,
 } from './board-export.js';
-import { detectDiagramFenceLang } from '../mermaid-markdown.js';
 
 const exporterLog = createLogger('markdown-export');
 
@@ -69,6 +68,7 @@ const DOCX_BLOCK_TYPE = {
   TODO: 17,
   DIVIDER: 22,
   BOARD: 43,
+  TABLE: 31,
 } as const;
 
 export async function exportDocumentToMarkdown(
@@ -84,7 +84,7 @@ export async function exportDocumentToMarkdown(
   const documentId = await resolveDocumentId(client, parsed);
   const blocks = await fetchAllBlocks(client, documentId);
 
-  // 官方 Markdown 导出不支持画板内容；含画板的文档保留自渲染（画板 → Mermaid）
+  // 官方 Markdown 导出不带画板。含画板时走自渲染，正文、表格与画板按文档顺序写成一篇 Markdown，画板为 mermaid 代码块。
   if (blocks.some((block) => block.block_type === DOCX_BLOCK_TYPE.BOARD)) {
     return renderDocumentMarkdown(client, documentId, blocks, options);
   }
@@ -206,16 +206,28 @@ async function fetchDocumentMetadata(
 }
 
 async function fetchAllBlocks(client: FeishuClient, documentId: string): Promise<DocxBlock[]> {
-  const response = await withRateLimit(
-    () =>
-      client.docx.v1.documentBlock.list({
-        path: { document_id: documentId },
-        params: { page_size: 500 },
-      }),
-    { read: true },
-  );
-  assertFeishuResponse(response, 'List document blocks');
-  return (response.data?.items ?? []) as DocxBlock[];
+  const items: DocxBlock[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const response = await withRateLimit(
+      () =>
+        client.docx.v1.documentBlock.list({
+          path: { document_id: documentId },
+          params: {
+            page_size: 500,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
+    );
+    assertFeishuResponse(response, 'List document blocks');
+    items.push(...((response.data?.items ?? []) as DocxBlock[]));
+    if (!response.data?.has_more) break;
+    pageToken = response.data?.page_token;
+  } while (pageToken);
+
+  return items;
 }
 
 async function renderBlocks(
@@ -282,6 +294,8 @@ async function renderBlock(
       return renderTodoBlock(block, indentLevel);
     case DOCX_BLOCK_TYPE.DIVIDER:
       return '---';
+    case DOCX_BLOCK_TYPE.TABLE:
+      return renderTableBlock(context, block);
     case DOCX_BLOCK_TYPE.BOARD:
       return await renderBoardBlock(context, block);
     default:
@@ -343,6 +357,11 @@ function renderTodoBlock(block: DocxBlock, indentLevel: number): string {
   return `${indent}- [${checked}] ${elementsToMarkdown(elements)}`;
 }
 
+/**
+ * 画板写回 ```mermaid 围栏，和设计文稿里的流程图同一类代码。
+ * 流程图含 subgraph、菱形、`-->|0|` 与 classDef；思维导图仍是 mindmap。
+ * 同步时靠 mermaid 围栏重新识别为画板，不要改成普通代码块语言。
+ */
 async function renderBoardBlock(context: ExportContext, block: DocxBlock): Promise<string> {
   const board = block.board as UnknownRecord | undefined;
   const whiteboardId = String(board?.token ?? '');
@@ -352,8 +371,7 @@ async function renderBoardBlock(context: ExportContext, block: DocxBlock): Promi
     const rawNodes = await listWhiteboardNodes(context.client, whiteboardId);
     const diagramCode = exportBoardNodesToMermaid(rawNodes);
     if (diagramCode) {
-      const fenceLang = detectDiagramFenceLang(diagramCode);
-      return `\`\`\`${fenceLang}\n${diagramCode}\n\`\`\``;
+      return `\`\`\`mermaid\n${diagramCode}\n\`\`\``;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -361,6 +379,40 @@ async function renderBoardBlock(context: ExportContext, block: DocxBlock): Promi
   }
 
   return '<!-- 空画板 -->';
+}
+
+/** 单元格按行优先铺开。合并单元格只取左上角文字，避免导出时把跨格内容重复写进每一格。 */
+async function renderTableBlock(context: ExportContext, block: DocxBlock): Promise<string> {
+  const table = block.table as UnknownRecord | undefined;
+  const property = (table?.property as UnknownRecord | undefined) ?? {};
+  const rowCount = Number(property.row_size ?? 0);
+  const columnCount = Number(property.column_size ?? 0);
+  const cellIds = block.children ?? [];
+  if (rowCount <= 0 || columnCount <= 0 || cellIds.length === 0) {
+    return '';
+  }
+
+  const matrix: string[][] = [];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const row: string[] = [];
+    for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+      const cellId = cellIds[rowIndex * columnCount + columnIndex];
+      const cell = cellId ? context.blockMap.get(cellId) : undefined;
+      const text = cell?.children?.length
+        ? await renderBlocks(context, cell.children, 0)
+        : '';
+      row.push(text.replace(/\|/g, '\\|').replace(/\s*\n+\s*/g, ' ').trim());
+    }
+    matrix.push(row);
+  }
+
+  const header = matrix[0] ?? [];
+  const lines = [
+    `| ${header.join(' | ')} |`,
+    `| ${header.map(() => '---').join(' | ')} |`,
+    ...matrix.slice(1).map((row) => `| ${row.join(' | ')} |`),
+  ];
+  return lines.join('\n');
 }
 
 interface TextElement {

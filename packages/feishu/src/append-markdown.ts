@@ -2,7 +2,7 @@ import type { LegendEntry } from '@feishu-md/shared';
 import { createLogger } from '@feishu-md/shared';
 import type { FeishuClient } from './client.js';
 import { formatFeishuErrorMessage } from './api-error.js';
-import { applyLegendColorsToBoard } from './board-legend-colors.js';
+import { applyLegendColorsToBoard, applyMermaidClassColors } from './board-legend-colors.js';
 import { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import { findDocumentPageBlock, listDocumentBlocks } from './docx-block-service.js';
@@ -142,7 +142,7 @@ export async function appendMermaidBoardToDocument(
   if (diagramType === MERMAID_DIAGRAM_TYPE.flowchart || diagramType === MERMAID_DIAGRAM_TYPE.auto) {
     await new Promise((resolve) => setTimeout(resolve, 800));
     try {
-      await applyMermaidSubgraphSections(client, whiteboardId, prepared);
+      await applyMermaidSubgraphSections(client, whiteboardId, mermaidCode);
     } catch (sectionError) {
       appendLog.warn(
         `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
@@ -151,7 +151,8 @@ export async function appendMermaidBoardToDocument(
     }
   }
 
-  // 上色必须在 subgraph 重建之后，否则分区重建会丢掉 fill_color
+  // 上色必须在 subgraph 重建之后，否则分区重建会丢掉 fill_color。
+  // 图例按前缀上色；源码里的 classDef 最后写，显式 class 覆盖图例。
   let coloredNodeCount = 0;
   if (legend.length > 0) {
     try {
@@ -166,6 +167,23 @@ export async function appendMermaidBoardToDocument(
     } catch (colorError) {
       appendLog.warn(
         `画板块上色失败，保留未着色导入结果: ${formatFeishuErrorMessage(colorError)}`,
+        { documentId, whiteboardId },
+      );
+    }
+  }
+
+  if (diagramType === MERMAID_DIAGRAM_TYPE.flowchart || diagramType === MERMAID_DIAGRAM_TYPE.auto) {
+    try {
+      const classColored = await applyMermaidClassColors(client, whiteboardId, mermaidCode);
+      coloredNodeCount += classColored.coloredCount;
+      appendLog.info('画板 classDef 上色完成', {
+        documentId,
+        whiteboardId,
+        coloredCount: classColored.coloredCount,
+      });
+    } catch (colorError) {
+      appendLog.warn(
+        `画板 classDef 上色失败，保留当前导入结果: ${formatFeishuErrorMessage(colorError)}`,
         { documentId, whiteboardId },
       );
     }

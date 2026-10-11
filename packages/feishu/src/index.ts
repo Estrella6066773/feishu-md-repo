@@ -3,8 +3,24 @@ export { FeishuApiError, formatFeishuErrorMessage, assertFeishuResponse, withRat
 export { runWithFeishuApiRetryPolicy, getFeishuApiRetryPolicy, type FeishuApiRetryPolicy } from './api-retry-policy.js';
 export { formatSyncLog, syncContextFromOptions, type SyncLogContext } from './sync-log.js';
 export { resolveRepositoryFeishuTarget, type ResolvedRepositoryTarget } from './resolve-repository-target.js';
-export { getWikiNodeByToken, type ResolvedWikiNode } from './wiki-service.js';
-export { replaceDocumentMarkdown, appendDocumentMarkdown, type MarkdownImageResolver, type ReplaceDocumentMarkdownOptions } from './docx-content.js';
+export {
+  getWikiNodeByToken,
+  listWikiSpaces,
+  listWikiChildNodes,
+  createWikiDocxNode,
+  updateWikiNodeTitle,
+  type ResolvedWikiNode,
+  type WikiSpaceSummary,
+} from './wiki-service.js';
+export {
+  replaceDocumentMarkdown,
+  appendDocumentMarkdown,
+  createEmptyDocument,
+  updateDocxDocumentTitle,
+  type MarkdownImageResolver,
+  type ReplaceDocumentMarkdownOptions,
+  type CreatedDocxDocument,
+} from './docx-content.js';
 export { toFeishuDocumentUrl, type FeishuDocumentLinkTarget } from './document-url.js';
 export {
   sendTextMessage,
@@ -76,6 +92,7 @@ export {
 } from './append-markdown.js';
 export {
   applyLegendColorsToBoard,
+  applyMermaidClassColors,
   buildLabelStyleMap,
   type ApplyLegendColorsResult,
 } from './board-legend-colors.js';

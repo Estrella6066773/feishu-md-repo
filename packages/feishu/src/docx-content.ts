@@ -1,5 +1,6 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, FeishuApiError, formatFeishuErrorMessage, withRateLimit } from './api-error.js';
+import { applyMermaidClassColors } from './board-legend-colors.js';
 import { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import {
@@ -208,6 +209,19 @@ async function insertMarkdownDocumentAt(
         } catch (sectionError) {
           syncLog.warn(
             `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
+            syncCtx(documentId, options),
+          );
+        }
+        try {
+          const colored = await applyMermaidClassColors(client, whiteboardId, segment.code);
+          syncLog.debug('画板 classDef 上色完成', {
+            documentId,
+            whiteboardId,
+            coloredCount: colored.coloredCount,
+          });
+        } catch (colorError) {
+          syncLog.warn(
+            `画板 classDef 上色失败，保留未着色导入结果: ${formatFeishuErrorMessage(colorError)}`,
             syncCtx(documentId, options),
           );
         }

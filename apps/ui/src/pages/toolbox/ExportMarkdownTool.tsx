@@ -10,9 +10,9 @@ import { IconCopy, IconDownload, IconToolbox } from '@/components/icons';
 import { exportDocumentToMarkdown } from '@/lib/queries';
 
 const FEATURES = [
-  { label: '云文档正文', desc: '标题、段落、列表、代码块' },
-  { label: '画板思维导图', desc: '还原为 Mermaid mindmap' },
-  { label: '单篇导出', desc: '不递归子文档，保留原文链接' },
+  { label: '完整正文', desc: '标题、段落、列表、表格与代码块' },
+  { label: '语义流程图', desc: '画板写回带颜色、菱形和条件分支的 Mermaid' },
+  { label: '单篇文档', desc: '不递归子文档，下载一份 .md' },
 ] as const;
 
 function sanitizeFilename(name: string): string {
@@ -91,7 +91,7 @@ export function ExportMarkdownTool() {
     <>
       <section className="toolbox-intro">
         <p className="toolbox-intro-lead">
-          粘贴一篇已整理好的飞书云文档链接，将正文与内嵌画板思维导图逆向转译为 Markdown。
+          粘贴一篇飞书云文档链接，把整篇正文转成 Markdown。文中的画板会写成 mermaid 代码块，保留分区、菱形条件、分支标签和颜色 class。
         </p>
         <div className="toolbox-feature-row">
           {FEATURES.map((feature) => (
@@ -187,7 +187,7 @@ export function ExportMarkdownTool() {
             <EmptyState
               icon={<IconToolbox className="h-10 w-10" />}
               title="等待导出"
-              description="在左侧粘贴飞书云文档链接并点击导出，Markdown 结果将显示在这里，可复制或下载保存。"
+              description="在左侧粘贴飞书云文档链接并点击导出。结果是一篇 Markdown：正文保留，画板变成可再同步的 Mermaid 代码。"
             />
           ) : null}
         </div>

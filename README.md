@@ -347,3 +347,31 @@ git commit -m "chore: …"
 ```
 
 提交信息格式与 PR 约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+---
+
+## 10. 飞书文档 MCP
+
+`apps/mcp` 是一个本机 MCP 服务。在 Cursor 里启用后，可以直接让助手读取、追加、重写或新建飞书云文档，不必再开管理面板。同步方向仍是 Git → 飞书：若文档已被绑定纳管，MCP 改飞书后的结果可能在下次同步时被仓库覆盖。
+
+凭证与桌面应用共用：读 `%AppData%/Roaming/feishu-md-repo/app.db` 里已经保存的机器人。也可以用环境变量 `FEISHU_APP_ID` 与 `FEISHU_APP_SECRET` 临时指定另一套应用。密钥不会出现在工具返回值里。
+
+在项目根的 `.cursor/mcp.json` 写入：
+
+```json
+{
+  "mcpServers": {
+    "feishu-md": {
+      "command": "node",
+      "args": ["apps/mcp/start.mjs"],
+      "env": {
+        "FEISHU_MD_LOG_LEVEL": "warn"
+      }
+    }
+  }
+}
+```
+
+保存后在 Cursor 的 MCP 设置里刷新。请用 `node` 直接启动 `apps/mcp/start.mjs`，不要改成 `pnpm start`：pnpm 会往标准输出打横幅，连接会被判失败。
+
+工具与权限说明见 [apps/mcp/README.md](./apps/mcp/README.md)。

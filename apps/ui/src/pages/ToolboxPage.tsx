@@ -5,7 +5,7 @@ import { ExportMarkdownTool } from '@/pages/toolbox/ExportMarkdownTool';
 type ToolboxTab = 'export' | 'diagram';
 
 const TABS: Array<{ id: ToolboxTab; label: string; desc: string }> = [
-  { id: 'export', label: '文档导出', desc: '飞书云文档 → Markdown' },
+  { id: 'export', label: '文档导出', desc: '整篇飞书文档 → 含 Mermaid 的 Markdown' },
   { id: 'diagram', label: '图表格式化', desc: 'Mermaid → 着色文档' },
 ];
 

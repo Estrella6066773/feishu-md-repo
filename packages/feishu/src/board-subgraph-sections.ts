@@ -1,5 +1,5 @@
 import type { FeishuClient } from './client.js';
-import { createLogger } from '@feishu-md/shared';
+import { createLogger, parseMermaidClassStyles, type DiagramNodeStyle } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import {
   parseMermaidGraph,
@@ -139,6 +139,23 @@ async function createBoardNodes(
   });
 }
 
+/**
+ * 导入前会把标签里的尖括号、不等号换成飞书能吃的写法。
+ * 分区重建拿原文标签去对画板上的文字，两边都先收成同一种写法，否则对不上、分不出区。
+ */
+function comparableLabel(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/[＜＞]/g, (ch) => (ch === '＜' ? '<' : '>'))
+    .replace(/\u2212/g, '-')
+    .replace(/\u2264/g, '<=')
+    .replace(/\u2265/g, '>=')
+    .replace(/\u00d7/g, 'x')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function nodeText(node: BoardNodeRecord): string {
   const plain = node.text?.text;
   if (typeof plain === 'string' && plain.trim()) {
@@ -176,14 +193,44 @@ function isMermaidSubgraphFrameShape(
     node.type === 'composite_shape' &&
     Boolean(node.id) &&
     !node.parent_id &&
-    subgraphTitles.has(nodeText(node)) &&
+    subgraphTitles.has(comparableLabel(nodeText(node))) &&
     fillColor(node) === '#ffffde'
   );
 }
 
-function shapeTextPayload(shape: BoardNodeRecord): UnknownRecord {
+function shapeTextPayload(shape: BoardNodeRecord, style?: DiagramNodeStyle): UnknownRecord {
   const label = nodeText(shape);
-  return { text: label.slice(0, 1024) || ' ' };
+  const text: UnknownRecord = { text: label.slice(0, 1024) || ' ' };
+  if (style) {
+    text.text_color = style.text;
+    text.text_color_type = 1;
+  }
+  return text;
+}
+
+/** 与 board-legend-colors 的上色字段一致。分区重建和事后上色必须写成同一套，逆向才认得出 class。 */
+function explicitShapeStyle(style: DiagramNodeStyle): UnknownRecord {
+  return {
+    fill_color: style.fill,
+    fill_color_type: 1,
+    fill_opacity: 100,
+    border_width: 'narrow',
+    border_opacity: 100,
+    border_style: 'solid',
+    border_color: style.border ?? style.fill,
+    border_color_type: 1,
+    theme_fill_color_code: -1,
+    theme_border_color_code: -1,
+  };
+}
+
+/**
+ * 画板节点 id 用 Mermaid 节点 id，逆向导出才能写回 `class cQFuel cond`。
+ * 飞书 id 最长 100，且只保证字母数字下划线；不合法时退回 `sg1:2` 这种分区序号。
+ */
+function preferMermaidNodeId(mermaidId: string, fallback: string): string {
+  if (/^[A-Za-z][A-Za-z0-9_]{1,100}$/.test(mermaidId)) return mermaidId;
+  return fallback;
 }
 
 function snapFloor(value: number): number {
@@ -293,8 +340,9 @@ function buildBlockPayload(
   block: BoardNodeRecord,
   zIndex: number,
   sectionOrigin: { x: number; y: number },
+  style?: DiagramNodeStyle,
 ): UnknownRecord {
-  return {
+  const payload: UnknownRecord = {
     id,
     type: 'composite_shape',
     parent_id: sectionId,
@@ -303,7 +351,7 @@ function buildBlockPayload(
     width: block.width,
     height: block.height,
     angle: block.angle ?? 0,
-    text: shapeTextPayload(block),
+    text: shapeTextPayload(block, style),
     composite_shape: {
       type:
         typeof (block.composite_shape as UnknownRecord | undefined)?.type === 'string'
@@ -312,10 +360,17 @@ function buildBlockPayload(
     },
     z_index: zIndex,
   };
+  if (style) payload.style = explicitShapeStyle(style);
+  return payload;
 }
 
-function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord, zIndex: number): UnknownRecord {
-  return {
+function buildTopLevelBlockPayload(
+  id: string,
+  block: BoardNodeRecord,
+  zIndex: number,
+  style?: DiagramNodeStyle,
+): UnknownRecord {
+  const payload: UnknownRecord = {
     id,
     type: 'composite_shape',
     x: block.x,
@@ -323,7 +378,7 @@ function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord, zIndex: n
     width: block.width,
     height: block.height,
     angle: block.angle ?? 0,
-    text: shapeTextPayload(block),
+    text: shapeTextPayload(block, style),
     composite_shape: {
       type:
         typeof (block.composite_shape as UnknownRecord | undefined)?.type === 'string'
@@ -332,6 +387,8 @@ function buildTopLevelBlockPayload(id: string, block: BoardNodeRecord, zIndex: n
     },
     z_index: zIndex,
   };
+  if (style) payload.style = explicitShapeStyle(style);
+  return payload;
 }
 
 function defaultConnectorStyle(): UnknownRecord {
@@ -402,6 +459,7 @@ function buildGeneratedConnectorPayload(
   endPlacement: BlockPlacement,
   sectionId?: string,
   sectionOrigin?: { x: number; y: number },
+  label?: string,
 ): UnknownRecord {
   const position = connectorLayoutPosition(
     {},
@@ -440,6 +498,13 @@ function buildGeneratedConnectorPayload(
     z_index: CONNECTOR_Z_INDEX,
   };
 
+  const caption = label?.trim();
+  if (caption) {
+    (payload.connector as UnknownRecord).captions = {
+      data: [{ text: caption.slice(0, 1024) }],
+    };
+  }
+
   if (sectionId && sectionOrigin) {
     payload.parent_id = sectionId;
     payload.x = toRelativeCoordinate(position.x, sectionOrigin.x);
@@ -472,7 +537,7 @@ function findSubgraphTitleShape(
       node.id &&
       !node.parent_id &&
       !consumedShapeIds.has(node.id) &&
-      nodeText(node) === subgraph.title &&
+      comparableLabel(nodeText(node)) === comparableLabel(subgraph.title) &&
       !memberLabels.has(nodeText(node)),
   );
 }
@@ -486,13 +551,14 @@ function findMemberShapeByLabel(
   label: string,
   consumedShapeIds: Set<string>,
 ): BoardNodeRecord | undefined {
+  const wanted = comparableLabel(label);
   const matches = boardNodes.filter(
     (node) =>
       node.type === 'composite_shape' &&
       node.id &&
       !node.parent_id &&
       !consumedShapeIds.has(node.id) &&
-      nodeText(node) === label.trim(),
+      comparableLabel(nodeText(node)) === wanted,
   );
   if (matches.length === 0) return undefined;
   if (matches.length === 1) return matches[0];
@@ -931,6 +997,7 @@ function buildSectionBatch(
   plans: SectionBuildPlan[],
   nodeLabels: Map<string, string>,
   edges: ParsedMermaidEdge[],
+  styleByNodeId: Map<string, DiagramNodeStyle>,
 ): { batch: UnknownRecord[]; deleteIds: string[] } {
   const placementByShapeId = applyReadableLayout(plans);
   const shapeIdMap = new Map<string, string>();
@@ -941,8 +1008,10 @@ function buildSectionBatch(
   const externalBlockPayloads: UnknownRecord[] = [];
   const deleteIds: string[] = [];
   const titleShapeIds = new Set<string>();
-  const subgraphTitles = new Set(plans.map((plan) => plan.subgraph.title));
-  const nodeLabelSet = new Set([...nodeLabels.values()].map((label) => label.trim()).filter(Boolean));
+  const subgraphTitles = new Set(plans.map((plan) => comparableLabel(plan.subgraph.title)));
+  const nodeLabelSet = new Set(
+    [...nodeLabels.values()].map((label) => comparableLabel(label)).filter(Boolean),
+  );
   const sectionConnectorCounts = new Map<string, number>();
 
   for (const frameShape of boardNodes.filter((node) =>
@@ -963,7 +1032,7 @@ function buildSectionBatch(
       if (!shape.id) return;
       const oldId = String(shape.id);
       const memberId = plan.memberIds[index]!;
-      const newId = `${plan.sectionId.replace(':1', '')}:${index + 2}`;
+      const newId = preferMermaidNodeId(memberId, `${plan.sectionId.replace(':1', '')}:${index + 2}`);
       shapeIdMap.set(oldId, newId);
       mermaidIdMap.set(memberId, newId);
       mermaidSectionMap.set(memberId, plan);
@@ -979,6 +1048,7 @@ function buildSectionBatch(
           shape,
           BLOCK_Z_INDEX_BASE + blockPayloads.length,
           plan.bounds,
+          styleByNodeId.get(memberId),
         ),
       );
     });
@@ -999,7 +1069,7 @@ function buildSectionBatch(
     );
     if (!block?.id) return false;
 
-    const newId = `sgo:${externalBlockPayloads.length + 1}`;
+    const newId = preferMermaidNodeId(nodeId, `sgo:${externalBlockPayloads.length + 1}`);
     block.x = snapCeil(Number(block.x ?? 0));
     block.y = snapCeil(Number(block.y ?? 0));
     const oldId = String(block.id);
@@ -1015,7 +1085,12 @@ function buildSectionBatch(
     mermaidPlacementMap.set(nodeId, placement);
     deleteIds.push(oldId);
     externalBlockPayloads.push(
-      buildTopLevelBlockPayload(newId, block, BLOCK_Z_INDEX_BASE + blockPayloads.length + externalBlockPayloads.length),
+      buildTopLevelBlockPayload(
+        newId,
+        block,
+        BLOCK_Z_INDEX_BASE + blockPayloads.length + externalBlockPayloads.length,
+        styleByNodeId.get(nodeId),
+      ),
     );
     return true;
   };
@@ -1036,7 +1111,7 @@ function buildSectionBatch(
       node.type === 'composite_shape' &&
       node.id &&
       !node.parent_id &&
-      nodeLabelSet.has(nodeText(node))
+      nodeLabelSet.has(comparableLabel(nodeText(node)))
     ) {
       deleteIds.push(String(node.id));
     }
@@ -1072,6 +1147,7 @@ function buildSectionBatch(
         endPlacement,
         sameSection ? startSection.sectionId : undefined,
         sameSection ? startSection.bounds : undefined,
+        edge.label,
       ),
     );
   }
@@ -1135,10 +1211,23 @@ async function convertGroupNodesToSections(
   }
 }
 
+/** 节点 id → classDef 样式。没有 class 行时为空，调用方仍走分区重建。 */
+function styleByMermaidNodeId(mermaidCode: string): Map<string, DiagramNodeStyle> {
+  const parsed = parseMermaidClassStyles(mermaidCode);
+  const styles = new Map<string, DiagramNodeStyle>();
+  for (const [nodeId, className] of parsed.classByNodeId) {
+    const style = parsed.styleByClass.get(className);
+    if (style) styles.set(nodeId, style);
+  }
+  return styles;
+}
+
 /**
  * Mermaid 导入后，将 subgraph 重建为 native section：
  * 分区、块、线按整图同一批创建，线端点统一映射到同批 custom id。
  * 分区内线挂 parent_id 到分区，跨分区线保持全局线。
+ * 块的 id 尽量用 Mermaid 节点 id，颜色写在同一批创建里，避免上色时再删掉已经连上的线。
+ * `-->|0|` 的标签写进 connector.captions，逆向导出靠它还原条件分支。
  */
 export async function applyMermaidSubgraphSections(
   client: FeishuClient,
@@ -1166,7 +1255,13 @@ export async function applyMermaidSubgraphSections(
     return;
   }
 
-  const { batch, deleteIds } = buildSectionBatch(boardNodes, plans, parsed.nodeLabels, parsed.edges);
+  const { batch, deleteIds } = buildSectionBatch(
+    boardNodes,
+    plans,
+    parsed.nodeLabels,
+    parsed.edges,
+    styleByMermaidNodeId(mermaidCode),
+  );
   syncLog.debug('subgraph 分区批次已构建', {
     whiteboardId,
     createNodeCount: batch.length,

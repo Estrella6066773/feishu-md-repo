@@ -1,0 +1,26 @@
+{
+  "name": "@feishu-md/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "stdio MCP server：用本机已保存的飞书凭证读写云文档",
+  "scripts": {
+    "start": "node start.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@feishu-md/feishu": "workspace:*",
+    "@feishu-md/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.20.2",
+    "tsx": "^4.19.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

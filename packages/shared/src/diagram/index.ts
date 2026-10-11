@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './presets.js';
 export * from './classify.js';
 export * from './parse-mermaid.js';
+export * from './class-style.js';
 export * from './style-inject.js';
 export * from './build-document.js';
 export * from './parse-template.js';

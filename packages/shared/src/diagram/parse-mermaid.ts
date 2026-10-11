@@ -1,9 +1,14 @@
 const NODE_DEF_RE =
   /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
 
-const EDGE_ARROW_RE = /(?:--(?:[^>-]+)?-->|-->|-\.(?:[^>-]+)?->|==(?:[^>=]+)?==>)/;
+const NODE_ID_SRC = String.raw`[A-Za-z][A-Za-z0-9_]*`;
+/**
+ * 箭头后面的 `|标签|` 必须单独吃掉。
+ * 若把 `-->` 直接接到下一个节点，`A -->|0| B` 会在 `|` 处匹配失败，条件分支整条丢失。
+ * 分组：1 起点，2/3/4 是 `-- 文字 -->` 一类的行内标签，5 是 `|标签|`，6 终点。
+ */
 const EDGE_SCAN_RE = new RegExp(
-  String.raw`\b([A-Za-z][A-Za-z0-9_]*)\b\s*${EDGE_ARROW_RE.source}\s*\b([A-Za-z][A-Za-z0-9_]*)\b`,
+  String.raw`\b(${NODE_ID_SRC})\b\s*(?:-->|-\.->|==>|--\s+(.+?)\s+-->|-\.\s+(.+?)\s+->|==\s+(.+?)\s+==>)\s*(?:\|([^|\n]*)\|\s*)?\b(${NODE_ID_SRC})\b`,
   'g',
 );
 
@@ -16,6 +21,8 @@ export interface ParsedMermaidNode {
 export interface ParsedMermaidEdge {
   from: string;
   to: string;
+  /** `-->|0|` 或 `-- 文字 -->` 上的标签。条件图用 1 / 0 表示成立与不成立。 */
+  label?: string;
 }
 
 export interface ParsedMermaidSource {
@@ -43,13 +50,14 @@ export function parseEdgesFromLine(line: string): ParsedMermaidEdge[] {
     if (!match || match.index == null) break;
 
     const from = match[1];
-    const to = match[2];
+    const to = match[6];
+    const label = (match[5] ?? match[2] ?? match[3] ?? match[4])?.trim();
     if (from && to) {
-      edges.push({ from, to });
+      edges.push(label ? { from, to, label } : { from, to });
     }
 
-    // 从 `to` 节点起点继续，使其可作为下一条边的 from
-    searchFrom = match.index + (match[1]?.length ?? 1);
+    // 从起点 id 末尾继续，下一次会命中终点，从而接上 `A --> B --> C`
+    searchFrom = match.index + (from?.length ?? 1);
   }
 
   return edges;

@@ -11,6 +11,9 @@ export default defineConfig({
     },
   },
   server: {
+    // Windows 上 Node 把 localhost 解析成 ::1 时，Vite 只监听 IPv6。
+    // 浏览器若走 127.0.0.1:5173 会直接连接失败。固定绑 IPv4，与 core-service 的 127.0.0.1 一致。
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
     proxy: {

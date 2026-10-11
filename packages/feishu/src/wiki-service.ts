@@ -172,6 +172,47 @@ export async function updateWikiNodeTitle(
   assertFeishuResponse(response, 'Update wiki node title');
 }
 
+export interface WikiSpaceSummary {
+  spaceId: string;
+  name?: string;
+  description?: string;
+}
+
+/**
+ * 列出当前应用可见的知识库。
+ * MCP 创建文档、列子节点前需要 space_id；这里把分页收齐，调用方不用自己翻页。
+ * 应用未被加为知识库成员时，对应空间不会出现在结果里。
+ */
+export async function listWikiSpaces(client: FeishuClient): Promise<WikiSpaceSummary[]> {
+  const items: Array<{ space_id?: string; name?: string; description?: string }> = [];
+  let pageToken: string | undefined;
+
+  do {
+    const response = await withRateLimit(
+      () =>
+        client.wiki.v2.space.list({
+          params: {
+            page_size: 50,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+      { read: true },
+    );
+    assertFeishuResponse(response, 'List wiki spaces');
+    items.push(...(response.data?.items ?? []));
+    if (!response.data?.has_more) break;
+    pageToken = response.data?.page_token;
+  } while (pageToken);
+
+  return items
+    .filter((item) => item.space_id)
+    .map((item) => ({
+      spaceId: item.space_id as string,
+      name: item.name,
+      description: item.description,
+    }));
+}
+
 export async function listWikiChildNodes(
   client: FeishuClient,
   spaceId: string,
