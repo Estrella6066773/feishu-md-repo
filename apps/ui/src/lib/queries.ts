@@ -159,10 +159,49 @@ export function fetchCommentImportLogs(bindingId?: string) {
   return apiFetch<CommentImportLogEntry[]>(`/api/comment-import-logs${query}`);
 }
 
-export function exportDocumentToMarkdown(documentUrl: string) {
-  return apiFetch<{ ok: boolean; title?: string; markdown: string }>('/api/export/markdown', {
+export interface LocalBoundFileTarget {
+  bindingId: string;
+  bindingName: string;
+  gitPath: string;
+  absolutePath: string;
+}
+
+export function exportDocumentToMarkdown(
+  documentUrl: string,
+  options?: { writeToBoundPath?: boolean; bindingId?: string },
+) {
+  return apiFetch<{
+    ok: boolean;
+    title?: string;
+    markdown: string;
+    localTargets?: LocalBoundFileTarget[];
+    writtenPath?: string;
+    writeError?: string;
+  }>('/api/export/markdown', {
     method: 'POST',
-    body: JSON.stringify({ documentUrl }),
+    body: JSON.stringify({
+      documentUrl,
+      writeToBoundPath: options?.writeToBoundPath ?? false,
+      bindingId: options?.bindingId,
+    }),
+  });
+}
+
+export function writeExportedMarkdownToBoundFile(
+  documentUrl: string,
+  markdown: string,
+  bindingId: string,
+  gitPath: string,
+) {
+  return apiFetch<{
+    ok: boolean;
+    writtenPath: string;
+    bindingId: string;
+    bindingName: string;
+    gitPath: string;
+  }>('/api/export/write-bound', {
+    method: 'POST',
+    body: JSON.stringify({ documentUrl, markdown, bindingId, gitPath }),
   });
 }
 

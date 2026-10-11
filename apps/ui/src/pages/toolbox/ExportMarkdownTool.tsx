@@ -7,7 +7,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Field } from '@/components/ui/Field';
 import { LoadingBlock } from '@/components/ui/Spinner';
 import { IconCopy, IconDownload, IconToolbox } from '@/components/icons';
-import { exportDocumentToMarkdown } from '@/lib/queries';
+import { exportDocumentToMarkdown, writeExportedMarkdownToBoundFile, type LocalBoundFileTarget } from '@/lib/queries';
 
 const FEATURES = [
   { label: '完整正文', desc: '标题、段落、列表、表格与代码块' },
@@ -31,6 +31,11 @@ export function ExportMarkdownTool() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [writeToBoundPath, setWriteToBoundPath] = useState(false);
+  const [localTargets, setLocalTargets] = useState<LocalBoundFileTarget[]>([]);
+  const [writtenPath, setWrittenPath] = useState('');
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const [writingKey, setWritingKey] = useState<string | null>(null);
 
   const stats = useMemo(() => {
     if (!markdown) return null;
@@ -46,6 +51,9 @@ export function ExportMarkdownTool() {
     setMarkdown('');
     setTitle('');
     setCopied(false);
+    setLocalTargets([]);
+    setWrittenPath('');
+    setWriteError(null);
 
     if (!documentUrl.trim()) {
       setError('请输入飞书云文档链接');
@@ -54,9 +62,14 @@ export function ExportMarkdownTool() {
 
     setIsLoading(true);
     try {
-      const result = await exportDocumentToMarkdown(documentUrl.trim());
+      const result = await exportDocumentToMarkdown(documentUrl.trim(), {
+        writeToBoundPath,
+      });
       setMarkdown(result.markdown);
       setTitle(result.title ?? '');
+      setLocalTargets(result.localTargets ?? []);
+      setWrittenPath(result.writtenPath ?? '');
+      setWriteError(result.writeError ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '导出失败');
     } finally {
@@ -69,6 +82,26 @@ export function ExportMarkdownTool() {
     await navigator.clipboard.writeText(markdown);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleWriteBound(bindingId: string, gitPath: string) {
+    if (!markdown || !documentUrl.trim()) return;
+    const writingKeyForTarget = `${bindingId}:${gitPath}`;
+    setWritingKey(writingKeyForTarget);
+    setWriteError(null);
+    try {
+      const result = await writeExportedMarkdownToBoundFile(
+        documentUrl.trim(),
+        markdown,
+        bindingId,
+        gitPath,
+      );
+      setWrittenPath(result.writtenPath);
+    } catch (err) {
+      setWriteError(err instanceof Error ? err.message : '写入本地文件失败');
+    } finally {
+      setWritingKey(null);
+    }
   }
 
   function handleDownload() {
@@ -120,6 +153,22 @@ export function ExportMarkdownTool() {
                 spellCheck={false}
               />
             </Field>
+
+            <label className="flex items-start gap-2 text-sm text-fg-primary">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={writeToBoundPath}
+                disabled={isLoading}
+                onChange={(event) => setWriteToBoundPath(event.target.checked)}
+              />
+              <span>
+                若这篇文档已绑在本地仓库，直接写入对应文件
+                <span className="mt-1 block text-fg-secondary">
+                  只写已有同步映射里的 Markdown 或 README，不提交 git。多个绑定时会先列出路径再写入。
+                </span>
+              </span>
+            </label>
 
             <div className="help-box toolbox-tips">
               <strong>使用前请确认</strong>
@@ -176,6 +225,36 @@ export function ExportMarkdownTool() {
                   </Button>
                 </div>
               </div>
+
+              {writtenPath ? (
+                <Alert tone="success" title="已写入本地文件">
+                  {writtenPath}
+                </Alert>
+              ) : null}
+              {writeError ? (
+                <Alert tone="warning" title="未写入本地文件">
+                  {writeError}
+                </Alert>
+              ) : null}
+              {localTargets.length > 0 && writtenPath === '' ? (
+                <div className="form-stack">
+                  {localTargets.map((target) => (
+                    <div key={`${target.bindingId}:${target.absolutePath}`} className="help-box">
+                      <div className="text-sm text-fg-primary">{target.bindingName}</div>
+                      <div className="text-sm text-fg-secondary">{target.absolutePath}</div>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={writingKey !== null}
+                        onClick={() => handleWriteBound(target.bindingId, target.gitPath)}
+                      >
+                        {writingKey === `${target.bindingId}:${target.gitPath}` ? '正在写入…' : '写入此文件'}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               <div className="toolbox-code-panel">
                 <pre className="toolbox-code-pre">

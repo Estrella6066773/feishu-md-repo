@@ -43,6 +43,7 @@ import {
 } from '@feishu-md/shared';
 import { installLocalHook, readLocalOriginUrl, removeLocalHook, remoteUrlsEqual } from '@feishu-md/git';
 import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, formatExportError } from '@feishu-md/feishu';
+import { findLocalBoundFiles, writeBoundMarkdownFile } from './export-bound-file.js';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
@@ -461,7 +462,11 @@ export function createApp(options: {
   });
 
   app.post('/api/export/markdown', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { documentUrl?: string };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      documentUrl?: string;
+      writeToBoundPath?: boolean;
+      bindingId?: string;
+    };
     if (!body.documentUrl?.trim()) {
       return c.json({ error: 'documentUrl is required' }, 400);
     }
@@ -473,12 +478,64 @@ export function createApp(options: {
 
     const client = createFeishuClient(credentials);
     try {
-      const result = await exportDocumentToMarkdown(client, {
-        documentUrl: body.documentUrl,
+      const documentUrl = body.documentUrl.trim();
+      const result = await exportDocumentToMarkdown(client, { documentUrl });
+      const localTargets = await findLocalBoundFiles(db, documentUrl);
+      let writtenPath: string | undefined;
+      let writeError: string | undefined;
+      if (body.writeToBoundPath) {
+        try {
+          const written = await writeBoundMarkdownFile(db, documentUrl, result.markdown, body.bindingId);
+          writtenPath = written.absolutePath;
+        } catch (error) {
+          writeError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      return c.json({
+        ok: true,
+        title: result.title,
+        markdown: result.markdown,
+        localTargets,
+        writtenPath,
+        writeError,
       });
-      return c.json({ ok: true, title: result.title, markdown: result.markdown });
     } catch (error) {
       return c.json({ error: formatExportError(error) }, 400);
+    }
+  });
+
+  app.post('/api/export/write-bound', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      documentUrl?: string;
+      markdown?: string;
+      bindingId?: string;
+      gitPath?: string;
+    };
+    if (!body.documentUrl?.trim()) {
+      return c.json({ error: 'documentUrl is required' }, 400);
+    }
+    if (!body.markdown?.trim()) {
+      return c.json({ error: '没有可写入的 Markdown' }, 400);
+    }
+
+    try {
+      const written = await writeBoundMarkdownFile(
+        db,
+        body.documentUrl.trim(),
+        body.markdown,
+        body.bindingId,
+        body.gitPath,
+      );
+      return c.json({
+        ok: true,
+        writtenPath: written.absolutePath,
+        bindingId: written.bindingId,
+        bindingName: written.bindingName,
+        gitPath: written.gitPath,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ error: message }, 400);
     }
   });
 
