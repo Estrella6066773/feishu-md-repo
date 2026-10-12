@@ -1,3 +1,5 @@
+// better-sqlite3 13 起用 Node-API。11.x 直接绑 V8，换到 Node 26 会报 NODE_MODULE_VERSION，源码也编不过。
+// 调用面仍是 new Database + pragma；drizzle-orm/better-sqlite3 继续包在这层上面。
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';

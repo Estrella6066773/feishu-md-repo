@@ -3,7 +3,7 @@ import { createLogger } from '@feishu-md/shared';
 import type { FeishuClient } from './client.js';
 import { formatFeishuErrorMessage } from './api-error.js';
 import { applyLegendColorsToBoard, applyMermaidClassColors } from './board-legend-colors.js';
-import { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
+import { applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import { findDocumentPageBlock, listDocumentBlocks } from './docx-block-service.js';
 import { appendDocumentMarkdown } from './docx-content.js';
@@ -129,17 +129,34 @@ export async function appendMermaidBoardToDocument(
     legendCount: legend.length,
   });
 
-  try {
-    await importBoardMermaidDiagram(client, whiteboardId, prepared);
-  } catch (error) {
-    const detail = formatFeishuErrorMessage(error);
-    throw new Error(
-      `飞书画板导入失败：${detail}。已去掉 Mermaid 样式并清洗标签；颜色会在导入成功后写入画板块。若仍失败，请缩小图表或检查节点文案中的特殊符号。`,
-    );
+  const isFlowchart =
+    diagramType === MERMAID_DIAGRAM_TYPE.flowchart || diagramType === MERMAID_DIAGRAM_TYPE.auto;
+  let drewNatively = false;
+  if (isFlowchart) {
+    try {
+      drewNatively = await renderMermaidFlowchartBoard(client, whiteboardId, mermaidCode);
+    } catch (drawError) {
+      appendLog.warn(
+        `按源码绘制流程图失败，改走 Mermaid 导入: ${formatFeishuErrorMessage(drawError)}`,
+        { documentId, whiteboardId },
+      );
+    }
   }
 
-  // 仅流程图做 subgraph→分区；思维导图跳过，避免破坏 mind_map 节点
-  if (diagramType === MERMAID_DIAGRAM_TYPE.flowchart || diagramType === MERMAID_DIAGRAM_TYPE.auto) {
+  if (!drewNatively) {
+    try {
+      await importBoardMermaidDiagram(client, whiteboardId, prepared);
+    } catch (error) {
+      const detail = formatFeishuErrorMessage(error);
+      throw new Error(
+        `飞书画板导入失败：${detail}。已去掉 Mermaid 样式并清洗标签；颜色会在导入成功后写入画板块。若仍失败，请缩小图表或检查节点文案中的特殊符号。`,
+      );
+    }
+  }
+
+  // 仅流程图做 subgraph→分区；思维导图跳过，避免破坏 mind_map 节点。
+  // 直接绘制已经建好分区，这里只补导入路径。
+  if (isFlowchart && !drewNatively) {
     await new Promise((resolve) => setTimeout(resolve, 800));
     try {
       await applyMermaidSubgraphSections(client, whiteboardId, mermaidCode);

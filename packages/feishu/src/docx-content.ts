@@ -1,7 +1,7 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, FeishuApiError, formatFeishuErrorMessage, withRateLimit } from './api-error.js';
 import { applyMermaidClassColors } from './board-legend-colors.js';
-import { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
+import { applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import {
   clearDocumentBody,
@@ -196,21 +196,38 @@ async function insertMarkdownDocumentAt(
       sourcePath: options?.sourcePath,
     });
     try {
-      await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
-      // 思维导图不做 subgraph 分区后处理，避免破坏 mind_map 节点
-      if (
+      const isFlowchart =
         segment.diagramType === MERMAID_DIAGRAM_TYPE.flowchart ||
-        segment.diagramType === MERMAID_DIAGRAM_TYPE.auto
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 800));
+        segment.diagramType === MERMAID_DIAGRAM_TYPE.auto;
+      // 带分区的流程图按源码直接画。飞书 Mermaid 导入会丢掉颜色、菱形和条件标签，大图还经常整图失败。
+      let drewNatively = false;
+      if (isFlowchart) {
         try {
-          await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
-          syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
-        } catch (sectionError) {
+          drewNatively = await renderMermaidFlowchartBoard(client, whiteboardId, segment.code);
+        } catch (drawError) {
           syncLog.warn(
-            `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
+            `按源码绘制流程图失败，改走 Mermaid 导入: ${formatFeishuErrorMessage(drawError)}`,
             syncCtx(documentId, options),
           );
+        }
+      }
+      if (!drewNatively) {
+        await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
+      }
+      // 思维导图不做 subgraph 分区后处理，避免破坏 mind_map 节点。
+      // 直接绘制已经带上分区、颜色和菱形；导入路径仍要后处理，并补一次上色兜住漏网节点。
+      if (isFlowchart) {
+        if (!drewNatively) {
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          try {
+            await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
+            syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
+          } catch (sectionError) {
+            syncLog.warn(
+              `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
+              syncCtx(documentId, options),
+            );
+          }
         }
         try {
           const colored = await applyMermaidClassColors(client, whiteboardId, segment.code);
@@ -218,6 +235,7 @@ async function insertMarkdownDocumentAt(
             documentId,
             whiteboardId,
             coloredCount: colored.coloredCount,
+            drewNatively,
           });
         } catch (colorError) {
           syncLog.warn(

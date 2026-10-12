@@ -1,4 +1,4 @@
-import { parseEdgesFromLine, type ParsedMermaidEdge } from '@feishu-md/shared';
+import { normalizeMermaidNodeLabel, parseEdgesFromLine, type ParsedMermaidEdge } from '@feishu-md/shared';
 
 export interface ParsedMermaidSubgraph {
   id: string;
@@ -12,6 +12,8 @@ export type { ParsedMermaidEdge };
 
 export interface ParsedMermaidGraph {
   nodeLabels: Map<string, string>;
+  /** `{}` 为菱形条件，其余按矩形。分区重建时用它决定画板形状，不依赖飞书导入结果。 */
+  nodeShapes: Map<string, 'rect' | 'diamond'>;
   subgraphs: ParsedMermaidSubgraph[];
   edges: ParsedMermaidEdge[];
 }
@@ -22,6 +24,7 @@ const NODE_DEF_RE =
 /** 解析 Mermaid 流程图中的 subgraph 与节点标签，供导入后创建画板分区。 */
 export function parseMermaidGraph(code: string): ParsedMermaidGraph {
   const nodeLabels = new Map<string, string>();
+  const nodeShapes = new Map<string, 'rect' | 'diamond'>();
   const subgraphs: ParsedMermaidSubgraph[] = [];
   const edges: ParsedMermaidEdge[] = [];
   const stack: Array<{ id: string; title: string; memberIds: Set<string>; depth: number; parentId?: string }> = [];
@@ -61,9 +64,12 @@ export function parseMermaidGraph(code: string): ParsedMermaidGraph {
     for (const match of line.matchAll(NODE_DEF_RE)) {
       const nodeId = match[1];
       if (!nodeId) continue;
-      const label =
+      const rawLabel =
         match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? match[7] ?? nodeId;
-      nodeLabels.set(nodeId, label.trim());
+      nodeLabels.set(nodeId, normalizeMermaidNodeLabel(rawLabel));
+      if (!nodeShapes.has(nodeId)) {
+        nodeShapes.set(nodeId, match[7] != null ? 'diamond' : 'rect');
+      }
 
       const current = stack[stack.length - 1];
       if (current) {
@@ -76,7 +82,7 @@ export function parseMermaidGraph(code: string): ParsedMermaidGraph {
     }
   }
 
-  return { nodeLabels, subgraphs, edges };
+  return { nodeLabels, nodeShapes, subgraphs, edges };
 }
 
 function parseSubgraphDeclaration(rest: string): { id: string; title: string } {

@@ -7,6 +7,7 @@ import { parseEdgesFromLine, parseMermaidFlowchart } from '../packages/shared/sr
 import { parseMermaidClassStyles as parseClassStyles } from '../packages/shared/src/diagram/class-style.ts';
 import { exportBoardNodesToMermaid } from '../packages/feishu/src/export/board-export.ts';
 import { parseMermaidGraph } from '../packages/feishu/src/mermaid-subgraph.ts';
+import { previewMermaidFlowchartBoard } from '../packages/feishu/src/board-subgraph-sections.ts';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -42,6 +43,19 @@ assert(
 const chain = parseEdgesFromLine('A -->|1| B --> C');
 assert(chain.length === 2 && chain[0]?.label === '1' && !chain[1]?.label, `链式边解析错误: ${JSON.stringify(chain)}`);
 
+const graph = parseMermaidGraph(sample);
+assert(graph.nodeLabels.get('cQFuel') === '燃料是否还够支付这一步', '菱形标签不应带上语法引号');
+assert(graph.nodeShapes.get('cQFuel') === 'diamond', 'cQFuel 应为菱形');
+assert(graph.nodeShapes.get('cSStuck') === 'rect', 'cSStuck 应为矩形');
+
+const preview = previewMermaidFlowchartBoard(sample);
+assert(preview.diamondCount === 1, `样例菱形数量不对: ${JSON.stringify(preview)}`);
+assert(preview.captionCount === 2, `样例条件标签数量不对: ${JSON.stringify(preview)}`);
+assert(preview.styledCount === 3, `样例上色节点数量不对: ${JSON.stringify(preview)}`);
+assert(preview.connectorCount === 2, `样例连线数量不对: ${JSON.stringify(preview)}`);
+assert(preview.shapeCount === 3, `样例形状数量不对: ${JSON.stringify(preview)}`);
+assert(preview.overlapCount === 0, `样例节点重叠: ${preview.overlapCount}`);
+
 const styles = parseClassStyles(sample);
 assert(styles.classByNodeId.get('cQFuel') === 'cond', 'cQFuel 应属于 cond');
 assert(styles.styleByClass.get('cond')?.fill === '#2f7c8a', 'cond 填充色不对');
@@ -49,7 +63,27 @@ assert(styles.styleByClass.get('cond')?.fill === '#2f7c8a', 'cond 填充色不�
 const sourcePath = 'D:/Unity/CoreJack/Docs/系统设计/core-systems.md';
 try {
   const source = readFileSync(sourcePath, 'utf8');
-  const camp = source.split('```mermaid')[3] ?? '';
+  const fences = source.split('```mermaid').slice(1).map((part) => part.split('```')[0] ?? '');
+  assert(fences.length >= 6, `core-systems 流程图数量不对: ${fences.length}`);
+  fences.forEach((fence, index) => {
+    const parsed = parseMermaidGraph(fence);
+    const drawn = previewMermaidFlowchartBoard(fence);
+    const classStyles = parseClassStyles(fence);
+    const diamondExpected = [...parsed.nodeShapes.values()].filter((shape) => shape === 'diamond').length;
+    const captionExpected = parsed.edges.filter((edge) => edge.label).length;
+    let styledExpected = 0;
+    for (const nodeId of parsed.nodeLabels.keys()) {
+      const className = classStyles.classByNodeId.get(nodeId);
+      if (className && classStyles.styleByClass.has(className)) styledExpected += 1;
+    }
+    assert(drawn.shapeCount === parsed.nodeLabels.size, `第 ${index + 1} 图节点没画全: ${JSON.stringify(drawn)} / ${parsed.nodeLabels.size}`);
+    assert(drawn.diamondCount === diamondExpected, `第 ${index + 1} 图菱形不对: ${drawn.diamondCount} != ${diamondExpected}`);
+    assert(drawn.connectorCount === parsed.edges.length, `第 ${index + 1} 图连线不对: ${drawn.connectorCount} != ${parsed.edges.length}`);
+    assert(drawn.captionCount === captionExpected, `第 ${index + 1} 图条件标签不对: ${drawn.captionCount} != ${captionExpected}`);
+    assert(drawn.styledCount === styledExpected, `第 ${index + 1} 图上色不对: ${drawn.styledCount} != ${styledExpected}`);
+    assert(drawn.overlapCount === 0, `第 ${index + 1} 图节点重叠: ${drawn.overlapCount} ${drawn.overlapSample.join(' | ')}`);
+  });
+  const camp = fences[2] ?? '';
   const campGraph = parseMermaidGraph(camp);
   const fuelEdges = campGraph.edges.filter((edge) => edge.from === 'cQFuel');
   assert(

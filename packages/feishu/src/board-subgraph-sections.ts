@@ -51,8 +51,31 @@ const LAYOUT_ASPECT_HEIGHT = 9;
 const BLOCK_GAP_X = 240;
 const BLOCK_GAP_Y = 120;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
+const FEISHU_COORD_LIMIT = 132070;
+const FEISHU_Z_INDEX_LIMIT = 10000;
+
+function clampFeishuCoord(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(FEISHU_COORD_LIMIT, Math.max(-FEISHU_COORD_LIMIT, value));
+}
+
+function clampFeishuSize(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.min(FEISHU_COORD_LIMIT, value);
+}
+
+function clampFeishuZIndex(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(FEISHU_Z_INDEX_LIMIT, Math.max(0, Math.round(value)));
+}
+
+/** 飞书 text_color 只接受 #rrggbb，多一位或少一位会让整批创建返回 2890002。 */
+function feishuHexColor(value: string | undefined): string | undefined {
+  const match = value?.trim().match(/^#([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1]!.toLowerCase()}` : undefined;
+}
 const SECTION_Z_INDEX_BASE = 100;
-const CONNECTOR_Z_INDEX = 1000;
+const CONNECTOR_Z_INDEX = 9000;
 const BLOCK_Z_INDEX_BASE = 2000;
 
 function sleep(ms: number): Promise<void> {
@@ -200,9 +223,16 @@ function isMermaidSubgraphFrameShape(
 
 function shapeTextPayload(shape: BoardNodeRecord, style?: DiagramNodeStyle): UnknownRecord {
   const label = nodeText(shape);
-  const text: UnknownRecord = { text: label.slice(0, 1024) || ' ' };
-  if (style) {
-    text.text_color = style.text;
+  const text: UnknownRecord = {
+    text: label.slice(0, 1024) || ' ',
+    // 不写对齐时飞书把字放在左上角，菱形和长标签会画出格子。
+    horizontal_align: 'center',
+    vertical_align: 'mid',
+    font_size: 14,
+  };
+  const textColor = feishuHexColor(style?.text);
+  if (textColor) {
+    text.text_color = textColor;
     text.text_color_type = 1;
   }
   return text;
@@ -210,14 +240,16 @@ function shapeTextPayload(shape: BoardNodeRecord, style?: DiagramNodeStyle): Unk
 
 /** 与 board-legend-colors 的上色字段一致。分区重建和事后上色必须写成同一套，逆向才认得出 class。 */
 function explicitShapeStyle(style: DiagramNodeStyle): UnknownRecord {
+  const fill = feishuHexColor(style.fill) ?? '#f5f6f7';
+  const border = feishuHexColor(style.border) ?? fill;
   return {
-    fill_color: style.fill,
+    fill_color: fill,
     fill_color_type: 1,
     fill_opacity: 100,
     border_width: 'narrow',
     border_opacity: 100,
     border_style: 'solid',
-    border_color: style.border ?? style.fill,
+    border_color: border,
     border_color_type: 1,
     theme_fill_color_code: -1,
     theme_border_color_code: -1,
@@ -304,12 +336,12 @@ function buildSectionPayload(
   const payload: UnknownRecord = {
     id,
     type: 'section',
-    x: parent ? toRelativeCoordinate(bounds.x, parent.origin.x) : bounds.x,
-    y: parent ? toRelativeCoordinate(bounds.y, parent.origin.y) : bounds.y,
-    width: bounds.width,
-    height: bounds.height,
+    x: clampFeishuCoord(parent ? toRelativeCoordinate(bounds.x, parent.origin.x) : bounds.x),
+    y: clampFeishuCoord(parent ? toRelativeCoordinate(bounds.y, parent.origin.y) : bounds.y),
+    width: clampFeishuSize(bounds.width),
+    height: clampFeishuSize(bounds.height),
     angle: 0,
-    z_index: zIndex,
+    z_index: clampFeishuZIndex(zIndex),
     style: {
       fill_color: '#f5f6f7',
       fill_opacity: 100,
@@ -334,6 +366,15 @@ function sectionZIndex(depth: number): number {
 }
 
 // 这里的“块”对应飞书画板的 composite_shape，是实际承载文本的最小单位。
+function compositeShapeType(block: BoardNodeRecord, shape?: 'rect' | 'diamond'): string {
+  // 条件节点用流程图菱形。普通 diamond 在飞书里更像装饰图形，导出时两种都认成 {}。
+  if (shape === 'diamond') return 'flow_chart_diamond';
+  const current = (block.composite_shape as UnknownRecord | undefined)?.type;
+  if (typeof current === 'string' && current.length > 0 && current !== 'diamond') return current;
+  if (current === 'diamond') return 'flow_chart_diamond';
+  return 'round_rect';
+}
+
 function buildBlockPayload(
   id: string,
   sectionId: string,
@@ -341,24 +382,20 @@ function buildBlockPayload(
   zIndex: number,
   sectionOrigin: { x: number; y: number },
   style?: DiagramNodeStyle,
+  shape?: 'rect' | 'diamond',
 ): UnknownRecord {
   const payload: UnknownRecord = {
     id,
     type: 'composite_shape',
     parent_id: sectionId,
-    x: toRelativeCoordinate(block.x, sectionOrigin.x),
-    y: toRelativeCoordinate(block.y, sectionOrigin.y),
-    width: block.width,
-    height: block.height,
+    x: clampFeishuCoord(toRelativeCoordinate(block.x, sectionOrigin.x)),
+    y: clampFeishuCoord(toRelativeCoordinate(block.y, sectionOrigin.y)),
+    width: clampFeishuSize(Number(block.width ?? 120)),
+    height: clampFeishuSize(Number(block.height ?? 56)),
     angle: block.angle ?? 0,
     text: shapeTextPayload(block, style),
-    composite_shape: {
-      type:
-        typeof (block.composite_shape as UnknownRecord | undefined)?.type === 'string'
-          ? String((block.composite_shape as UnknownRecord).type)
-          : 'round_rect',
-    },
-    z_index: zIndex,
+    composite_shape: { type: compositeShapeType(block, shape) },
+    z_index: clampFeishuZIndex(zIndex),
   };
   if (style) payload.style = explicitShapeStyle(style);
   return payload;
@@ -369,23 +406,19 @@ function buildTopLevelBlockPayload(
   block: BoardNodeRecord,
   zIndex: number,
   style?: DiagramNodeStyle,
+  shape?: 'rect' | 'diamond',
 ): UnknownRecord {
   const payload: UnknownRecord = {
     id,
     type: 'composite_shape',
-    x: block.x,
-    y: block.y,
-    width: block.width,
-    height: block.height,
+    x: clampFeishuCoord(Number(block.x ?? 0)),
+    y: clampFeishuCoord(Number(block.y ?? 0)),
+    width: clampFeishuSize(Number(block.width ?? 120)),
+    height: clampFeishuSize(Number(block.height ?? 56)),
     angle: block.angle ?? 0,
     text: shapeTextPayload(block, style),
-    composite_shape: {
-      type:
-        typeof (block.composite_shape as UnknownRecord | undefined)?.type === 'string'
-          ? String((block.composite_shape as UnknownRecord).type)
-          : 'round_rect',
-    },
-    z_index: zIndex,
+    composite_shape: { type: compositeShapeType(block, shape) },
+    z_index: clampFeishuZIndex(zIndex),
   };
   if (style) payload.style = explicitShapeStyle(style);
   return payload;
@@ -473,10 +506,10 @@ function buildGeneratedConnectorPayload(
   const payload: UnknownRecord = {
     id,
     type: 'connector',
-    x: position.x,
-    y: position.y,
-    width: position.width,
-    height: position.height,
+    x: clampFeishuCoord(position.x),
+    y: clampFeishuCoord(position.y),
+    width: clampFeishuSize(position.width),
+    height: clampFeishuSize(position.height),
     angle: 0,
     style: defaultConnectorStyle(),
     connector: {
@@ -495,20 +528,30 @@ function buildGeneratedConnectorPayload(
       start_object: connectorEndpoint(startObjectId, 'right'),
       end_object: connectorEndpoint(endObjectId, 'left'),
     },
-    z_index: CONNECTOR_Z_INDEX,
+    z_index: clampFeishuZIndex(CONNECTOR_Z_INDEX),
   };
 
   const caption = label?.trim();
   if (caption) {
     (payload.connector as UnknownRecord).captions = {
-      data: [{ text: caption.slice(0, 1024) }],
+      data: [
+        {
+          text: caption.slice(0, 1024),
+          font_size: 14,
+          horizontal_align: 'center',
+          vertical_align: 'mid',
+          text_color: '#1f2329',
+          text_color_type: 1,
+        },
+      ],
     };
+    (payload.connector as UnknownRecord).caption_position = 0.5;
   }
 
   if (sectionId && sectionOrigin) {
     payload.parent_id = sectionId;
-    payload.x = toRelativeCoordinate(position.x, sectionOrigin.x);
-    payload.y = toRelativeCoordinate(position.y, sectionOrigin.y);
+    payload.x = clampFeishuCoord(toRelativeCoordinate(position.x, sectionOrigin.x));
+    payload.y = clampFeishuCoord(toRelativeCoordinate(position.y, sectionOrigin.y));
   }
 
   return payload;
@@ -609,8 +652,10 @@ function planSubgraphSections(
       if (!label?.trim()) continue;
 
       const shape = findMemberShapeByLabel(boardNodes, label, consumedShapeIds);
-      if (shape) {
+      if (shape?.id) {
         memberPairs.push({ memberId, shape });
+        // 同一文案会出现两次（例如两处「已完成」）。不立刻占住这块形状，后面的节点会拿到同一块，坐标叠在一起。
+        consumedShapeIds.add(shape.id);
       }
     }
 
@@ -655,9 +700,13 @@ function computeTreeLayout(
     children.set(memberId, []);
   }
 
-  // 多父节点时只保留首个父节点，避免 DAG 被拉成网状列布局
+  // 多父节点只保留源码里先出现的那条，避免一张网被拉成很多列。
+  // 回边（A→B→A）不能再当成子节点递归，否则 layoutSubtree 会栈溢出。排版时用 visiting 挡住环。
+  const parentOf = new Map<string, string>();
   for (const edge of edges) {
-    if (!memberSet.has(edge.from) || !memberSet.has(edge.to)) continue;
+    if (!memberSet.has(edge.from) || !memberSet.has(edge.to) || edge.from === edge.to) continue;
+    if (parentOf.has(edge.to)) continue;
+    parentOf.set(edge.to, edge.from);
     const kids = children.get(edge.from)!;
     if (!kids.includes(edge.to)) {
       kids.push(edge.to);
@@ -680,10 +729,12 @@ function computeTreeLayout(
 
   const depthByMember = new Map<string, number>();
   const rowByMember = new Map<string, number>();
+  const visiting = new Set<string>();
   let leafCursor = 0;
 
   function layoutSubtree(nodeId: string, depth: number): void {
-    if (rowByMember.has(nodeId)) return;
+    if (rowByMember.has(nodeId) || visiting.has(nodeId)) return;
+    visiting.add(nodeId);
 
     const kids = children.get(nodeId) ?? [];
     depthByMember.set(nodeId, depth);
@@ -691,6 +742,7 @@ function computeTreeLayout(
     if (kids.length === 0) {
       rowByMember.set(nodeId, leafCursor);
       leafCursor += 1;
+      visiting.delete(nodeId);
       return;
     }
 
@@ -698,8 +750,17 @@ function computeTreeLayout(
       layoutSubtree(kid, depth + 1);
     }
 
-    const childRows = kids.map((kid) => rowByMember.get(kid) ?? 0);
-    rowByMember.set(nodeId, (Math.min(...childRows) + Math.max(...childRows)) / 2);
+    const childRows = kids
+      .map((kid) => rowByMember.get(kid))
+      .filter((row): row is number => row !== undefined);
+    rowByMember.set(
+      nodeId,
+      childRows.length > 0 ? (Math.min(...childRows) + Math.max(...childRows)) / 2 : leafCursor,
+    );
+    if (childRows.length === 0) {
+      leafCursor += 1;
+    }
+    visiting.delete(nodeId);
   }
 
   for (const root of forestRoots) {
@@ -722,8 +783,12 @@ function computeTreeLayout(
   };
 }
 
-function computePlanDimensions(plan: SectionBuildPlan): { width: number; height: number } {
-  const { maxDepth, maxRows } = plan.treeLayout;
+function layoutGaps(plan: SectionBuildPlan): {
+  columnGap: number;
+  rowGap: number;
+  maxBlockWidth: number;
+  maxBlockHeight: number;
+} {
   const maxBlockWidth = Math.max(
     120,
     ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
@@ -732,11 +797,21 @@ function computePlanDimensions(plan: SectionBuildPlan): { width: number; height:
     56,
     ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
   );
+  // 固定 240 列距装不下这条文稿里的长中文标签和菱形，相邻节点会叠住。
+  return {
+    maxBlockWidth,
+    maxBlockHeight,
+    columnGap: Math.max(BLOCK_GAP_X, maxBlockWidth + 36),
+    rowGap: Math.max(BLOCK_GAP_Y, maxBlockHeight + 28),
+  };
+}
 
-  const contentWidth =
-    maxDepth <= 0 ? maxBlockWidth : maxDepth * BLOCK_GAP_X + maxBlockWidth;
-  const contentHeight =
-    maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * BLOCK_GAP_Y + maxBlockHeight;
+function computePlanDimensions(plan: SectionBuildPlan): { width: number; height: number } {
+  const { maxDepth, maxRows } = plan.treeLayout;
+  const { columnGap, rowGap, maxBlockWidth, maxBlockHeight } = layoutGaps(plan);
+
+  const contentWidth = maxDepth <= 0 ? maxBlockWidth : maxDepth * columnGap + maxBlockWidth;
+  const contentHeight = maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * rowGap + maxBlockHeight;
 
   return {
     width: snapCeil(Math.max(SECTION_MIN_WIDTH, SECTION_PADDING * 2 + contentWidth)),
@@ -837,22 +912,15 @@ function layoutPlanInternalBlocks(
   placementByShapeId: Map<string, BlockPlacement>,
 ): void {
   const { depthByMember, rowByMember } = plan.treeLayout;
-  const maxBlockWidth = Math.max(
-    120,
-    ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
-  );
-  const maxBlockHeight = Math.max(
-    56,
-    ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
-  );
+  const { columnGap, rowGap, maxBlockWidth, maxBlockHeight } = layoutGaps(plan);
 
   for (const [index, shape] of plan.memberShapes.entries()) {
     if (!shape.id) continue;
     const memberId = plan.memberIds[index]!;
     const depth = depthByMember.get(memberId) ?? 0;
     const row = rowByMember.get(memberId) ?? 0;
-    const x = plan.bounds.x + SECTION_PADDING + depth * BLOCK_GAP_X;
-    const y = plan.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING + row * BLOCK_GAP_Y;
+    const x = plan.bounds.x + SECTION_PADDING + depth * columnGap;
+    const y = plan.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING + row * rowGap;
     shape.x = snapCeil(x);
     shape.y = snapCeil(y);
     placementByShapeId.set(String(shape.id), {
@@ -998,6 +1066,7 @@ function buildSectionBatch(
   nodeLabels: Map<string, string>,
   edges: ParsedMermaidEdge[],
   styleByNodeId: Map<string, DiagramNodeStyle>,
+  nodeShapes?: Map<string, 'rect' | 'diamond'>,
 ): { batch: UnknownRecord[]; deleteIds: string[] } {
   const placementByShapeId = applyReadableLayout(plans);
   const shapeIdMap = new Map<string, string>();
@@ -1049,6 +1118,7 @@ function buildSectionBatch(
           BLOCK_Z_INDEX_BASE + blockPayloads.length,
           plan.bounds,
           styleByNodeId.get(memberId),
+          nodeShapes?.get(memberId),
         ),
       );
     });
@@ -1090,6 +1160,7 @@ function buildSectionBatch(
         block,
         BLOCK_Z_INDEX_BASE + blockPayloads.length + externalBlockPayloads.length,
         styleByNodeId.get(nodeId),
+        nodeShapes?.get(nodeId),
       ),
     );
     return true;
@@ -1223,6 +1294,203 @@ function styleByMermaidNodeId(mermaidCode: string): Map<string, DiagramNodeStyle
 }
 
 /**
+ * 按标签长度估一块形状的宽高。
+ * 中文按一字一格估算，避免飞书把长标签裁成一行看不全。
+ * 菱形要比矩形更宽更高，文字画在菱形中间才放得下。
+ */
+function estimateNodeSize(label: string, diamond: boolean): { width: number; height: number } {
+  const length = Array.from(label).length;
+  const textWidth = Math.min(360, Math.max(96, length * 18));
+  if (diamond) {
+    const width = Math.max(180, textWidth + 56);
+    return { width, height: Math.max(120, Math.round(width * 0.72)) };
+  }
+  const width = Math.max(140, textWidth + 36);
+  const lines = Math.max(1, Math.ceil(length / 14));
+  return { width, height: Math.max(56, 24 + lines * 22) };
+}
+
+/**
+ * 用源码造一批还没落到飞书上的形状，交给和导入后同一套分区布局。
+ * id 以 src: 开头，只在内存里用来对标签；真正创建时会换成 Mermaid 节点 id。
+ */
+function syntheticShapesFromGraph(parsed: ReturnType<typeof parseMermaidGraph>): BoardNodeRecord[] {
+  const shapes: BoardNodeRecord[] = [];
+  for (const [nodeId, label] of parsed.nodeLabels) {
+    const diamond = parsed.nodeShapes.get(nodeId) === 'diamond';
+    const size = estimateNodeSize(label, diamond);
+    shapes.push({
+      id: `src:${nodeId}`,
+      type: 'composite_shape',
+      text: { text: label },
+      x: 0,
+      y: 0,
+      width: size.width,
+      height: size.height,
+      composite_shape: { type: diamond ? 'flow_chart_diamond' : 'round_rect' },
+    });
+  }
+  return shapes;
+}
+
+/**
+ * 带 subgraph 的流程图直接画到空画板上，不经过飞书 Mermaid 导入。
+ *
+ * 联动：docx-content 与 append-markdown 在导入前调用。返回 true 表示画板已写好，
+ * 调用方不要再 importBoardMermaidDiagram，否则会把这块画板清掉。
+ * 颜色、菱形、`-->|0|` 标签都写在这一次 create 里，和 applyMermaidSubgraphSections 共用 buildSectionBatch。
+ *
+ * 注意：没有 subgraph 时返回 false，思维导图和普通小流程图仍走飞书导入。
+ * 飞书要求分区、形状、连线在同一次 create 里才能认 parent_id，所以整图一次提交，不要拆批。
+ * 节点很多时这次请求会比较大；失败应抛出，由调用方退回 Mermaid 导入。
+ */
+export async function renderMermaidFlowchartBoard(
+  client: FeishuClient,
+  whiteboardId: string,
+  mermaidCode: string,
+): Promise<boolean> {
+  const parsed = parseMermaidGraph(mermaidCode);
+  if (parsed.subgraphs.length === 0 || parsed.nodeLabels.size === 0) return false;
+
+  const synthetic = syntheticShapesFromGraph(parsed);
+  const plans = planSubgraphSections(synthetic, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
+  if (plans.length === 0) return false;
+
+  const { batch } = buildSectionBatch(
+    synthetic,
+    plans,
+    parsed.nodeLabels,
+    parsed.edges,
+    styleByMermaidNodeId(mermaidCode),
+    parsed.nodeShapes,
+  );
+  if (batch.length === 0) return false;
+
+  const existing = await listBoardNodes(client, whiteboardId);
+  const existingIds = existing.map((node) => node.id).filter((id): id is string => Boolean(id));
+  await batchDeleteNodes(client, whiteboardId, existingIds);
+  await createBoardNodes(client, whiteboardId, batch);
+  syncLog.debug('按源码直接绘制流程图', {
+    whiteboardId,
+    nodeCount: parsed.nodeLabels.size,
+    edgeCount: parsed.edges.length,
+    createNodeCount: batch.length,
+  });
+  return true;
+}
+
+/**
+ * 不请求飞书，把「直接绘制」会提交的节点统计出来。
+ * scripts/check-flowchart-roundtrip.ts 用它核对菱形、条件标签和颜色有没有进同一批 payload。
+ * 和 renderMermaidFlowchartBoard 共用 syntheticShapesFromGraph 与 buildSectionBatch，改布局时两边一起变。
+ */
+export function previewMermaidFlowchartBoard(mermaidCode: string): {
+  ok: boolean;
+  sectionCount: number;
+  shapeCount: number;
+  diamondCount: number;
+  connectorCount: number;
+  captionCount: number;
+  styledCount: number;
+  overlapCount: number;
+  overlapSample: string[];
+} {
+  const empty = {
+    ok: false,
+    sectionCount: 0,
+    shapeCount: 0,
+    diamondCount: 0,
+    connectorCount: 0,
+    captionCount: 0,
+    styledCount: 0,
+    overlapCount: 0,
+    overlapSample: [] as string[],
+  };
+  const parsed = parseMermaidGraph(mermaidCode);
+  if (parsed.subgraphs.length === 0 || parsed.nodeLabels.size === 0) return empty;
+
+  const synthetic = syntheticShapesFromGraph(parsed);
+  const plans = planSubgraphSections(synthetic, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
+  if (plans.length === 0) return empty;
+
+  const { batch } = buildSectionBatch(
+    synthetic,
+    plans,
+    parsed.nodeLabels,
+    parsed.edges,
+    styleByMermaidNodeId(mermaidCode),
+    parsed.nodeShapes,
+  );
+
+  let sectionCount = 0;
+  let shapeCount = 0;
+  let diamondCount = 0;
+  let connectorCount = 0;
+  let captionCount = 0;
+  let styledCount = 0;
+  const shapesByParent = new Map<string, Array<{ id: string; x: number; y: number; width: number; height: number }>>();
+  for (const node of batch) {
+    if (node.type === 'section') sectionCount += 1;
+    if (node.type === 'composite_shape') {
+      shapeCount += 1;
+      const shapeType = (node.composite_shape as UnknownRecord | undefined)?.type;
+      if (shapeType === 'diamond' || shapeType === 'flow_chart_diamond') diamondCount += 1;
+      if (node.style) styledCount += 1;
+      const parentKey = typeof node.parent_id === 'string' ? node.parent_id : '';
+      const box = {
+        id: String(node.id ?? ''),
+        x: Number(node.x ?? 0),
+        y: Number(node.y ?? 0),
+        width: Number(node.width ?? 0),
+        height: Number(node.height ?? 0),
+      };
+      const group = shapesByParent.get(parentKey) ?? [];
+      group.push(box);
+      shapesByParent.set(parentKey, group);
+    }
+    if (node.type === 'connector') {
+      connectorCount += 1;
+      const captions = ((node.connector as UnknownRecord | undefined)?.captions as UnknownRecord | undefined)
+        ?.data;
+      if (Array.isArray(captions) && captions.length > 0) captionCount += 1;
+    }
+  }
+
+  let overlapCount = 0;
+  const overlapSample: string[] = [];
+  for (const group of shapesByParent.values()) {
+    for (let left = 0; left < group.length; left += 1) {
+      for (let right = left + 1; right < group.length; right += 1) {
+        const a = group[left]!;
+        const b = group[right]!;
+        const separated =
+          a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+        if (!separated) {
+          overlapCount += 1;
+          if (overlapSample.length < 6) {
+            overlapSample.push(
+              `${a.id}@${a.x},${a.y} ${a.width}x${a.height} ~ ${b.id}@${b.x},${b.y} ${b.width}x${b.height}`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    ok: shapeCount > 0 && connectorCount > 0 && overlapCount === 0,
+    sectionCount,
+    shapeCount,
+    diamondCount,
+    connectorCount,
+    captionCount,
+    styledCount,
+    overlapCount,
+    overlapSample,
+  };
+}
+
+/**
  * Mermaid 导入后，将 subgraph 重建为 native section：
  * 分区、块、线按整图同一批创建，线端点统一映射到同批 custom id。
  * 分区内线挂 parent_id 到分区，跨分区线保持全局线。
@@ -1261,6 +1529,7 @@ export async function applyMermaidSubgraphSections(
     parsed.nodeLabels,
     parsed.edges,
     styleByMermaidNodeId(mermaidCode),
+    parsed.nodeShapes,
   );
   syncLog.debug('subgraph 分区批次已构建', {
     whiteboardId,

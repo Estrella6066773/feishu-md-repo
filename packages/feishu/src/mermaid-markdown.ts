@@ -132,8 +132,9 @@ export function stripMermaidClassStyles(code: string): string {
 }
 
 /**
- * 飞书 createPlantuml（Mermaid）导入前清洗。
- * - 去掉 classDef（飞书不支持；同步时由 applyMermaidClassColors 按原文 class 写回颜色）
+ * 飞书 createPlantuml（Mermaid）导入前清洗。只在直接绘制失败时才走到这里。
+ * 带 subgraph 的流程图由 renderMermaidFlowchartBoard 按原文画，不经过这次清洗。
+ * - 去掉 classDef（飞书不支持；导入路径再由 applyMermaidClassColors 按原文 class 写回颜色）
  * - flowchart → graph（飞书对 graph 识别更稳）
  * - 标签内尖括号 / 非常用数学符号，避免 2891001
  */

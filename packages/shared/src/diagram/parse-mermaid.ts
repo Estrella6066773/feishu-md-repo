@@ -33,7 +33,14 @@ export interface ParsedMermaidSource {
 }
 
 function unescapeLabel(raw: string): string {
-  return raw.replace(/<br\s*\/?>/gi, '\n').trim();
+  return normalizeMermaidNodeLabel(raw);
+}
+
+/** `{"标签"}` 的捕获组会带上引号。引号是形状语法，不能留在文案里，否则对不上画板上的文字。 */
+export function normalizeMermaidNodeLabel(raw: string): string {
+  const trimmed = raw.replace(/<br\s*\/?>/gi, '\n').trim();
+  const quoted = trimmed.match(/^"([\s\S]*)"$/);
+  return (quoted?.[1] ?? trimmed).trim();
 }
 
 /**

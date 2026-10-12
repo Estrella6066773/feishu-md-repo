@@ -181,7 +181,7 @@ flowchart LR
 
 ### 5.1 环境要求
 
-- Node.js 20+
+- Node.js 22+（含 Node 26。数据库用 better-sqlite3 13，走 Node-API，不再绑死某一版 Node 的 V8）
 - pnpm 9+（见下方安装说明）
 - Git
 - Rust（仅打包桌面应用时需要）

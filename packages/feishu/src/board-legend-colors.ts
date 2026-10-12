@@ -306,15 +306,19 @@ export async function applyMermaidClassColors(
   }
 
   const flowchart = parseMermaidFlowchart(mermaidCode);
+  const styleByNodeId = new Map<string, DiagramNodeStyle>();
+  for (const [nodeId, className] of parsed.classByNodeId) {
+    const style = parsed.styleByClass.get(className);
+    if (style) styleByNodeId.set(nodeId, style);
+  }
   const labelStyleMap = new Map<string, DiagramNodeStyle>();
   for (const node of flowchart.nodes) {
-    const className = parsed.classByNodeId.get(node.id);
-    const style = className ? parsed.styleByClass.get(className) : undefined;
+    const style = styleByNodeId.get(node.id);
     if (!style || !node.label.trim()) continue;
     labelStyleMap.set(normalizeLabel(node.label), style);
   }
 
-  if (labelStyleMap.size === 0) {
+  if (labelStyleMap.size === 0 && styleByNodeId.size === 0) {
     return { coloredCount: 0, totalShapeCount: 0 };
   }
 
@@ -329,7 +333,10 @@ export async function applyMermaidClassColors(
   for (const shape of shapes) {
     const currentFill = normalizeHexColor(String(shape.style?.fill_color ?? ''));
     if (currentFill === '#ffffde') continue;
-    const style = labelStyleMap.get(normalizeLabel(nodeText(shape)));
+    // 画板节点 id 就是 Mermaid id 时按 id 取色。同文案可以属于不同 class（「设施」既是 obj 又是 state），按标签会涂错并删掉连线。
+    const style =
+      (shape.id ? styleByNodeId.get(String(shape.id)) : undefined) ??
+      labelStyleMap.get(normalizeLabel(nodeText(shape)));
     if (!style || !shape.id) continue;
     if (currentFill === normalizeHexColor(style.fill)) continue;
     deleteIds.push(shape.id);

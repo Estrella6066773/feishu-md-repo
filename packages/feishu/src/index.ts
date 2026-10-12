@@ -69,7 +69,7 @@ export {
   type DocumentIntegrityResult,
 } from './document-integrity.js';
 export { parseMermaidGraph, type ParsedMermaidGraph, type ParsedMermaidSubgraph } from './mermaid-subgraph.js';
-export { applyMermaidSubgraphSections } from './board-subgraph-sections.js';
+export { applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
 export {
   exportBoardNodesToMermaid,
   extractBoardNodeLabel,
