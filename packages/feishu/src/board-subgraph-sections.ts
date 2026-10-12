@@ -48,8 +48,12 @@ const SECTION_GAP_X = 180;
 const SECTION_GAP_Y = 120;
 const LAYOUT_ASPECT_WIDTH = 16;
 const LAYOUT_ASPECT_HEIGHT = 9;
-const BLOCK_GAP_X = 240;
-const BLOCK_GAP_Y = 120;
+/**
+ * 列与列之间只留折线通道。同级平行项的缝是节点之间的空隙，不是「每项占一整行」。
+ * 纵向缝取原先的一半：父节点贴着已经压紧的子节点簇中线，下一棵兄弟子树紧挨着上一棵的底边。
+ */
+const LANE_GAP_X = 40;
+const LANE_GAP_Y = 24;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
 const FEISHU_COORD_LIMIT = 132070;
 const FEISHU_Z_INDEX_LIMIT = 10000;
@@ -435,98 +439,126 @@ function defaultConnectorStyle(): UnknownRecord {
   };
 }
 
-function connectorEndpoint(
-  id: string | undefined,
-  snapTo: 'left' | 'right' | 'top' | 'bottom',
-): UnknownRecord | undefined {
-  if (!id) return undefined;
-  const position =
-    snapTo === 'left'
-      ? { x: 0, y: 0.5 }
-      : snapTo === 'right'
-        ? { x: 1, y: 0.5 }
-        : snapTo === 'top'
-          ? { x: 0.5, y: 0 }
-          : { x: 0.5, y: 1 };
-  return { id, snap_to: snapTo, position };
-}
+type SnapSide = 'left' | 'right' | 'top' | 'bottom';
 
-function connectorAnchorPosition(placement: BlockPlacement | undefined): { x: number; y: number } {
-  if (!placement) return { x: 0, y: 0 };
+/**
+ * 按两块形状的中心决定从哪条边出发、落到哪条边。
+ * 左右优先：流程图是从左往右排的，父到子应出右边、进左边；回边则相反。
+ * 上下只在目标明显在正上或正下、横向几乎没有错开时使用。
+ * 沿边的比例朝向对方中心，避免所有线都钉在边的正中。
+ */
+function connectorFacingSides(
+  start: BlockPlacement,
+  end: BlockPlacement,
+): { from: SnapSide; to: SnapSide; fromAlong: number; toAlong: number } {
+  const startCx = start.x + start.width / 2;
+  const startCy = start.y + start.height / 2;
+  const endCx = end.x + end.width / 2;
+  const endCy = end.y + end.height / 2;
+  const dx = endCx - startCx;
+  const dy = endCy - startCy;
+  const from: SnapSide = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'right' : 'left') : dy >= 0 ? 'bottom' : 'top';
+  const to: SnapSide = from === 'right' ? 'left' : from === 'left' ? 'right' : from === 'bottom' ? 'top' : 'bottom';
   return {
-    x: placement.x + placement.width / 2,
-    y: placement.y + placement.height / 2,
+    from,
+    to,
+    fromAlong: alongFacingSide(start, end, from),
+    toAlong: alongFacingSide(end, start, to),
   };
 }
 
-function connectorLayoutPosition(
-  conn: BoardNodeRecord,
-  placements: Map<string, BlockPlacement> | undefined,
-  startPlacement: BlockPlacement | undefined,
-  endPlacement: BlockPlacement | undefined,
-): { x: number; y: number; width: number; height: number } {
-  if (!placements || !startPlacement || !endPlacement) {
-    return {
-      x: conn.x ?? 0,
-      y: conn.y ?? 0,
-      width: conn.width ?? 0,
-      height: conn.height ?? 0,
-    };
+function alongFacingSide(box: BlockPlacement, other: BlockPlacement, side: SnapSide): number {
+  const span = side === 'left' || side === 'right' ? box.height : box.width;
+  const origin = side === 'left' || side === 'right' ? box.y : box.x;
+  const otherCenter =
+    side === 'left' || side === 'right' ? other.y + other.height / 2 : other.x + other.width / 2;
+  if (span <= 0) return 0.5;
+  return (otherCenter - origin) / span;
+}
+
+function clampAttachment(along: number): number {
+  if (!Number.isFinite(along)) return 0.5;
+  return Math.min(0.85, Math.max(0.15, along));
+}
+
+function sidePosition(side: SnapSide, along: number): { x: number; y: number } {
+  const t = clampAttachment(along);
+  if (side === 'left') return { x: 0, y: t };
+  if (side === 'right') return { x: 1, y: t };
+  if (side === 'top') return { x: t, y: 0 };
+  return { x: t, y: 1 };
+}
+
+/**
+ * 同一条边上有多根线时，按朝向顺序均匀错开，避免叠在同一个点上。
+ * 只有一根线时保留朝向对方中心的位置。
+ */
+function spreadSharedAttachments(alongByKey: Map<string, number[]>): Map<string, number[]> {
+  const spread = new Map<string, number[]>();
+  for (const [key, values] of alongByKey) {
+    if (values.length <= 1) {
+      spread.set(key, values.map((value) => clampAttachment(value)));
+      continue;
+    }
+    const order = values
+      .map((value, index) => ({ value, index }))
+      .sort((left, right) => left.value - right.value || left.index - right.index);
+    const placed = new Array<number>(values.length);
+    order.forEach((item, rank) => {
+      placed[item.index] = (rank + 1) / (values.length + 1);
+    });
+    spread.set(key, placed);
   }
-
-  const startAnchor = connectorAnchorPosition(startPlacement);
-  const endAnchor = connectorAnchorPosition(endPlacement);
-  return {
-    x: Math.min(startAnchor.x, endAnchor.x),
-    y: Math.min(startAnchor.y, endAnchor.y),
-    width: Math.abs(endAnchor.x - startAnchor.x),
-    height: Math.abs(endAnchor.y - startAnchor.y),
-  };
+  return spread;
 }
 
+/**
+ * start 与 start_object 都写：创建接口认 start，部分读回仍走已废弃的 start_object。
+ * 两边必须是各自的对象，不能共用一份，否则改一端的边会把另一端带歪。
+ */
+function connectorAttachment(id: string, side: SnapSide, along: number): UnknownRecord {
+  return { id, snap_to: side, position: sidePosition(side, along) };
+}
+
+/**
+ * 折线不写拐点。specified_coordinate 为 false 时，飞书只负责折线怎么拐，不改这里写死的两端。
+ * 同分区连线仍挂 parent_id。飞书只在同一次 create 里认自定义父子，不挂的话线会脱离分区。
+ * x/y/宽高保持 0，占位给创建接口；包围盒由飞书按两端重算，端点本身不靠这个框。
+ */
 function buildGeneratedConnectorPayload(
   id: string,
   startObjectId: string,
   endObjectId: string,
-  startPlacement: BlockPlacement,
-  endPlacement: BlockPlacement,
+  startSide: SnapSide,
+  startAlong: number,
+  endSide: SnapSide,
+  endAlong: number,
   sectionId?: string,
-  sectionOrigin?: { x: number; y: number },
   label?: string,
 ): UnknownRecord {
-  const position = connectorLayoutPosition(
-    {},
-    new Map<string, BlockPlacement>([
-      ['start', startPlacement],
-      ['end', endPlacement],
-    ]),
-    startPlacement,
-    endPlacement,
-  );
   const payload: UnknownRecord = {
     id,
     type: 'connector',
-    x: clampFeishuCoord(position.x),
-    y: clampFeishuCoord(position.y),
-    width: clampFeishuSize(position.width),
-    height: clampFeishuSize(position.height),
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
     angle: 0,
     style: defaultConnectorStyle(),
     connector: {
-      shape: 'straight',
-      specified_coordinate: true,
+      shape: 'polyline',
+      specified_coordinate: false,
       caption_auto_direction: false,
-      turning_points: [],
       start: {
         arrow_style: 'none',
-        attached_object: connectorEndpoint(startObjectId, 'right'),
+        attached_object: connectorAttachment(startObjectId, startSide, startAlong),
       },
       end: {
         arrow_style: 'triangle_arrow',
-        attached_object: connectorEndpoint(endObjectId, 'left'),
+        attached_object: connectorAttachment(endObjectId, endSide, endAlong),
       },
-      start_object: connectorEndpoint(startObjectId, 'right'),
-      end_object: connectorEndpoint(endObjectId, 'left'),
+      start_object: connectorAttachment(startObjectId, startSide, startAlong),
+      end_object: connectorAttachment(endObjectId, endSide, endAlong),
     },
     z_index: clampFeishuZIndex(CONNECTOR_Z_INDEX),
   };
@@ -548,10 +580,8 @@ function buildGeneratedConnectorPayload(
     (payload.connector as UnknownRecord).caption_position = 0.5;
   }
 
-  if (sectionId && sectionOrigin) {
+  if (sectionId) {
     payload.parent_id = sectionId;
-    payload.x = clampFeishuCoord(toRelativeCoordinate(position.x, sectionOrigin.x));
-    payload.y = clampFeishuCoord(toRelativeCoordinate(position.y, sectionOrigin.y));
   }
 
   return payload;
@@ -613,9 +643,10 @@ function findMemberShapeByLabel(
 
 interface TreeLayoutResult {
   depthByMember: Map<string, number>;
-  rowByMember: Map<string, number>;
-  maxDepth: number;
-  maxRows: number;
+  /** 相对分区内容区左上角的偏移，不含分区内边距和标题条。 */
+  offsetByMember: Map<string, { x: number; y: number }>;
+  contentWidth: number;
+  contentHeight: number;
 }
 
 interface SectionBuildPlan {
@@ -676,7 +707,7 @@ function planSubgraphSections(
       memberIds,
       memberShapes,
       titleShape,
-      treeLayout: computeTreeLayout(memberIds, edges),
+      treeLayout: computeTreeLayout(memberIds, memberShapes, edges),
     });
 
     for (const shape of memberShapes) {
@@ -687,132 +718,159 @@ function planSubgraphSections(
   return plans;
 }
 
-/** 按父子关系做树形排版：深度为列、兄弟按源码声明顺序自上而下，减少连线交叉 */
+/**
+ * 按节点真实宽高从左往右排，同级节点压成一列。
+ * 节约空白的方式和紧凑稿一致：平行项只占自己的高度再加一条窄缝，不按全图最高的块空出一整行；
+ * 父节点放在这簇子节点的垂直中线，下一棵兄弟子树从上一棵的底边接着排，中间不再垫空行。
+ * 列左对齐，列距只留折线通道。某一列里有一块很宽的节点时，窄节点仍贴着该列左边，避免为了居中再拉开箭头。
+ * 多父节点只保留源码里先出现的那条，避免一张网被拉成很多列。
+ * 回边不占新的格子：深度已经定过的节点不再递归，否则战役图里的环会把调用栈撑爆。这些边仍然会画成连线。
+ */
 function computeTreeLayout(
   memberIds: string[],
+  memberShapes: BoardNodeRecord[],
   edges: Array<{ from: string; to: string }>,
 ): TreeLayoutResult {
   const memberSet = new Set(memberIds);
   const children = new Map<string, string[]>();
   const orderIndex = new Map(memberIds.map((id, index) => [id, index]));
+  const sizeByMember = new Map<string, { width: number; height: number }>();
 
-  for (const memberId of memberIds) {
+  for (const [index, memberId] of memberIds.entries()) {
     children.set(memberId, []);
+    const shape = memberShapes[index];
+    sizeByMember.set(memberId, {
+      width: Math.max(1, Number(shape?.width ?? 140)),
+      height: Math.max(1, Number(shape?.height ?? 56)),
+    });
   }
 
-  // 多父节点只保留源码里先出现的那条，避免一张网被拉成很多列。
-  // 回边（A→B→A）不能再当成子节点递归，否则 layoutSubtree 会栈溢出。排版时用 visiting 挡住环。
   const parentOf = new Map<string, string>();
   for (const edge of edges) {
     if (!memberSet.has(edge.from) || !memberSet.has(edge.to) || edge.from === edge.to) continue;
     if (parentOf.has(edge.to)) continue;
     parentOf.set(edge.to, edge.from);
     const kids = children.get(edge.from)!;
-    if (!kids.includes(edge.to)) {
-      kids.push(edge.to);
-    }
+    if (!kids.includes(edge.to)) kids.push(edge.to);
   }
 
   for (const kids of children.values()) {
     kids.sort((left, right) => (orderIndex.get(left) ?? 0) - (orderIndex.get(right) ?? 0));
   }
 
-  const hasParent = new Set<string>();
-  for (const kids of children.values()) {
-    for (const kid of kids) {
-      hasParent.add(kid);
-    }
-  }
-
-  const roots = memberIds.filter((id) => !hasParent.has(id));
-  const forestRoots = roots.length > 0 ? roots : [memberIds[0]!];
-
   const depthByMember = new Map<string, number>();
-  const rowByMember = new Map<string, number>();
   const visiting = new Set<string>();
-  let leafCursor = 0;
 
-  function layoutSubtree(nodeId: string, depth: number): void {
-    if (rowByMember.has(nodeId) || visiting.has(nodeId)) return;
+  function assignDepth(nodeId: string, depth: number): void {
+    if (depthByMember.has(nodeId) || visiting.has(nodeId)) return;
     visiting.add(nodeId);
-
-    const kids = children.get(nodeId) ?? [];
     depthByMember.set(nodeId, depth);
-
-    if (kids.length === 0) {
-      rowByMember.set(nodeId, leafCursor);
-      leafCursor += 1;
-      visiting.delete(nodeId);
-      return;
-    }
-
-    for (const kid of kids) {
-      layoutSubtree(kid, depth + 1);
-    }
-
-    const childRows = kids
-      .map((kid) => rowByMember.get(kid))
-      .filter((row): row is number => row !== undefined);
-    rowByMember.set(
-      nodeId,
-      childRows.length > 0 ? (Math.min(...childRows) + Math.max(...childRows)) / 2 : leafCursor,
-    );
-    if (childRows.length === 0) {
-      leafCursor += 1;
+    for (const kid of children.get(nodeId) ?? []) {
+      assignDepth(kid, depth + 1);
     }
     visiting.delete(nodeId);
   }
 
-  for (const root of forestRoots) {
-    layoutSubtree(root, 0);
-  }
-
+  const declaredRoots = memberIds.filter((id) => !parentOf.has(id));
+  const depthRoots = declaredRoots.length > 0 ? declaredRoots : memberIds.slice(0, 1);
+  for (const root of depthRoots) assignDepth(root, 0);
   for (const memberId of memberIds) {
-    if (!rowByMember.has(memberId)) {
-      depthByMember.set(memberId, 0);
-      rowByMember.set(memberId, leafCursor);
-      leafCursor += 1;
-    }
+    if (!depthByMember.has(memberId)) assignDepth(memberId, 0);
   }
 
-  return {
-    depthByMember,
-    rowByMember,
-    maxDepth: Math.max(0, ...depthByMember.values()),
-    maxRows: Math.max(1, leafCursor),
-  };
-}
+  function forwardChildren(nodeId: string): string[] {
+    const depth = depthByMember.get(nodeId) ?? 0;
+    return (children.get(nodeId) ?? []).filter((kid) => depthByMember.get(kid) === depth + 1);
+  }
 
-function layoutGaps(plan: SectionBuildPlan): {
-  columnGap: number;
-  rowGap: number;
-  maxBlockWidth: number;
-  maxBlockHeight: number;
-} {
-  const maxBlockWidth = Math.max(
-    120,
-    ...plan.memberShapes.map((shape) => Number(shape.width ?? 120)),
-  );
-  const maxBlockHeight = Math.max(
-    56,
-    ...plan.memberShapes.map((shape) => Number(shape.height ?? 56)),
-  );
-  // 固定 240 列距装不下这条文稿里的长中文标签和菱形，相邻节点会叠住。
-  return {
-    maxBlockWidth,
-    maxBlockHeight,
-    columnGap: Math.max(BLOCK_GAP_X, maxBlockWidth + 36),
-    rowGap: Math.max(BLOCK_GAP_Y, maxBlockHeight + 28),
-  };
+  const columnWidth = new Map<number, number>();
+  for (const [memberId, depth] of depthByMember) {
+    const size = sizeByMember.get(memberId)!;
+    columnWidth.set(depth, Math.max(columnWidth.get(depth) ?? 0, size.width));
+  }
+  const columnX = new Map<number, number>();
+  const depths = [...columnWidth.keys()].sort((left, right) => left - right);
+  let cursorX = 0;
+  for (const depth of depths) {
+    columnX.set(depth, cursorX);
+    cursorX += (columnWidth.get(depth) ?? 0) + LANE_GAP_X;
+  }
+
+  const heightMemo = new Map<string, number>();
+  function subtreeHeight(nodeId: string): number {
+    const cached = heightMemo.get(nodeId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(nodeId)) return sizeByMember.get(nodeId)!.height;
+    visiting.add(nodeId);
+    const kids = forwardChildren(nodeId);
+    const own = sizeByMember.get(nodeId)!.height;
+    let band = own;
+    if (kids.length > 0) {
+      const stacked =
+        kids.reduce((sum, kid) => sum + subtreeHeight(kid), 0) + LANE_GAP_Y * (kids.length - 1);
+      band = Math.max(own, stacked);
+    }
+    visiting.delete(nodeId);
+    heightMemo.set(nodeId, band);
+    return band;
+  }
+
+  const offsetByMember = new Map<string, { x: number; y: number }>();
+  const placed = new Set<string>();
+
+  function place(nodeId: string, top: number): number {
+    if (placed.has(nodeId)) return 0;
+    // 先量高度并写入缓存。若此时已在 visiting 里，subtreeHeight 会把整棵子树收成自身高度，兄弟会叠住。
+    const band = subtreeHeight(nodeId);
+    if (visiting.has(nodeId)) return 0;
+    visiting.add(nodeId);
+    const size = sizeByMember.get(nodeId)!;
+    const depth = depthByMember.get(nodeId) ?? 0;
+    offsetByMember.set(nodeId, {
+      x: columnX.get(depth) ?? 0,
+      y: top + (band - size.height) / 2,
+    });
+    placed.add(nodeId);
+
+    const kids = forwardChildren(nodeId);
+    if (kids.length > 0) {
+      const stacked =
+        kids.reduce((sum, kid) => sum + subtreeHeight(kid), 0) + LANE_GAP_Y * (kids.length - 1);
+      let childTop = top + (band - stacked) / 2;
+      for (const kid of kids) {
+        place(kid, childTop);
+        childTop += subtreeHeight(kid) + LANE_GAP_Y;
+      }
+    }
+
+    visiting.delete(nodeId);
+    return band;
+  }
+
+  const childOfForward = new Set<string>();
+  for (const memberId of memberIds) {
+    for (const kid of forwardChildren(memberId)) childOfForward.add(kid);
+  }
+  const layoutRoots = memberIds.filter((id) => !childOfForward.has(id));
+  let cursorY = 0;
+  for (const [index, root] of layoutRoots.entries()) {
+    if (index > 0) cursorY += LANE_GAP_Y;
+    cursorY += place(root, cursorY);
+  }
+
+  let contentWidth = 0;
+  let contentHeight = 0;
+  for (const [memberId, offset] of offsetByMember) {
+    const size = sizeByMember.get(memberId)!;
+    contentWidth = Math.max(contentWidth, offset.x + size.width);
+    contentHeight = Math.max(contentHeight, offset.y + size.height);
+  }
+
+  return { depthByMember, offsetByMember, contentWidth, contentHeight };
 }
 
 function computePlanDimensions(plan: SectionBuildPlan): { width: number; height: number } {
-  const { maxDepth, maxRows } = plan.treeLayout;
-  const { columnGap, rowGap, maxBlockWidth, maxBlockHeight } = layoutGaps(plan);
-
-  const contentWidth = maxDepth <= 0 ? maxBlockWidth : maxDepth * columnGap + maxBlockWidth;
-  const contentHeight = maxRows <= 1 ? maxBlockHeight : (maxRows - 1) * rowGap + maxBlockHeight;
-
+  const { contentWidth, contentHeight } = plan.treeLayout;
   return {
     width: snapCeil(Math.max(SECTION_MIN_WIDTH, SECTION_PADDING * 2 + contentWidth)),
     height: snapCeil(
@@ -911,23 +969,22 @@ function layoutPlanInternalBlocks(
   plan: SectionBuildPlan,
   placementByShapeId: Map<string, BlockPlacement>,
 ): void {
-  const { depthByMember, rowByMember } = plan.treeLayout;
-  const { columnGap, rowGap, maxBlockWidth, maxBlockHeight } = layoutGaps(plan);
+  const { depthByMember, offsetByMember } = plan.treeLayout;
 
   for (const [index, shape] of plan.memberShapes.entries()) {
     if (!shape.id) continue;
     const memberId = plan.memberIds[index]!;
     const depth = depthByMember.get(memberId) ?? 0;
-    const row = rowByMember.get(memberId) ?? 0;
-    const x = plan.bounds.x + SECTION_PADDING + depth * columnGap;
-    const y = plan.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING + row * rowGap;
+    const offset = offsetByMember.get(memberId) ?? { x: 0, y: 0 };
+    const x = plan.bounds.x + SECTION_PADDING + offset.x;
+    const y = plan.bounds.y + SECTION_TITLE_HEIGHT + SECTION_PADDING + offset.y;
     shape.x = snapCeil(x);
     shape.y = snapCeil(y);
     placementByShapeId.set(String(shape.id), {
       x: Number(shape.x),
       y: Number(shape.y),
-      width: Number(shape.width ?? maxBlockWidth),
-      height: Number(shape.height ?? maxBlockHeight),
+      width: Number(shape.width ?? 140),
+      height: Number(shape.height ?? 56),
       depth,
     });
   }
@@ -1188,7 +1245,23 @@ function buildSectionBatch(
     }
   }
 
-  const connectorPayloads: UnknownRecord[] = [];
+  const connectorDrafts: Array<{
+    id: string;
+    startObjectId: string;
+    endObjectId: string;
+    from: SnapSide;
+    to: SnapSide;
+    fromAlong: number;
+    toAlong: number;
+    sectionId?: string;
+    label?: string;
+  }> = [];
+  const alongByKey = new Map<string, number[]>();
+  const rememberAlong = (key: string, along: number) => {
+    const list = alongByKey.get(key) ?? [];
+    list.push(along);
+    alongByKey.set(key, list);
+  };
   for (const edge of edges) {
     const startObjectId = mermaidIdMap.get(edge.from);
     const endObjectId = mermaidIdMap.get(edge.to);
@@ -1201,7 +1274,7 @@ function buildSectionBatch(
     const sameSection = startSection && endSection && startSection.sectionId === endSection.sectionId;
     const connectorId = sameSection
       ? `${startSection.sectionId.replace(':1', '')}:c${(sectionConnectorCounts.get(startSection.sectionId) ?? 0) + 1}`
-      : `sgc:${connectorPayloads.length + 1}`;
+      : `sgc:${connectorDrafts.length + 1}`;
     if (sameSection) {
       sectionConnectorCounts.set(
         startSection.sectionId,
@@ -1209,19 +1282,43 @@ function buildSectionBatch(
       );
     }
 
-    connectorPayloads.push(
-      buildGeneratedConnectorPayload(
-        connectorId,
-        startObjectId,
-        endObjectId,
-        startPlacement,
-        endPlacement,
-        sameSection ? startSection.sectionId : undefined,
-        sameSection ? startSection.bounds : undefined,
-        edge.label,
-      ),
-    );
+    const facing = connectorFacingSides(startPlacement, endPlacement);
+    rememberAlong(`start:${startObjectId}:${facing.from}`, facing.fromAlong);
+    rememberAlong(`end:${endObjectId}:${facing.to}`, facing.toAlong);
+    connectorDrafts.push({
+      id: connectorId,
+      startObjectId,
+      endObjectId,
+      from: facing.from,
+      to: facing.to,
+      fromAlong: facing.fromAlong,
+      toAlong: facing.toAlong,
+      sectionId: sameSection ? startSection.sectionId : undefined,
+      label: edge.label,
+    });
   }
+
+  const spreadAlong = spreadSharedAttachments(alongByKey);
+  const taken = new Map<string, number>();
+  const takeAlong = (key: string, fallback: number) => {
+    const values = spreadAlong.get(key);
+    const cursor = taken.get(key) ?? 0;
+    taken.set(key, cursor + 1);
+    return values?.[cursor] ?? clampAttachment(fallback);
+  };
+  const connectorPayloads = connectorDrafts.map((draft) =>
+    buildGeneratedConnectorPayload(
+      draft.id,
+      draft.startObjectId,
+      draft.endObjectId,
+      draft.from,
+      takeAlong(`start:${draft.startObjectId}:${draft.from}`, draft.fromAlong),
+      draft.to,
+      takeAlong(`end:${draft.endObjectId}:${draft.to}`, draft.toAlong),
+      draft.sectionId,
+      draft.label,
+    ),
+  );
 
   const planBySubgraphId = new Map(plans.map((plan) => [plan.subgraph.id, plan]));
   const sectionPayloads = [...plans]
@@ -1390,6 +1487,8 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
   shapeCount: number;
   diamondCount: number;
   connectorCount: number;
+  /** 折线且未指定坐标、未写拐点。应与 connectorCount 相同，用来卡住退回直线的改动。 */
+  autoPolylineCount: number;
   captionCount: number;
   styledCount: number;
   overlapCount: number;
@@ -1401,6 +1500,7 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     shapeCount: 0,
     diamondCount: 0,
     connectorCount: 0,
+    autoPolylineCount: 0,
     captionCount: 0,
     styledCount: 0,
     overlapCount: 0,
@@ -1426,6 +1526,7 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
   let shapeCount = 0;
   let diamondCount = 0;
   let connectorCount = 0;
+  let autoPolylineCount = 0;
   let captionCount = 0;
   let styledCount = 0;
   const shapesByParent = new Map<string, Array<{ id: string; x: number; y: number; width: number; height: number }>>();
@@ -1450,9 +1551,24 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     }
     if (node.type === 'connector') {
       connectorCount += 1;
-      const captions = ((node.connector as UnknownRecord | undefined)?.captions as UnknownRecord | undefined)
-        ?.data;
+      const connector = node.connector as UnknownRecord | undefined;
+      const captions = (connector?.captions as UnknownRecord | undefined)?.data;
       if (Array.isArray(captions) && captions.length > 0) captionCount += 1;
+      const startAttached = (connector?.start as UnknownRecord | undefined)?.attached_object as UnknownRecord | undefined;
+      const endAttached = (connector?.end as UnknownRecord | undefined)?.attached_object as UnknownRecord | undefined;
+      const startPos = startAttached?.position as UnknownRecord | undefined;
+      const explicitSide = (side: unknown) => side === 'left' || side === 'right' || side === 'top' || side === 'bottom';
+      if (
+        connector?.shape === 'polyline' &&
+        connector.specified_coordinate === false &&
+        !('turning_points' in connector) &&
+        explicitSide(startAttached?.snap_to) &&
+        explicitSide(endAttached?.snap_to) &&
+        typeof startPos?.x === 'number' &&
+        typeof startPos?.y === 'number'
+      ) {
+        autoPolylineCount += 1;
+      }
     }
   }
 
@@ -1483,6 +1599,7 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     shapeCount,
     diamondCount,
     connectorCount,
+    autoPolylineCount,
     captionCount,
     styledCount,
     overlapCount,
@@ -1493,6 +1610,7 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
 /**
  * Mermaid 导入后，将 subgraph 重建为 native section：
  * 分区、块、线按整图同一批创建，线端点统一映射到同批 custom id。
+ * 连线是折线：不写拐点，折线怎么拐由飞书算；起点和终点的边、沿边位置由本函数按两块形状的相对位置写死。
  * 分区内线挂 parent_id 到分区，跨分区线保持全局线。
  * 块的 id 尽量用 Mermaid 节点 id，颜色写在同一批创建里，避免上色时再删掉已经连上的线。
  * `-->|0|` 的标签写进 connector.captions，逆向导出靠它还原条件分支。

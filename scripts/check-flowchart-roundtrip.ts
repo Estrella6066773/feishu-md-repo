@@ -53,6 +53,7 @@ assert(preview.diamondCount === 1, `样例菱形数量不对: ${JSON.stringify(p
 assert(preview.captionCount === 2, `样例条件标签数量不对: ${JSON.stringify(preview)}`);
 assert(preview.styledCount === 3, `样例上色节点数量不对: ${JSON.stringify(preview)}`);
 assert(preview.connectorCount === 2, `样例连线数量不对: ${JSON.stringify(preview)}`);
+assert(preview.autoPolylineCount === preview.connectorCount, `样例连线不是飞书自适应折线: ${JSON.stringify(preview)}`);
 assert(preview.shapeCount === 3, `样例形状数量不对: ${JSON.stringify(preview)}`);
 assert(preview.overlapCount === 0, `样例节点重叠: ${preview.overlapCount}`);
 
@@ -79,6 +80,7 @@ try {
     assert(drawn.shapeCount === parsed.nodeLabels.size, `第 ${index + 1} 图节点没画全: ${JSON.stringify(drawn)} / ${parsed.nodeLabels.size}`);
     assert(drawn.diamondCount === diamondExpected, `第 ${index + 1} 图菱形不对: ${drawn.diamondCount} != ${diamondExpected}`);
     assert(drawn.connectorCount === parsed.edges.length, `第 ${index + 1} 图连线不对: ${drawn.connectorCount} != ${parsed.edges.length}`);
+    assert(drawn.autoPolylineCount === drawn.connectorCount, `第 ${index + 1} 图连线不是飞书自适应折线`);
     assert(drawn.captionCount === captionExpected, `第 ${index + 1} 图条件标签不对: ${drawn.captionCount} != ${captionExpected}`);
     assert(drawn.styledCount === styledExpected, `第 ${index + 1} 图上色不对: ${drawn.styledCount} != ${styledExpected}`);
     assert(drawn.overlapCount === 0, `第 ${index + 1} 图节点重叠: ${drawn.overlapCount} ${drawn.overlapSample.join(' | ')}`);

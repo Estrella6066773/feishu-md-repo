@@ -72,6 +72,16 @@ export function IconEdit({ className = 'h-4 w-4' }: IconProps) {
   );
 }
 
+export function IconSidebar({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+      <path d="M14 9l-2 3 2 3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function IconFeishu({ className = 'h-6 w-6' }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none">
@@ -89,6 +99,15 @@ export function IconFeishu({ className = 'h-6 w-6' }: IconProps) {
           <stop offset="1" stopColor="#245bdb" />
         </linearGradient>
       </defs>
+    </svg>
+  );
+}
+
+export function IconConsole({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9l3 3-3 3M12 15h5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

@@ -18,7 +18,9 @@
     "@feishu-md/shared": "workspace:*",
     "@hono/node-server": "^1.14.4",
     "@larksuiteoapi/node-sdk": "^1.67.0",
-    "hono": "^4.7.10"
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "hono": "^4.7.10",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

@@ -20,6 +20,9 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8787',
         changeOrigin: true,
+        // 控制台用 SSE 长连接。默认超时会把这条流掐断。
+        timeout: 0,
+        proxyTimeout: 0,
       },
     },
   },

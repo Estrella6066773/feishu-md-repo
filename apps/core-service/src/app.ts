@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
 import type { DbClient } from '@feishu-md/db';
 import {
@@ -44,12 +45,15 @@ import {
 import { installLocalHook, readLocalOriginUrl, removeLocalHook, remoteUrlsEqual } from '@feishu-md/git';
 import { createFeishuClient, exportDocumentToMarkdown, appendMermaidBoardToDocument, formatExportError } from '@feishu-md/feishu';
 import { findLocalBoundFiles, writeBoundMarkdownFile } from './export-bound-file.js';
+import { listConsoleLines, subscribeConsole } from './console-capture.js';
 import type { Scheduler, SyncQueue } from './scheduler.js';
 import type { CommentImportCoordinator } from './comment-import-coordinator.js';
 import type { SyncCoordinator } from './sync-coordinator.js';
 import type { BotManager } from './bot/manager.js';
 import type { ServiceConfig } from './config.js';
 import { getPublicBaseUrl } from './config.js';
+import { isLoopbackHost } from './mcp/deps.js';
+import { mountControlMcp } from './mcp/mount.js';
 
 function applyLocalGitHook(binding: Binding, coreServiceUrl: string, previous?: Binding): void {
   if (previous?.sourceType === 'local' && previous.repoPath !== binding.repoPath) {
@@ -153,8 +157,65 @@ export function createApp(options: {
       features: [...CORE_API_FEATURES],
       queue: queue.getStatus(),
       botConnection: botManager.getStatus(),
+      mcp: isLoopbackHost(config.host) ? { enabled: true, path: '/mcp' } : { enabled: false },
     }),
   );
+
+  mountControlMcp(app, {
+    db,
+    config,
+    queue,
+    syncCoordinator,
+    commentImportCoordinator,
+    botManager,
+  });
+
+  // 界面「控制台」用 EventSource 订阅。先挂上监听再补发缓冲，避免中间漏行。
+  // Last-Event-ID 用来在浏览器自动重连时只补新行，不会把整段历史再刷一遍。
+  app.get('/api/console/stream', (c) => {
+    return streamSSE(c, async (stream) => {
+      let closed = false;
+      const lastSeen = Number(c.req.header('last-event-id') ?? '0') || 0;
+      let sentId = lastSeen;
+
+      const send = async (line: { id: number; time: string; level: string; text: string }) => {
+        if (closed || line.id <= sentId) return;
+        sentId = line.id;
+        await stream.writeSSE({
+          data: JSON.stringify(line),
+          event: 'line',
+          id: String(line.id),
+        });
+      };
+
+      const unsubscribe = subscribeConsole((line) => {
+        void send(line).catch(() => {
+          closed = true;
+        });
+      });
+
+      stream.onAbort(() => {
+        closed = true;
+        unsubscribe();
+      });
+
+      try {
+        for (const line of listConsoleLines(lastSeen)) {
+          if (closed) break;
+          await send(line);
+        }
+        while (!closed) {
+          await stream.sleep(15000);
+          if (closed) break;
+          await stream.writeSSE({ event: 'ping', data: '' });
+        }
+      } catch {
+        closed = true;
+      } finally {
+        unsubscribe();
+      }
+    });
+  });
 
   app.get('/api/settings', async (c) => {
     const settings = await getAppSettings(db);

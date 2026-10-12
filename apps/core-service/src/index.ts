@@ -1,3 +1,4 @@
+import './console-capture.js';
 import { serve } from '@hono/node-server';
 import { createDb, failUnfinishedCommentImportLogs, failUnfinishedSyncLogs } from '@feishu-md/db';
 import { createLogger, getLogLevel, isDebugEnabled } from '@feishu-md/shared';

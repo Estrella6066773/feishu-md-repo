@@ -36,7 +36,9 @@ export function ConnectionStatusBadge({
     return (
       <div className="status-pill">
         <span className={`status-dot ${dotClass}`} />
-        {label} {connected ? '在线' : listening ? '连接中' : '离线'}
+        <span className="status-pill-text">
+          {label} {connected ? '在线' : listening ? '连接中' : '离线'}
+        </span>
       </div>
     );
   }
@@ -67,7 +69,7 @@ export function CoreServiceConnectionBadge(props: {
     return (
       <div className="status-pill">
         <span className={`status-dot ${props.online ? 'status-dot-online' : 'status-dot-offline'}`} />
-        核心服务 {props.online ? '在线' : '离线'}
+        <span className="status-pill-text">核心服务 {props.online ? '在线' : '离线'}</span>
       </div>
     );
   }

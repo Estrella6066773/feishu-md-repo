@@ -350,28 +350,23 @@ git commit -m "chore: …"
 
 ---
 
-## 10. 飞书文档 MCP
+## 10. 控制本工具的 MCP
 
-`apps/mcp` 是一个本机 MCP 服务。在 Cursor 里启用后，可以直接让助手读取、追加、重写或新建飞书云文档，不必再开管理面板。同步方向仍是 Git → 飞书：若文档已被绑定纳管，MCP 改飞书后的结果可能在下次同步时被仓库覆盖。
+核心服务在本机回环地址上同时提供 MCP，路径是 `http://127.0.0.1:8787/mcp`。它和面板走同一条队列：可以查看绑定、发起同步、导入评论、查看日志，也可以把飞书文档导出或写回已绑定的仓库文件。先启动 `pnpm dev:service`（或桌面应用），再在 Cursor 里连接。
 
-凭证与桌面应用共用：读 `%AppData%/Roaming/feishu-md-repo/app.db` 里已经保存的机器人。也可以用环境变量 `FEISHU_APP_ID` 与 `FEISHU_APP_SECRET` 临时指定另一套应用。密钥不会出现在工具返回值里。
-
-在项目根的 `.cursor/mcp.json` 写入：
+`.cursor/mcp.json` 不进 Git。本机可写成：
 
 ```json
 {
   "mcpServers": {
-    "feishu-md": {
-      "command": "node",
-      "args": ["apps/mcp/start.mjs"],
-      "env": {
-        "FEISHU_MD_LOG_LEVEL": "warn"
-      }
+    "feishu-md-app": {
+      "type": "http",
+      "url": "http://127.0.0.1:8787/mcp"
     }
   }
 }
 ```
 
-保存后在 Cursor 的 MCP 设置里刷新。请用 `node` 直接启动 `apps/mcp/start.mjs`，不要改成 `pnpm start`：pnpm 会往标准输出打横幅，连接会被判失败。
+服务只监听 `127.0.0.1` 时才会挂上 `/mcp`。若把 `FEISHU_MD_HOST` 改成所有网卡，这条控制面不会启动。
 
-工具与权限说明见 [apps/mcp/README.md](./apps/mcp/README.md)。
+`apps/mcp` 是另一条独立进程，直接调用飞书接口读写文档，不经过同步队列。已被绑定纳管的文档，若只在飞书侧改写，下次同步仍以 Git 为准。要按本工具的规则更新飞书，用内置 MCP 写回仓库文件后再同步。说明见 [apps/mcp/README.md](./apps/mcp/README.md)。
