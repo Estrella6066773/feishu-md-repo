@@ -3,7 +3,7 @@ import { createLogger } from '@feishu-md/shared';
 import type { FeishuClient } from './client.js';
 import { formatFeishuErrorMessage } from './api-error.js';
 import { applyLegendColorsToBoard, applyMermaidClassColors } from './board-legend-colors.js';
-import { alignImportedConnectorBuses, applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
+import { alignImportedConnectorBuses, applyMermaidSubgraphSections, previewMermaidFlowchartBoard, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import { findDocumentPageBlock, listDocumentBlocks } from './docx-block-service.js';
 import { appendDocumentMarkdown } from './docx-content.js';
@@ -98,9 +98,9 @@ export async function appendMarkdownToDocument(
 }
 
 /**
- * 仅在文档末尾追加一块成品画板并导入 Mermaid。
+ * 仅在文档末尾追加一块成品画板。
  * 不写入标题、图例表等正文。
- * 颜色：先无样式导入，再按 legend 给画板块配置 fill_color。
+ * 流程图在本地把布局、折线和颜色一次算完再创建。导入失败时才按图例和 classDef 事后上色。
  */
 export async function appendMermaidBoardToDocument(
   client: FeishuClient,
@@ -134,7 +134,7 @@ export async function appendMermaidBoardToDocument(
   let drewNatively = false;
   if (isFlowchart) {
     try {
-      drewNatively = await renderMermaidFlowchartBoard(client, whiteboardId, mermaidCode);
+      drewNatively = await renderMermaidFlowchartBoard(client, whiteboardId, mermaidCode, legend);
     } catch (drawError) {
       appendLog.warn(
         `按源码绘制流程图失败，改走 Mermaid 导入: ${formatFeishuErrorMessage(drawError)}`,
@@ -169,10 +169,11 @@ export async function appendMermaidBoardToDocument(
     }
   }
 
-  // 上色必须在 subgraph 重建之后，否则分区重建会丢掉 fill_color。
-  // 图例按前缀上色；源码里的 classDef 最后写，显式 class 覆盖图例。
+  // 直接绘制已经把图例和 classDef 写进同一次创建。事后上色会删掉形状，只留给导入失败的路径。
   let coloredNodeCount = 0;
-  if (legend.length > 0) {
+  if (drewNatively) {
+    coloredNodeCount = previewMermaidFlowchartBoard(mermaidCode, legend).styledCount;
+  } else if (legend.length > 0) {
     try {
       const colored = await applyLegendColorsToBoard(client, whiteboardId, prepared, legend);
       coloredNodeCount = colored.coloredCount;
@@ -190,7 +191,7 @@ export async function appendMermaidBoardToDocument(
     }
   }
 
-  if (diagramType === MERMAID_DIAGRAM_TYPE.flowchart || diagramType === MERMAID_DIAGRAM_TYPE.auto) {
+  if (!drewNatively && (diagramType === MERMAID_DIAGRAM_TYPE.flowchart || diagramType === MERMAID_DIAGRAM_TYPE.auto)) {
     try {
       const classColored = await applyMermaidClassColors(client, whiteboardId, mermaidCode);
       coloredNodeCount += classColored.coloredCount;

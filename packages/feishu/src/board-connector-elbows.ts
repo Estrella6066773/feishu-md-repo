@@ -32,6 +32,11 @@ export interface ConnectorElbowSample {
   boxWidth: number;
   boxHeight: number;
   turningPoints: Array<{ x: number; y: number }>;
+  /**
+   * 竖线的绝对横坐标不得小于这个值。
+   * 同一层有更长的节点时，竖线排到它的右缘外侧，避免从节点身上穿过去。
+   */
+  minBusX?: number;
 }
 
 /** 写回时连同包围盒一起改。坐标与样本是同一套。 */
@@ -119,9 +124,20 @@ function buildBus(samples: ConnectorElbowSample[]): VerticalBus | null {
   const nearestTargetLeft = Math.min(...vertical.map((sample) => sample.boxX + Math.max(sample.boxWidth, 0)));
   const minX = sourceRight + BUS_MARGIN;
   const maxX = nearestTargetLeft - BUS_MARGIN;
-  const preferredX = maxX >= minX
-    ? Math.min(Math.max(sourceRight + BUS_GUTTER, minX), maxX)
-    : sourceRight + BUS_GUTTER;
+  const gutterX = sourceRight + BUS_GUTTER;
+  const floorX = Math.max(gutterX, ...vertical.map((sample) => sample.minBusX ?? gutterX));
+  // 没有更长的节点时，空档不够就停在目标左缘内侧，避免竖线扎进目标。
+  // 下限被较长节点抬高之后，不再退回那个节点里面；空档不够时停在下限上，由拉长布局先把目标推开。
+  let preferredX: number;
+  if (maxX >= floorX) {
+    preferredX = Math.min(Math.max(floorX, minX), maxX);
+  } else if (floorX > gutterX + AXIS_TOLERANCE) {
+    preferredX = floorX;
+  } else if (maxX >= minX) {
+    preferredX = Math.min(Math.max(gutterX, minX), maxX);
+  } else {
+    preferredX = gutterX;
+  }
 
   return {
     y0: Math.min(...vertical.map((sample) => sample.boxY)),
@@ -134,10 +150,14 @@ function buildBus(samples: ConnectorElbowSample[]): VerticalBus | null {
 
 /**
  * 返回需要改写的子线。已经落在分配好的竖线上、包围盒也不必撑开的，不出现在结果里。
+ *
+ * blocks 是同一套坐标里的节点。传入后，竖线会避开同一层里更长的节点。
  */
 export function planSharedVerticalBuses(
   samples: ConnectorElbowSample[],
+  blocks?: Array<{ id: string; x: number; y: number; width: number; height: number }>,
 ): Map<number, SnappedElbow> {
+  if (blocks && blocks.length > 0) applyLongNodeBusFloor(samples, blocks);
   const grouped = new Map<string, ConnectorElbowSample[]>();
   for (const sample of samples) {
     if (!sample.groupKey) continue;
@@ -186,6 +206,100 @@ export function planSharedVerticalBuses(
   }
 
   return snaps;
+}
+
+/**
+ * 同一层里更长的节点会向右伸出。竖线若仍贴着短节点的右缘，就会从长节点身上穿过去。
+ * 把竖线下限抬到这些节点的右缘外侧。已经在起点右缘以右的节点是后面的层，不拿来抬高下限。
+ */
+function longNodeBusFloor(
+  sourceId: string,
+  sourceRight: number,
+  y0: number,
+  y1: number,
+  blocks: Array<{ id: string; x: number; y: number; width: number; height: number }>,
+): number {
+  let floor = sourceRight + BUS_GUTTER;
+  if (y1 - y0 <= AXIS_TOLERANCE) return floor;
+  for (const block of blocks) {
+    if (block.id === sourceId) continue;
+    if (block.x >= sourceRight - AXIS_TOLERANCE) continue;
+    const bottom = block.y + block.height;
+    if (bottom <= y0 + AXIS_TOLERANCE || block.y >= y1 - AXIS_TOLERANCE) continue;
+    const right = block.x + block.width + BUS_MARGIN;
+    if (right > floor) floor = right;
+  }
+  return floor;
+}
+
+/**
+ * 把起点右侧的节点整列右移，给竖线留出空档。
+ *
+ * 联动：separateBlocksFromRoutes 每轮先调用这里，再交给 relaxRouteOverlaps。
+ * plannedConnectorGeometry 写入拐点时用同一套下限（applyLongNodeBusFloor），
+ * 所以这里挪开的距离必须让目标左缘落在下限右侧，否则创建时的竖线仍会扎进目标。
+ *
+ * 注意：同一层更长的节点留在原列，不往左滑。只移动横坐标不小于起点右缘的节点，
+ * 整列加同一个增量，避免后面的层被拆开。纵坐标范围不重叠的节点也会跟着右移，图会变长。
+ * 一次只处理一个起点，处理完重算，避免两个起点的增量叠在同一批节点上。
+ */
+function lengthenLayoutForVerticalBuses(
+  blocks: RouteBlock[],
+  edges: Array<{ from: string; to: string }>,
+): boolean {
+  const byId = new Map(blocks.map((block) => [block.id, block]));
+  const outgoing = new Map<string, RouteBlock[]>();
+  for (const edge of edges) {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    if (!source || !target || edge.from === edge.to) continue;
+    const list = outgoing.get(edge.from) ?? [];
+    list.push(target);
+    outgoing.set(edge.from, list);
+  }
+
+  for (const [sourceId, targets] of outgoing) {
+    const source = byId.get(sourceId);
+    if (!source || targets.length === 0) continue;
+    const sourceRight = source.x + source.width;
+    const centers = [source.y + source.height / 2, ...targets.map((target) => target.y + target.height / 2)];
+    const y0 = Math.min(...centers);
+    const y1 = Math.max(...centers);
+    const floor = longNodeBusFloor(sourceId, sourceRight, y0, y1, blocks);
+    // 目标左缘留在竖线右侧，并再留一条竖线的错开距离，后面若还要错开第二条竖线也不会挤回去。
+    const minLeft = floor + BUS_MARGIN + BUS_SEPARATION;
+    let delta = 0;
+    for (const block of blocks) {
+      if (block.x + AXIS_TOLERANCE < sourceRight) continue;
+      if (block.x < minLeft) delta = Math.max(delta, minLeft - block.x);
+    }
+    if (delta <= AXIS_TOLERANCE) continue;
+    for (const block of blocks) {
+      if (block.x + AXIS_TOLERANCE >= sourceRight) block.x += delta;
+    }
+    return true;
+  }
+  return false;
+}
+
+function applyLongNodeBusFloor(
+  samples: ConnectorElbowSample[],
+  blocks: Array<{ id: string; x: number; y: number; width: number; height: number }>,
+): void {
+  const grouped = new Map<string, ConnectorElbowSample[]>();
+  for (const sample of samples) {
+    if (!sample.groupKey || sample.boxHeight <= AXIS_TOLERANCE) continue;
+    const group = grouped.get(sample.groupKey) ?? [];
+    group.push(sample);
+    grouped.set(sample.groupKey, group);
+  }
+  for (const [sourceId, group] of grouped) {
+    const sourceRight = Math.min(...group.map((sample) => sample.boxX));
+    const y0 = Math.min(...group.map((sample) => sample.boxY));
+    const y1 = Math.max(...group.map((sample) => sample.boxY + sample.boxHeight));
+    const floor = longNodeBusFloor(sourceId, sourceRight, y0, y1, blocks);
+    for (const sample of group) sample.minBusX = floor;
+  }
 }
 
 /** 线和块之间至少留出的空隙。和 BUS_MARGIN 同一档，竖线不会贴着块边。 */
@@ -363,7 +477,7 @@ export function routeBlockHitCount(
   const samples = live.map((edge, index) =>
     elbowSampleBetween(index, edge.from, byId.get(edge.from)!, byId.get(edge.to)!),
   );
-  const snaps = planSharedVerticalBuses(samples);
+  const snaps = planSharedVerticalBuses(samples, blocks);
   let hits = 0;
   live.forEach((edge, index) => {
     const source = byId.get(edge.from)!;
@@ -395,7 +509,7 @@ function relaxRouteOverlaps(
   const samples = live.map((edge, index) =>
     elbowSampleBetween(index, edge.from, byId.get(edge.from)!, byId.get(edge.to)!),
   );
-  const snaps = planSharedVerticalBuses(samples);
+  const snaps = planSharedVerticalBuses(samples, blocks);
   const shiftX = new Map<string, number>();
   const shiftY = new Map<string, number>();
 
@@ -451,14 +565,19 @@ function relaxRouteOverlaps(
  * 竖线位置会跟着块的右缘重新算，等同于线和块一起让开。
  *
  * 注意：原地修改 blocks。飞书仍是一次 create，这里不能去改已经画上的节点。
+ * 每一轮先把图拉长，让竖线排到同层较长节点的右缘外侧；再按这条竖线把挡住线的块挪开。
  * 端点只在线穿进内部时才挪；横线贴着目标左缘不算穿过。
- * 最多 SEPARATE_PASSES 轮。每一轮都按当前块重算竖线，避免用过期的横坐标继续推。
+ * 拉长和让位交替进行，直到两者都不再移动。轮数是节点数加上 SEPARATE_PASSES，避免只拉长了前几个起点。
  */
 export function separateBlocksFromRoutes(
   blocks: RouteBlock[],
   edges: Array<{ from: string; to: string }>,
 ): void {
-  for (let pass = 0; pass < SEPARATE_PASSES; pass += 1) {
-    if (!relaxRouteOverlaps(blocks, edges)) return;
+  // 拉长和让位会互相改横坐标。轮数按节点数加上限，避免一个起点占满 SEPARATE_PASSES 后其余起点没排开。
+  const limit = blocks.length + SEPARATE_PASSES;
+  for (let pass = 0; pass < limit; pass += 1) {
+    const lengthened = lengthenLayoutForVerticalBuses(blocks, edges);
+    const relaxed = relaxRouteOverlaps(blocks, edges);
+    if (!lengthened && !relaxed) return;
   }
 }

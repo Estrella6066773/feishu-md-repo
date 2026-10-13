@@ -1,5 +1,40 @@
+/**
+ * 节点外形。圆框是 `((文案))`，菱形框是 `{文案}`，其余括号都按矩形。
+ * 画板创建时圆框写成飞书的 ellipse，菱形框写成 flow_chart_diamond。
+ */
+export type MermaidNodeFrame = 'rect' | 'circle' | 'diamond';
+
+export interface ScannedMermaidNode {
+  id: string;
+  label: string;
+  shape: MermaidNodeFrame;
+}
+
+/**
+ * 圆框必须排在圆角括号前面。否则 `((文案))` 会先被 `\(([^)]+)\)` 吃成圆角矩形，标签还带一个多余括号。
+ * 分组：1 是 id，2 `[[ ]]`，3 `[" "]`，4 `[ ]`，5 `([ ])`，6 `(( ))`，7 `( )`，8 `{ }`。
+ */
 const NODE_DEF_RE =
-  /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
+  /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(\(([^)]+)\)\)|\(([^)]+)\)|\{([^}]+)\})/g;
+
+function frameFromNodeMatch(match: RegExpMatchArray): MermaidNodeFrame {
+  if (match[6] != null) return 'circle';
+  if (match[8] != null) return 'diamond';
+  return 'rect';
+}
+
+/** 从一行里找出节点定义。同一行可以同时有圆框、菱形框和矩形。 */
+export function scanMermaidNodeDefs(line: string): ScannedMermaidNode[] {
+  const found: ScannedMermaidNode[] = [];
+  NODE_DEF_RE.lastIndex = 0;
+  for (const match of line.matchAll(NODE_DEF_RE)) {
+    const id = match[1];
+    if (!id) continue;
+    const raw = match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? match[7] ?? match[8] ?? id;
+    found.push({ id, label: normalizeMermaidNodeLabel(raw), shape: frameFromNodeMatch(match) });
+  }
+  return found;
+}
 
 const NODE_ID_SRC = String.raw`[A-Za-z][A-Za-z0-9_]*`;
 /**
@@ -30,10 +65,6 @@ export interface ParsedMermaidSource {
   lines: string[];
   nodes: ParsedMermaidNode[];
   edges: ParsedMermaidEdge[];
-}
-
-function unescapeLabel(raw: string): string {
-  return normalizeMermaidNodeLabel(raw);
 }
 
 /** `{"标签"}` 的捕获组会带上引号。引号是形状语法，不能留在文案里，否则对不上画板上的文字。 */
@@ -92,15 +123,10 @@ export function parseMermaidFlowchart(code: string): ParsedMermaidSource {
       continue;
     }
 
-    for (const match of trimmed.matchAll(NODE_DEF_RE)) {
-      const nodeId = match[1];
-      if (!nodeId) continue;
-      const label = unescapeLabel(
-        match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? match[7] ?? nodeId,
-      );
-      if (!nodeLineMap.has(nodeId)) {
-        nodeLineMap.set(nodeId, lineIndex);
-        nodes.push({ id: nodeId, label, lineIndex });
+    for (const node of scanMermaidNodeDefs(trimmed)) {
+      if (!nodeLineMap.has(node.id)) {
+        nodeLineMap.set(node.id, lineIndex);
+        nodes.push({ id: node.id, label: node.label, lineIndex });
       }
     }
 

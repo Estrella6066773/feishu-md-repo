@@ -57,6 +57,40 @@ assert(preview.autoPolylineCount === preview.connectorCount, `样例连线没有
 assert(preview.rightToLeftCount === preview.connectorCount, `样例应从右边出去、从左边进来: ${JSON.stringify(preview)}`);
 assert(preview.shapeCount === 3, `样例形状数量不对: ${JSON.stringify(preview)}`);
 assert(preview.overlapCount === 0, `样例节点重叠: ${preview.overlapCount}`);
+
+const frames = previewMermaidFlowchartBoard(`
+flowchart LR
+startNode((开始))
+gate{"是否放行"}
+startNode --> gate
+`);
+assert(frames.circleCount === 1, `圆框没有画出来: ${JSON.stringify(frames)}`);
+assert(frames.diamondCount === 1, `菱形框没有画出来: ${JSON.stringify(frames)}`);
+const startBox = frames.boxes.find((box) => box.id === 'startNode');
+assert(Boolean(startBox) && startBox!.width === startBox!.height, `圆框宽高应相等: ${JSON.stringify(startBox)}`);
+
+const legendPreview = previewMermaidFlowchartBoard(
+  `
+flowchart LR
+plainNode["普通节点"]
+classedNode["已分类"]
+classDef act fill:#7ebf8a,stroke:#4e8f5c,color:#102018
+class classedNode act
+`,
+  [
+    {
+      type: 'obj',
+      label: '对象',
+      labelPrefixes: ['普', '已'],
+      idPrefixes: [],
+      style: { fill: '#112233', text: '#ffffff', border: '#001122' },
+    },
+  ],
+);
+const plainFill = legendPreview.fills.find((item) => item.id === 'plainNode')?.fill;
+const classedFill = legendPreview.fills.find((item) => item.id === 'classedNode')?.fill;
+assert(plainFill === '#112233', `图例颜色应进同一次创建: ${JSON.stringify(legendPreview.fills)}`);
+assert(classedFill === '#7ebf8a', `classDef 不应被图例盖掉: ${JSON.stringify(legendPreview.fills)}`);
 assert(preview.elbowXs.length === 2, `样例两条条件线都应有竖段: ${JSON.stringify(preview.elbowXs)}`);
 assert(preview.elbowXs[0] === preview.elbowXs[1], `样例两条条件线应共用一条竖线: ${JSON.stringify(preview.elbowXs)}`);
 const fuelBox = preview.boxes.find((box) => box.id === 'cQFuel');
@@ -241,5 +275,35 @@ const plain = exportBoardNodesToMermaid([
 assert(plain?.startsWith('flowchart TD') === true, `未着色竖图应是 TD:\n${plain}`);
 assert(!plain?.includes('classDef'), `未着色图不应生成 classDef:\n${plain}`);
 assert(plain?.includes('["甲"]') === true && plain.includes('-->'), `普通节点或连线丢失:\n${plain}`);
+
+const framed = exportBoardNodesToMermaid([
+  {
+    id: 'startNode',
+    type: 'composite_shape',
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 120,
+    text: { text: '开始' },
+    composite_shape: { type: 'ellipse' },
+  },
+  {
+    id: 'gate',
+    type: 'composite_shape',
+    x: 240,
+    y: 0,
+    width: 180,
+    height: 120,
+    text: { text: '是否放行' },
+    composite_shape: { type: 'flow_chart_diamond' },
+  },
+  {
+    id: 'c',
+    type: 'connector',
+    connector: { start_object: { id: 'startNode' }, end_object: { id: 'gate' } },
+  },
+]);
+assert(framed?.includes('startNode(("开始"))') === true, `圆框没有写回: ${framed}`);
+assert(framed?.includes('gate{"是否放行"}') === true, `菱形框没有写回: ${framed}`);
 
 console.log('flowchart roundtrip ok');

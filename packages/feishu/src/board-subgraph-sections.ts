@@ -1,7 +1,7 @@
 import { Graph, layout as dagreLayout } from '@dagrejs/dagre';
 import type { EdgeLabel, GraphLabel, NodeLabel } from '@dagrejs/dagre';
 import type { FeishuClient } from './client.js';
-import { createLogger, parseMermaidClassStyles, type DiagramNodeStyle } from '@feishu-md/shared';
+import { classifyNode, createLogger, parseMermaidClassStyles, type DiagramNodeStyle, type LegendEntry, type MermaidNodeFrame } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
 import { elbowSampleBetween, planSharedVerticalBuses, separateBlocksFromRoutes, type ConnectorElbowSample, type RouteBlock } from './board-connector-elbows.js';
 import {
@@ -52,11 +52,13 @@ const SECTION_GAP_Y = 120;
 const LAYOUT_ASPECT_WIDTH = 16;
 const LAYOUT_ASPECT_HEIGHT = 9;
 /**
- * 与 Mermaid 流程图默认的 nodeSpacing / rankSpacing 相同。
- * Dagre 用它们做同层间距和层与层的间距；GitHub 上的流程图就是这组默认值。
+ * 同层节点的纵向间隔。取 Mermaid 默认 nodeSpacing（50）的一半，让一层里的节点收得更紧。
+ * 层与层的横向间隔比默认 rankSpacing 更宽，给竖线留出空档。
+ * 同层有更长的节点时，separateBlocksFromRoutes 还会再把后面的层往右推。
+ * Dagre 用它们做同层间距和层与层的间距。
  */
-const MERMAID_NODE_SPACING = 50;
-const MERMAID_RANK_SPACING = 50;
+const MERMAID_NODE_SPACING = 25;
+const MERMAID_RANK_SPACING = 96;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
 const FEISHU_COORD_LIMIT = 132070;
 const FEISHU_Z_INDEX_LIMIT = 10000;
@@ -573,13 +575,25 @@ function sectionZIndex(depth: number): number {
   return SECTION_Z_INDEX_BASE + depth;
 }
 
-// 这里的“块”对应飞书画板的 composite_shape，是实际承载文本的最小单位。
-function compositeShapeType(block: BoardNodeRecord, shape?: 'rect' | 'diamond'): string {
-  // 条件节点用流程图菱形。普通 diamond 在飞书里更像装饰图形，导出时两种都认成 {}。
+/**
+ * 把源码里的外形写成飞书画板图形。
+ * 圆框用 ellipse，宽高相等时飞书把它画成圆。菱形框用流程图菱形，普通 diamond 更像装饰图形。
+ * 导出时 ellipse 写回 `((文案))`，flow_chart_diamond 写回 `{}`。
+ */
+function feishuFrameType(shape?: MermaidNodeFrame): string {
+  if (shape === 'circle') return 'ellipse';
   if (shape === 'diamond') return 'flow_chart_diamond';
+  return 'round_rect';
+}
+
+function compositeShapeType(block: BoardNodeRecord, shape?: MermaidNodeFrame): string {
+  if (shape === 'circle' || shape === 'diamond') return feishuFrameType(shape);
   const current = (block.composite_shape as UnknownRecord | undefined)?.type;
-  if (typeof current === 'string' && current.length > 0 && current !== 'diamond') return current;
-  if (current === 'diamond') return 'flow_chart_diamond';
+  if (current === 'ellipse' || current === 'circle') return 'ellipse';
+  if (current === 'diamond' || current === 'flow_chart_diamond' || current === 'condition_shape') {
+    return 'flow_chart_diamond';
+  }
+  if (typeof current === 'string' && current.length > 0) return current;
   return 'round_rect';
 }
 
@@ -590,7 +604,7 @@ function buildBlockPayload(
   zIndex: number,
   sectionOrigin: { x: number; y: number },
   style?: DiagramNodeStyle,
-  shape?: 'rect' | 'diamond',
+  shape?: MermaidNodeFrame,
 ): UnknownRecord {
   const payload: UnknownRecord = {
     id,
@@ -614,7 +628,7 @@ function buildTopLevelBlockPayload(
   block: BoardNodeRecord,
   zIndex: number,
   style?: DiagramNodeStyle,
-  shape?: 'rect' | 'diamond',
+  shape?: MermaidNodeFrame,
 ): UnknownRecord {
   const payload: UnknownRecord = {
     id,
@@ -661,24 +675,45 @@ interface ConnectorRouteInput {
   origin?: { x: number; y: number };
 }
 
+/** 把成员 id 换成创建批次里的对象 id，坐标仍用已经让开竖线之后的绝对位置。 */
+function routeBlocksFromPlacements(
+  idByMember: Map<string, string>,
+  placements: Map<string, { x: number; y: number; width: number; height: number }>,
+): Array<{ id: string; x: number; y: number; width: number; height: number }> {
+  return [...idByMember.entries()].flatMap(([memberId, objectId]) => {
+    const placement = placements.get(memberId);
+    if (!placement) return [];
+    return [{
+      id: objectId,
+      x: placement.x,
+      y: placement.y,
+      width: placement.width,
+      height: placement.height,
+    }];
+  });
+}
+
 /**
  * 按起点把折线收成共用竖线，返回可直接写入 create 的包围盒和拐点。
  *
  * 联动：buildSectionBatch 与 buildPlainFlowchartBatch 在组 payload 之前调用。
  * 样本用形状的绝对坐标，planSharedVerticalBuses 只移动竖线的横坐标。
  * 同一起点的线共用一条竖线；竖直范围叠在一起的不同起点再往右错开。
+ * blocks 的 id 必须是连线起点的对象 id。传入后，竖线排到同层较长节点的右缘外侧。
  *
  * 注意：飞书没有改节点的接口，拐点必须在这次 create 里写全。
  * 有分区的线，x/y 要减分区原点；turning_points 相对这条线自己的框，不能减原点。
  * 高度不超过半像素的线没有竖段，写空拐点，避免飞书再拐一折。
+ * 调用前应先用 separateBlocksFromRoutes 把后面的层推开，否则竖线会扎进还没让开的目标。
  */
 function plannedConnectorGeometry(
   drafts: ConnectorRouteInput[],
+  blocks?: Array<{ id: string; x: number; y: number; width: number; height: number }>,
 ): Array<{ x: number; y: number; width: number; height: number; turningPoints: Array<{ x: number; y: number }> }> {
   const samples: ConnectorElbowSample[] = drafts.map((draft, index) =>
     elbowSampleBetween(index, draft.startObjectId, draft.start, draft.end),
   );
-  const snaps = planSharedVerticalBuses(samples);
+  const snaps = planSharedVerticalBuses(samples, blocks);
   return drafts.map((draft, index) => {
     const sample = samples[index]!;
     const snap = snaps.get(index);
@@ -1401,7 +1436,7 @@ function buildSectionBatch(
   nodeLabels: Map<string, string>,
   edges: ParsedMermaidEdge[],
   styleByNodeId: Map<string, DiagramNodeStyle>,
-  nodeShapes?: Map<string, 'rect' | 'diamond'>,
+  nodeShapes?: Map<string, MermaidNodeFrame>,
 ): { batch: UnknownRecord[]; deleteIds: string[] } {
   const placementByShapeId = applyReadableLayout(plans, edges);
   const shapeIdMap = new Map<string, string>();
@@ -1574,7 +1609,7 @@ function buildSectionBatch(
     });
   }
 
-  const geometries = plannedConnectorGeometry(connectorDrafts);
+  const geometries = plannedConnectorGeometry(connectorDrafts, routeBlocksFromPlacements(mermaidIdMap, mermaidPlacementMap));
   const connectorPayloads = connectorDrafts.map((draft, index) =>
     buildGeneratedConnectorPayload(
       draft.id,
@@ -1649,13 +1684,29 @@ async function convertGroupNodesToSections(
   }
 }
 
-/** 节点 id → classDef 样式。没有 class 行时为空，调用方仍走分区重建。 */
-function styleByMermaidNodeId(mermaidCode: string): Map<string, DiagramNodeStyle> {
+/**
+ * 节点 id → 填充色。classDef 先写入；图例只补还没有 class 的节点。
+ *
+ * 联动：flowchartCreateBatch 把这份表交给形状 payload，颜色和形状同一次 create。
+ * 直接绘制成功后不要再按图例或 classDef 删形状重涂，否则连线会掉。
+ * 已有 classDef 的节点不被图例盖掉，和追加画板「显式 class 覆盖图例」一致。
+ */
+function styleByMermaidNodeId(
+  mermaidCode: string,
+  legend: LegendEntry[] = [],
+  labels?: Map<string, string>,
+): Map<string, DiagramNodeStyle> {
   const parsed = parseMermaidClassStyles(mermaidCode);
   const styles = new Map<string, DiagramNodeStyle>();
   for (const [nodeId, className] of parsed.classByNodeId) {
     const style = parsed.styleByClass.get(className);
     if (style) styles.set(nodeId, style);
+  }
+  if (legend.length === 0 || !labels) return styles;
+  for (const [nodeId, label] of labels) {
+    if (styles.has(nodeId)) continue;
+    const entry = classifyNode(nodeId, label, legend);
+    if (entry) styles.set(nodeId, entry.style);
   }
   return styles;
 }
@@ -1664,11 +1715,16 @@ function styleByMermaidNodeId(mermaidCode: string): Map<string, DiagramNodeStyle
  * 按标签长度估一块形状的宽高。
  * 中文按一字一格估算，避免飞书把长标签裁成一行看不全。
  * 菱形要比矩形更宽更高，文字画在菱形中间才放得下。
+ * 圆框的宽高必须相等，飞书的 ellipse 才会画成圆，而不是扁椭圆。
  */
-function estimateNodeSize(label: string, diamond: boolean): { width: number; height: number } {
+function estimateNodeSize(label: string, shape: MermaidNodeFrame): { width: number; height: number } {
   const length = Array.from(label).length;
   const textWidth = Math.min(360, Math.max(96, length * 18));
-  if (diamond) {
+  if (shape === 'circle') {
+    const diameter = Math.max(120, Math.min(320, textWidth + 64));
+    return { width: diameter, height: diameter };
+  }
+  if (shape === 'diamond') {
     const width = Math.max(180, textWidth + 56);
     return { width, height: Math.max(120, Math.round(width * 0.72)) };
   }
@@ -1684,8 +1740,8 @@ function estimateNodeSize(label: string, diamond: boolean): { width: number; hei
 function syntheticShapesFromGraph(parsed: ReturnType<typeof parseMermaidGraph>): BoardNodeRecord[] {
   const shapes: BoardNodeRecord[] = [];
   for (const [nodeId, label] of parsed.nodeLabels) {
-    const diamond = parsed.nodeShapes.get(nodeId) === 'diamond';
-    const size = estimateNodeSize(label, diamond);
+    const shape = parsed.nodeShapes.get(nodeId) ?? 'rect';
+    const size = estimateNodeSize(label, shape);
     shapes.push({
       id: `src:${nodeId}`,
       type: 'composite_shape',
@@ -1694,7 +1750,7 @@ function syntheticShapesFromGraph(parsed: ReturnType<typeof parseMermaidGraph>):
       y: 0,
       width: size.width,
       height: size.height,
-      composite_shape: { type: diamond ? 'flow_chart_diamond' : 'round_rect' },
+      composite_shape: { type: feishuFrameType(shape) },
     });
   }
   return shapes;
@@ -1800,7 +1856,7 @@ function buildPlainFlowchartBatch(
     });
   }
 
-  const geometries = plannedConnectorGeometry(drafts);
+  const geometries = plannedConnectorGeometry(drafts, routeBlocksFromPlacements(idByMember, placements));
   drafts.forEach((draft, index) => {
     payloads.push(
       buildGeneratedConnectorPayload(
@@ -1824,10 +1880,10 @@ function buildPlainFlowchartBatch(
  * 直接绘制会提交的那一批节点。有 subgraph 时套分区；没有时按整图画在画板根上。
  * renderMermaidFlowchartBoard 与 previewMermaidFlowchartBoard 共用，避免预览和真正创建各写一套。
  */
-function flowchartCreateBatch(mermaidCode: string): UnknownRecord[] {
+function flowchartCreateBatch(mermaidCode: string, legend: LegendEntry[] = []): UnknownRecord[] {
   const parsed = parseMermaidGraph(mermaidCode);
   if (parsed.nodeLabels.size === 0) return [];
-  const styles = styleByMermaidNodeId(mermaidCode);
+  const styles = styleByMermaidNodeId(mermaidCode, legend, parsed.nodeLabels);
   if (parsed.subgraphs.length > 0) {
     const synthetic = syntheticShapesFromGraph(parsed);
     const plans = planSubgraphSections(synthetic, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
@@ -1848,25 +1904,24 @@ function flowchartCreateBatch(mermaidCode: string): UnknownRecord[] {
 /**
  * 流程图直接画到空画板上，不经过飞书 Mermaid 导入。
  *
- * 联动：docx-content 与 append-markdown 在导入前调用。返回 true 表示画板已写好，
- * 调用方不要再 importBoardMermaidDiagram，否则会把这块画板清掉。
+ * 联动：docx-content 与 append-markdown 在插入空白画板后调用。返回 true 表示画板已写好，
+ * 调用方不要再 importBoardMermaidDiagram，也不要再按 classDef 或图例补涂。
  * 颜色、菱形、条件标签和共用竖线都写在这一次 create 里。
  *
- * 注意：没有 subgraph 的图也不再交给飞书导入，否则拐点只能事后删了重建。
+ * 注意：调用方必须传入刚插入的空画板。这里不再读出、删除旧节点；
+ * 空画板读节点常返回未就绪，会空等数秒。创建失败应抛出，由调用方改走 Mermaid 导入，导入自己会清空。
  * 飞书要求分区、形状、连线在同一次 create 里才能认 parent_id，所以整图一次提交，不要拆批。
- * 节点很多时这次请求会比较大；失败应抛出，由调用方退回 Mermaid 导入。
+ * 节点很多时这次请求会比较大。
  */
 export async function renderMermaidFlowchartBoard(
   client: FeishuClient,
   whiteboardId: string,
   mermaidCode: string,
+  legend: LegendEntry[] = [],
 ): Promise<boolean> {
-  const batch = flowchartCreateBatch(mermaidCode);
+  const batch = flowchartCreateBatch(mermaidCode, legend);
   if (batch.length === 0) return false;
 
-  const existing = await listBoardNodes(client, whiteboardId);
-  const existingIds = existing.map((node) => node.id).filter((id): id is string => Boolean(id));
-  await batchDeleteNodes(client, whiteboardId, existingIds);
   await createBoardNodes(client, whiteboardId, batch);
   const parsed = parseMermaidGraph(mermaidCode);
   syncLog.debug('按源码直接绘制流程图', {
@@ -1882,12 +1937,14 @@ export async function renderMermaidFlowchartBoard(
  * 不请求飞书，把「直接绘制」会提交的节点统计出来。
  * scripts/check-flowchart-roundtrip.ts 用它核对菱形、条件标签和颜色有没有进同一批 payload。
  * 和 renderMermaidFlowchartBoard 共用 flowchartCreateBatch，改布局或拐点时两边一起变。
+ * legend 与追加入口相同：没有 classDef 的节点用图例色，已有 classDef 的不被盖掉。
  */
-export function previewMermaidFlowchartBoard(mermaidCode: string): {
+export function previewMermaidFlowchartBoard(mermaidCode: string, legend: LegendEntry[] = []): {
   ok: boolean;
   sectionCount: number;
   shapeCount: number;
   diamondCount: number;
+  circleCount: number;
   connectorCount: number;
   /** 创建时已写好坐标的折线。应与 connectorCount 相同。 */
   autoPolylineCount: number;
@@ -1895,6 +1952,8 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
   rightToLeftCount: number;
   captionCount: number;
   styledCount: number;
+  /** 形状 id 与填充色。检查脚本用来核对图例和 classDef 是否进了同一批。 */
+  fills: Array<{ id: string; fill: string }>;
   overlapCount: number;
   overlapSample: string[];
   /** 有竖段的连线，竖段在父节点坐标系里的横坐标。同一起点应相同。 */
@@ -1907,27 +1966,31 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     sectionCount: 0,
     shapeCount: 0,
     diamondCount: 0,
+    circleCount: 0,
     connectorCount: 0,
     autoPolylineCount: 0,
     rightToLeftCount: 0,
     captionCount: 0,
     styledCount: 0,
+    fills: [] as Array<{ id: string; fill: string }>,
     overlapCount: 0,
     overlapSample: [] as string[],
     elbowXs: [] as number[],
     boxes: [] as Array<{ id: string; x: number; y: number; width: number; height: number }>,
   };
-  const batch = flowchartCreateBatch(mermaidCode);
+  const batch = flowchartCreateBatch(mermaidCode, legend);
   if (batch.length === 0) return empty;
 
   let sectionCount = 0;
   let shapeCount = 0;
   let diamondCount = 0;
+  let circleCount = 0;
   let connectorCount = 0;
   let autoPolylineCount = 0;
   let rightToLeftCount = 0;
   let captionCount = 0;
   let styledCount = 0;
+  const fills: Array<{ id: string; fill: string }> = [];
   const elbowXs: number[] = [];
   const shapesByParent = new Map<string, Array<{ id: string; x: number; y: number; width: number; height: number }>>();
   const boxes: Array<{ id: string; x: number; y: number; width: number; height: number }> = [];
@@ -1937,7 +2000,14 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
       shapeCount += 1;
       const shapeType = (node.composite_shape as UnknownRecord | undefined)?.type;
       if (shapeType === 'diamond' || shapeType === 'flow_chart_diamond') diamondCount += 1;
-      if (node.style) styledCount += 1;
+      if (shapeType === 'ellipse' || shapeType === 'circle') circleCount += 1;
+      if (node.style) {
+        styledCount += 1;
+        const fill = (node.style as UnknownRecord).fill_color;
+        if (typeof fill === 'string' && fill) {
+          fills.push({ id: String(node.id ?? ''), fill });
+        }
+      }
       const parentKey = typeof node.parent_id === 'string' ? node.parent_id : '';
       const box = {
         id: String(node.id ?? ''),
@@ -2015,11 +2085,13 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     sectionCount,
     shapeCount,
     diamondCount,
+    circleCount,
     connectorCount,
     autoPolylineCount,
     rightToLeftCount,
     captionCount,
     styledCount,
+    fills,
     overlapCount,
     overlapSample,
     elbowXs,

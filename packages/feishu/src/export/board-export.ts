@@ -108,6 +108,7 @@ function appendMindMapBranch(
 }
 
 const DIAMOND_SHAPE_TYPES = new Set(['diamond', 'flow_chart_diamond', 'condition_shape']);
+const CIRCLE_SHAPE_TYPES = new Set(['ellipse', 'circle']);
 
 const SEMANTIC_CLASS_ORDER = [
   'root',
@@ -169,6 +170,11 @@ function isDiamondShape(shape: UnknownRecord): boolean {
   return DIAMOND_SHAPE_TYPES.has(String(composite.type ?? ''));
 }
 
+function isCircleShape(shape: UnknownRecord): boolean {
+  const composite = (shape.composite_shape as UnknownRecord | undefined) ?? {};
+  return CIRCLE_SHAPE_TYPES.has(String(composite.type ?? ''));
+}
+
 function inferFlowDirection(shapes: UnknownRecord[]): 'LR' | 'TD' {
   const byParent = new Map<string, UnknownRecord[]>();
   for (const shape of shapes) {
@@ -211,7 +217,7 @@ function escapeEdgeLabel(label: string): string {
 
 /**
  * 复合图形画板 → flowchart。
- * 菱形写回 `{}`，分区写回 subgraph，连线文字写回 `-->|标签|`。
+ * 圆框写回 `((文案))`，菱形写回 `{}`，分区写回 subgraph，连线文字写回 `-->|标签|`。
  * 显式颜色写回 classDef / class。节点 id 若是导入时留下的 Mermaid id，则原样使用。
  */
 function exportCompositeFlowchart(rawNodes: UnknownRecord[]): string | null {
@@ -331,7 +337,11 @@ function appendShapeNodeLine(
   if (!id) return;
   const label = shapeLabel(shape);
   const quoted = escapeMermaidQuoted(label);
-  const body = isDiamondShape(shape) ? `{"${quoted}"}` : `["${quoted}"]`;
+  const body = isDiamondShape(shape)
+    ? `{"${quoted}"}`
+    : isCircleShape(shape)
+      ? `(("${quoted}"))`
+      : `["${quoted}"]`;
   lines.push(`${indent}${alias(id)}${body}`);
 }
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { planSharedVerticalBuses, routeBlockHitCount, separateBlocksFromRoutes } from '../packages/feishu/src/board-connector-elbows.ts';
+import { elbowSampleBetween, planSharedVerticalBuses, routeBlockHitCount, separateBlocksFromRoutes } from '../packages/feishu/src/board-connector-elbows.ts';
 
 const shared = planSharedVerticalBuses([
   {
@@ -119,7 +119,15 @@ for (let left = 0; left < blocks.length; left += 1) {
 }
 const byId = new Map(blocks.map((block) => [block.id, block]));
 assert.ok((byId.get('near')?.x ?? 0) >= 100 + 24 + 8, '近处目标应让开竖线');
-assert.ok((byId.get('wide')?.x ?? 0) + (byId.get('wide')?.width ?? 0) <= 100 + 24 - 8
-  || (byId.get('wide')?.x ?? 0) >= 100 + 24 + 8, '宽块不应盖住竖线');
+assert.ok((byId.get('wide')?.x ?? 99) < 8, '较长节点留在原列，不往左滑');
+assert.ok((byId.get('far')?.x ?? 0) > 360, '图被拉长，给竖线留出空档');
+const wide = byId.get('wide')!;
+const busSamples = [
+  elbowSampleBetween(0, 'source', byId.get('source')!, byId.get('near')!),
+  elbowSampleBetween(1, 'source', byId.get('source')!, byId.get('far')!),
+];
+const bus = planSharedVerticalBuses(busSamples, blocks);
+const busX = (bus.get(0)?.boxX ?? busSamples[0]!.boxX) + (bus.get(0)?.turningPoints[0]?.x ?? busSamples[0]!.turningPoints[0]?.x ?? 0);
+assert.ok(busX >= wide.x + wide.width + 8, `竖线应在较长节点右侧，实际 ${busX}`);
 
 console.log('shared vertical bus checks passed');

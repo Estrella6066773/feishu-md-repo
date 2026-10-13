@@ -1,4 +1,9 @@
-import { normalizeMermaidNodeLabel, parseEdgesFromLine, type ParsedMermaidEdge } from '@feishu-md/shared';
+import {
+  parseEdgesFromLine,
+  scanMermaidNodeDefs,
+  type MermaidNodeFrame,
+  type ParsedMermaidEdge,
+} from '@feishu-md/shared';
 
 export interface ParsedMermaidSubgraph {
   id: string;
@@ -12,19 +17,16 @@ export type { ParsedMermaidEdge };
 
 export interface ParsedMermaidGraph {
   nodeLabels: Map<string, string>;
-  /** `{}` 为菱形条件，其余按矩形。分区重建时用它决定画板形状，不依赖飞书导入结果。 */
-  nodeShapes: Map<string, 'rect' | 'diamond'>;
+  /** `((文案))` 为圆框，`{}` 为菱形框，其余按矩形。创建画板时用它决定外形。 */
+  nodeShapes: Map<string, MermaidNodeFrame>;
   subgraphs: ParsedMermaidSubgraph[];
   edges: ParsedMermaidEdge[];
 }
 
-const NODE_DEF_RE =
-  /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
-
-/** 解析 Mermaid 流程图中的 subgraph 与节点标签，供导入后创建画板分区。 */
+/** 解析 Mermaid 流程图中的 subgraph、节点标签和外形，供创建画板时一次写入。 */
 export function parseMermaidGraph(code: string): ParsedMermaidGraph {
   const nodeLabels = new Map<string, string>();
-  const nodeShapes = new Map<string, 'rect' | 'diamond'>();
+  const nodeShapes = new Map<string, MermaidNodeFrame>();
   const subgraphs: ParsedMermaidSubgraph[] = [];
   const edges: ParsedMermaidEdge[] = [];
   const stack: Array<{ id: string; title: string; memberIds: Set<string>; depth: number; parentId?: string }> = [];
@@ -61,19 +63,15 @@ export function parseMermaidGraph(code: string): ParsedMermaidGraph {
       continue;
     }
 
-    for (const match of line.matchAll(NODE_DEF_RE)) {
-      const nodeId = match[1];
-      if (!nodeId) continue;
-      const rawLabel =
-        match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? match[7] ?? nodeId;
-      nodeLabels.set(nodeId, normalizeMermaidNodeLabel(rawLabel));
-      if (!nodeShapes.has(nodeId)) {
-        nodeShapes.set(nodeId, match[7] != null ? 'diamond' : 'rect');
+    for (const node of scanMermaidNodeDefs(line)) {
+      nodeLabels.set(node.id, node.label);
+      if (!nodeShapes.has(node.id)) {
+        nodeShapes.set(node.id, node.shape);
       }
 
       const current = stack[stack.length - 1];
       if (current) {
-        current.memberIds.add(nodeId);
+        current.memberIds.add(node.id);
       }
     }
 

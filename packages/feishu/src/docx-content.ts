@@ -214,21 +214,19 @@ async function insertMarkdownDocumentAt(
       if (!drewNatively) {
         await importBoardMermaidDiagram(client, whiteboardId, segment.code, segment.diagramType);
       }
-      // 思维导图不做 subgraph 分区后处理，避免破坏 mind_map 节点。
-      // 直接绘制已经带上分区、颜色和菱形；导入路径仍要后处理，并补一次上色兜住漏网节点。
-      if (isFlowchart) {
-        if (!drewNatively) {
-          await new Promise((resolve) => setTimeout(resolve, 800));
-          try {
-            await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
-            syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
-          } catch (sectionError) {
-            syncLog.warn(
-              `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
-              syncCtx(documentId, options),
-            );
-            await alignImportedConnectorBuses(client, whiteboardId);
-          }
+      // 直接绘制已经带上分区、颜色和菱形。成功后不要再读画板补涂，否则会删掉形状、拆掉连线。
+      // 导入路径仍要后处理，并补一次上色兜住漏网节点。
+      if (isFlowchart && !drewNatively) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        try {
+          await applyMermaidSubgraphSections(client, whiteboardId, segment.code);
+          syncLog.debug('画板 subgraph 转分区完成', { documentId, whiteboardId });
+        } catch (sectionError) {
+          syncLog.warn(
+            `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
+            syncCtx(documentId, options),
+          );
+          await alignImportedConnectorBuses(client, whiteboardId);
         }
         try {
           const colored = await applyMermaidClassColors(client, whiteboardId, segment.code);
@@ -236,7 +234,6 @@ async function insertMarkdownDocumentAt(
             documentId,
             whiteboardId,
             coloredCount: colored.coloredCount,
-            drewNatively,
           });
         } catch (colorError) {
           syncLog.warn(

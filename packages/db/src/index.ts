@@ -175,6 +175,7 @@ export async function listSyncLogs(db: DbClient, bindingId?: string): Promise<Sy
       progressDone: row.progressDone ?? undefined,
       progressTotal: row.progressTotal ?? undefined,
       currentGitPath: row.currentGitPath ?? undefined,
+      currentDocumentUrl: row.currentDocumentUrl ?? undefined,
       startedAt: row.startedAt,
       finishedAt: row.finishedAt ?? undefined,
     }))
@@ -199,6 +200,7 @@ export async function getSyncLog(db: DbClient, id: string): Promise<SyncLogEntry
     progressDone: row.progressDone ?? undefined,
     progressTotal: row.progressTotal ?? undefined,
     currentGitPath: row.currentGitPath ?? undefined,
+    currentDocumentUrl: row.currentDocumentUrl ?? undefined,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt ?? undefined,
   };
@@ -217,6 +219,7 @@ export async function insertSyncLog(db: DbClient, entry: SyncLogEntry): Promise<
     progressDone: entry.progressDone,
     progressTotal: entry.progressTotal,
     currentGitPath: entry.currentGitPath,
+    currentDocumentUrl: entry.currentDocumentUrl,
     startedAt: entry.startedAt,
     finishedAt: entry.finishedAt,
   });
@@ -234,6 +237,7 @@ export async function updateSyncLog(db: DbClient, entry: SyncLogEntry): Promise<
       progressDone: entry.progressDone,
       progressTotal: entry.progressTotal,
       currentGitPath: entry.currentGitPath,
+      currentDocumentUrl: entry.currentDocumentUrl,
     })
     .where(eq(schema.syncLogs.id, entry.id));
 }

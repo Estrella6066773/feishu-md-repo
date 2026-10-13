@@ -127,6 +127,8 @@ export interface SyncLogEntry {
   progressDone?: number;
   progressTotal?: number;
   currentGitPath?: string;
+  /** 当前文档在飞书上的地址。进度条用它把路径渲染成可点击链接。 */
+  currentDocumentUrl?: string;
   startedAt: string;
   finishedAt?: string;
 }

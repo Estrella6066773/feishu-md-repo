@@ -1072,6 +1072,12 @@ code {
   white-space: nowrap;
 }
 
+.sync-progress-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .action-bar {
   display: flex;
   flex-wrap: wrap;

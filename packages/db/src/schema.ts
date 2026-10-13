@@ -50,6 +50,7 @@ export const syncLogs = sqliteTable('sync_logs', {
   progressDone: integer('progress_done'),
   progressTotal: integer('progress_total'),
   currentGitPath: text('current_git_path'),
+  currentDocumentUrl: text('current_document_url'),
   startedAt: text('started_at').notNull(),
   finishedAt: text('finished_at'),
 });

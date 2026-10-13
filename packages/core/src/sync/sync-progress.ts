@@ -1,6 +1,7 @@
 import type { SyncLogEntry, SyncProgressPhase } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
-import { updateSyncLog } from '@feishu-md/db';
+import { getNodeMappingByGitPath, updateSyncLog } from '@feishu-md/db';
+import { toFeishuDocumentUrl } from '@feishu-md/feishu';
 
 const PROGRESS_FLUSH_MS = 400;
 
@@ -19,6 +20,7 @@ export class SyncProgressReporter {
   private done = 0;
   private total: number | undefined;
   private currentGitPath: string | undefined;
+  private currentDocumentUrl: string | undefined;
   private lastFlushAt = 0;
 
   constructor(
@@ -30,6 +32,7 @@ export class SyncProgressReporter {
     this.phase = phase;
     if (phase !== 'content') {
       this.currentGitPath = undefined;
+      this.currentDocumentUrl = undefined;
     }
     await this.flush(true, message ?? PHASE_MESSAGE[phase]);
   }
@@ -44,12 +47,14 @@ export class SyncProgressReporter {
 
   async documentStarted(gitPath: string): Promise<void> {
     this.currentGitPath = gitPath.replace(/\\/g, '/');
+    this.currentDocumentUrl = await this.lookupDocumentUrl(this.currentGitPath);
     await this.flush(false, this.buildMessage());
   }
 
   async documentCompleted(gitPath: string): Promise<void> {
     this.done += 1;
     this.currentGitPath = gitPath.replace(/\\/g, '/');
+    this.currentDocumentUrl = await this.lookupDocumentUrl(this.currentGitPath);
     await this.flush(false, this.buildMessage());
   }
 
@@ -86,6 +91,24 @@ export class SyncProgressReporter {
       progressDone: this.total != null ? this.done : undefined,
       progressTotal: this.total,
       currentGitPath: this.currentGitPath,
+      currentDocumentUrl: this.currentDocumentUrl,
     });
+  }
+
+  /**
+   * 按 Git 路径取出这篇文档的飞书地址，供进度条做成链接。
+   *
+   * 联动：节点映射在结构阶段写入。正文开始时映射通常已经有了。
+   * 映射里的 feishuUrl 优先；没有时按 token 拼。查不到映射就留空，前台显示纯路径。
+   * 查询失败不能打断同步，进度照常写。
+   */
+  private async lookupDocumentUrl(gitPath: string): Promise<string | undefined> {
+    try {
+      const mapping = await getNodeMappingByGitPath(this.db, this.base.bindingId, gitPath);
+      if (!mapping || mapping.feishuNodeType === 'folder') return undefined;
+      return toFeishuDocumentUrl(mapping);
+    } catch {
+      return undefined;
+    }
   }
 }

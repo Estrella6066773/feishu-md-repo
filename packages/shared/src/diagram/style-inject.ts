@@ -1,13 +1,6 @@
 import { classifyNode } from './classify.js';
-import { parseMermaidFlowchart } from './parse-mermaid.js';
+import { parseMermaidFlowchart, scanMermaidNodeDefs } from './parse-mermaid.js';
 import type { FormatDiagramWarning, LegendEntry } from './types.js';
-
-const NODE_DEF_RE =
-  /\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\[([^\]]+)\]\]|\["([^"]+)"\]|\[([^\]]+)\]|\(\[([^\]]+)\]\)|\(([^)]+)\)|\{([^}]+)\})/g;
-
-function unescapeLabel(raw: string): string {
-  return raw.replace(/<br\s*\/?>/gi, '\n').trim();
-}
 
 function buildClassDef(entry: LegendEntry): string {
   const parts = [`fill:${entry.style.fill}`, `color:${entry.style.text}`];
@@ -23,7 +16,7 @@ function stripExistingClassSuffix(line: string): string {
 
 function injectClassOnLine(line: string, nodeId: string, className: string): string {
   const pattern = new RegExp(
-    `(\\b${escapeRegExp(nodeId)}\\s*(?:\\[\\[[^\\]]+\\]\\]|\\["[^"]+"\\]|\\[[^\\]]+\\]|\\(\\[[^\\]]+\\]\\)|\\([^)]+\\)|\\{[^}]+\\}))`,
+    `(\\b${escapeRegExp(nodeId)}\\s*(?:\\[\\[[^\\]]+\\]\\]|\\["[^"]+"\\]|\\[[^\\]]+\\]|\\(\\[[^\\]]+\\]\\)|\\(\\([^)]+\\)\\)|\\([^)]+\\)|\\{[^}]+\\}))`,
   );
   const stripped = stripExistingClassSuffix(line);
   if (!pattern.test(stripped)) return line;
@@ -88,12 +81,10 @@ export function injectMermaidStyles(code: string, legend: LegendEntry[]): StyleI
       continue;
     }
 
-    for (const match of trimmed.matchAll(NODE_DEF_RE)) {
-      const nodeId = match[1];
-      if (!nodeId) continue;
-      const className = nodeClassMap.get(nodeId);
+    for (const node of scanMermaidNodeDefs(trimmed)) {
+      const className = nodeClassMap.get(node.id);
       if (!className) continue;
-      line = injectClassOnLine(line, nodeId, className);
+      line = injectClassOnLine(line, node.id, className);
     }
 
     outputLines.push(line);
