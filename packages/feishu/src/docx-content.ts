@@ -1,7 +1,7 @@
 import type { FeishuClient } from './client.js';
 import { assertFeishuResponse, FeishuApiError, formatFeishuErrorMessage, withRateLimit } from './api-error.js';
 import { applyMermaidClassColors } from './board-legend-colors.js';
-import { applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
+import { alignImportedConnectorBuses, applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import {
   clearDocumentBody,
@@ -199,7 +199,7 @@ async function insertMarkdownDocumentAt(
       const isFlowchart =
         segment.diagramType === MERMAID_DIAGRAM_TYPE.flowchart ||
         segment.diagramType === MERMAID_DIAGRAM_TYPE.auto;
-      // 带分区的流程图按源码直接画。飞书 Mermaid 导入会丢掉颜色、菱形和条件标签，大图还经常整图失败。
+      // 流程图在本地排好布局和共用竖线，一次创建。飞书 Mermaid 导入会丢掉颜色、菱形和条件标签，拐点也不能事后改。
       let drewNatively = false;
       if (isFlowchart) {
         try {
@@ -227,6 +227,7 @@ async function insertMarkdownDocumentAt(
               `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
               syncCtx(documentId, options),
             );
+            await alignImportedConnectorBuses(client, whiteboardId);
           }
         }
         try {

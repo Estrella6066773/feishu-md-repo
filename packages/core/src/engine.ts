@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { Binding, SyncTriggerType, WorkspaceOptions, RepositoryOptions, TabularSyncMode } from '@feishu-md/shared';
-import { createLogger, isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs, pathEndsWithExtension, resolveSyncDocWriteConcurrency, runTasksWithConcurrency } from '@feishu-md/shared';
+import { createLogger, isReservedSyncGitPath, filterPathsByProjectIgnoreGlobs, mergeProjectIgnoreGlobs, pathEndsWithExtension, resolveSyncDocWriteConcurrency, runTasksWithConcurrency, shouldForceUpdateForTrigger } from '@feishu-md/shared';
 import type { Logger } from '@feishu-md/shared';
 import type { DbClient } from '@feishu-md/db';
 import {
@@ -15,7 +15,7 @@ import {
   updateSyncLog,
   upsertNodeMapping,
 } from '@feishu-md/db';
-import { createGitProvider, fetchRemoteForSync, resolveSyncPaths } from '@feishu-md/git';
+import { createGitProvider, fetchRemoteForSync, resolveForceUpdateOnlyPaths, resolveSyncPaths } from '@feishu-md/git';
 import {
   createFeishuClient,
   createTargetAdapter,
@@ -144,12 +144,40 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
         ? (binding.options as WorkspaceOptions).ignoreGlobs
         : (binding.options as RepositoryOptions).ignoreGlobs;
 
-    const { allPaths: treePaths, changedPaths } = await resolveSyncPaths({
-      git,
-      sha: toSha,
-      projectIgnoreGlobs,
-      fromSha,
-    });
+    // 立即同步且 HEAD 没变：不走修复同步（不补建缺失、不扫全库）。
+    // 只解析强制更新路径。这份路径不是完整树，后面禁止拿它做删除清理。
+    // 协调器仍会传入 repairMissingRemote，这里在已是最新时把它关掉。
+    const forceUpdateGlobs = forceUpdateGlobsForTrigger(binding, trigger);
+    const alreadyLatest =
+      trigger === 'manual'
+      && fullResync !== true
+      && forceRewriteAll !== true
+      && fromSha != null
+      && fromSha === toSha;
+
+    if (alreadyLatest) {
+      log.info('当前已是最新提交，立即同步只处理强制更新文件', {
+        toSha,
+        forceUpdateGlobs: forceUpdateGlobs.join(',') || '(无)',
+      });
+    }
+
+    const { allPaths: treePaths, changedPaths } = alreadyLatest
+      ? {
+          allPaths: await resolveForceUpdateOnlyPaths({
+            git,
+            sha: toSha,
+            projectIgnoreGlobs,
+            forceUpdateGlobs,
+          }),
+          changedPaths: [] as string[],
+        }
+      : await resolveSyncPaths({
+          git,
+          sha: toSha,
+          projectIgnoreGlobs,
+          fromSha,
+        });
 
     const commits = await git.getCommitsBetween(fromSha, toSha);
     const broadcastChangedPaths = fullResync
@@ -180,6 +208,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       toSha,
       fullResync,
       forceRewriteAll,
+      forceUpdateOnly: alreadyLatest,
       treePaths,
       changedPaths,
       readMarkdown: readSyncContent,
@@ -209,7 +238,8 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
         readBinaryFile,
         workspaceOptions,
         repositoryOptions,
-        repairMissingRemote: repairMissingRemote === true,
+        repairMissingRemote: alreadyLatest ? false : repairMissingRemote === true,
+        forceUpdateOnly: alreadyLatest,
         fullResync: fullResync === true,
         forceRewriteAll: forceRewriteAll === true,
         log,
@@ -234,7 +264,7 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       plan.operations.length === 0 &&
       fromSha != null &&
       !fullResync &&
-      treePaths.length > 0 &&
+      (treePaths.length > 0 || alreadyLatest) &&
       repairedMissingCount === 0;
 
     const isGapFillNoop = plan.gapFillOnly === true && operationCount === 0 && treePaths.length > 0;
@@ -269,7 +299,13 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
       fromSha,
       toSha,
       status: 'success',
-      message: isGapFillNoop
+      message: alreadyLatest && plan.operations.length === 0
+        ? '当前已是最新提交，没有需要强制更新的文件'
+        : alreadyLatest
+          ? overviewUpdated
+            ? `当前已是最新提交，已强制更新 ${operationCount} 项，已更新同步文档总览`
+            : `当前已是最新提交，已强制更新 ${operationCount} 项`
+          : isGapFillNoop
         ? overviewUpdated
           ? '飞书结构完整，已更新同步文档总览'
           : '飞书结构完整，无需补缺'
@@ -330,6 +366,13 @@ export async function runSync(options: RunSyncOptions): Promise<RunSyncResult> {
   }
 }
 
+/** 当前触发方式下真正生效的强制更新规则。模式不匹配或规则为空时，立即同步的“已是最新”分支不会写任何文件。 */
+function forceUpdateGlobsForTrigger(binding: Binding, trigger: SyncTriggerType): string[] {
+  const options = binding.options as WorkspaceOptions | RepositoryOptions;
+  if (!shouldForceUpdateForTrigger(options.forceUpdateMode, trigger)) return [];
+  return (options.forceUpdateGlobs ?? []).map((glob) => glob.trim()).filter((glob) => glob.length > 0);
+}
+
 async function executePlan(options: {
   plan: SyncPlan;
   binding: Binding;
@@ -341,6 +384,11 @@ async function executePlan(options: {
   workspaceOptions?: WorkspaceOptions;
   repositoryOptions?: RepositoryOptions;
   repairMissingRemote?: boolean;
+  /**
+   * 立即同步且 HEAD 未变。plan.allTrackedPaths 只含强制更新文件，
+   * 不能交给 deleteRemovedNodes，否则其余已映射节点会被删掉。
+   */
+  forceUpdateOnly?: boolean;
   fullResync?: boolean;
   forceRewriteAll?: boolean;
   log?: Logger;
@@ -366,6 +414,7 @@ async function executePlan(options: {
     workspaceOptions,
     repositoryOptions,
     repairMissingRemote = false,
+    forceUpdateOnly = false,
     fullResync = false,
     forceRewriteAll = false,
     log: parentLog,
@@ -602,16 +651,19 @@ async function executePlan(options: {
     }
   }
 
-  await progress?.setPhase('cleanup');
-
-  const deletedCount = await deleteRemovedNodes({
-    db,
-    binding,
-    adapter,
-    treePaths: plan.allTrackedPaths,
-    existingMappings,
-    log,
-  });
+  // 已是最新提交时，规划路径不是完整树。这里若按它清理，飞书上其余文档会被当成已删除。
+  let deletedCount = 0;
+  if (!forceUpdateOnly) {
+    await progress?.setPhase('cleanup');
+    deletedCount = await deleteRemovedNodes({
+      db,
+      binding,
+      adapter,
+      treePaths: plan.allTrackedPaths,
+      existingMappings,
+      log,
+    });
+  }
   count += deletedCount;
 
   const documentProgressTotal = structureDocumentsDone + pendingDocUpdates.length;

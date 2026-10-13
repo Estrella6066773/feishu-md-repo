@@ -36,6 +36,12 @@ export interface SyncPlanContext {
   fullResync?: boolean;
   /** 强制重写全部正文（跳过飞书块特征校验）。 */
   forceRewriteAll?: boolean;
+  /**
+   * 立即同步发现 HEAD 与上次同步提交相同。
+   * 只保留强制更新路径。调用方此时应关掉缺失补建，并且不要用这份缩减后的路径去做清理，
+   * 否则未列入的已映射节点会被当成已删除。
+   */
+  forceUpdateOnly?: boolean;
   treePaths: string[];
   changedPaths: string[];
   readMarkdown: (path: string) => Promise<string | null>;

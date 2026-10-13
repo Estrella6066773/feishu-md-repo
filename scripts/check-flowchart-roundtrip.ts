@@ -53,9 +53,18 @@ assert(preview.diamondCount === 1, `样例菱形数量不对: ${JSON.stringify(p
 assert(preview.captionCount === 2, `样例条件标签数量不对: ${JSON.stringify(preview)}`);
 assert(preview.styledCount === 3, `样例上色节点数量不对: ${JSON.stringify(preview)}`);
 assert(preview.connectorCount === 2, `样例连线数量不对: ${JSON.stringify(preview)}`);
-assert(preview.autoPolylineCount === preview.connectorCount, `样例连线不是飞书自适应折线: ${JSON.stringify(preview)}`);
+assert(preview.autoPolylineCount === preview.connectorCount, `样例连线没有在创建时写好拐点: ${JSON.stringify(preview)}`);
+assert(preview.rightToLeftCount === preview.connectorCount, `样例应从右边出去、从左边进来: ${JSON.stringify(preview)}`);
 assert(preview.shapeCount === 3, `样例形状数量不对: ${JSON.stringify(preview)}`);
 assert(preview.overlapCount === 0, `样例节点重叠: ${preview.overlapCount}`);
+assert(preview.elbowXs.length === 2, `样例两条条件线都应有竖段: ${JSON.stringify(preview.elbowXs)}`);
+assert(preview.elbowXs[0] === preview.elbowXs[1], `样例两条条件线应共用一条竖线: ${JSON.stringify(preview.elbowXs)}`);
+const fuelBox = preview.boxes.find((box) => box.id === 'cQFuel');
+assert(Boolean(fuelBox), '样例缺少燃料判断');
+assert(
+  Math.abs((preview.elbowXs[0] ?? 0) - ((fuelBox?.x ?? 0) + (fuelBox?.width ?? 0) + 24)) < 0.6,
+  `样例竖线应离起点右缘 24: ${JSON.stringify(preview.elbowXs)} / ${JSON.stringify(fuelBox)}`,
+);
 
 const styles = parseClassStyles(sample);
 assert(styles.classByNodeId.get('cQFuel') === 'cond', 'cQFuel 应属于 cond');
@@ -80,11 +89,31 @@ try {
     assert(drawn.shapeCount === parsed.nodeLabels.size, `第 ${index + 1} 图节点没画全: ${JSON.stringify(drawn)} / ${parsed.nodeLabels.size}`);
     assert(drawn.diamondCount === diamondExpected, `第 ${index + 1} 图菱形不对: ${drawn.diamondCount} != ${diamondExpected}`);
     assert(drawn.connectorCount === parsed.edges.length, `第 ${index + 1} 图连线不对: ${drawn.connectorCount} != ${parsed.edges.length}`);
-    assert(drawn.autoPolylineCount === drawn.connectorCount, `第 ${index + 1} 图连线不是飞书自适应折线`);
+    assert(drawn.autoPolylineCount === drawn.connectorCount, `第 ${index + 1} 图连线没有在创建时写好拐点`);
+    assert(drawn.rightToLeftCount === drawn.connectorCount, `第 ${index + 1} 图不是左进右出`);
     assert(drawn.captionCount === captionExpected, `第 ${index + 1} 图条件标签不对: ${drawn.captionCount} != ${captionExpected}`);
     assert(drawn.styledCount === styledExpected, `第 ${index + 1} 图上色不对: ${drawn.styledCount} != ${styledExpected}`);
     assert(drawn.overlapCount === 0, `第 ${index + 1} 图节点重叠: ${drawn.overlapCount} ${drawn.overlapSample.join(' | ')}`);
   });
+  const joinDrawn = previewMermaidFlowchartBoard(fences[1] ?? '');
+  const joinAt = (id: string) => {
+    const box = joinDrawn.boxes.find((item) => item.id === id);
+    assert(Boolean(box), `咬合图缺少 ${id}`);
+    return box!;
+  };
+  const joinRoot = joinAt('oRRoot');
+  const joinCamp = joinAt('oYCamp');
+  const joinTask = joinAt('oYTask');
+  const joinShipSys = joinAt('oYShip');
+  const joinShip = joinAt('oOShip');
+  const joinNotifyHit = joinAt('oNHit');
+  const joinHit = joinAt('oVHit');
+  assert(joinShipSys.y < joinTask.y && joinTask.y < joinCamp.y, '咬合图纵向顺序应与 GitHub 的分层结果一致');
+  assert(
+    joinRoot.x < joinTask.x && joinTask.x < joinShip.x && joinShip.x < joinNotifyHit.x && joinNotifyHit.x < joinHit.x,
+    '咬合图应按 Dagre 从左到右分层，而不是贴着父节点往右堆',
+  );
+  assert(joinCamp.x > joinTask.x, '战役系统应落到更靠右的层，避免和任务系统挤在同一列');
   const camp = fences[2] ?? '';
   const campGraph = parseMermaidGraph(camp);
   const fuelEdges = campGraph.edges.filter((edge) => edge.from === 'cQFuel');

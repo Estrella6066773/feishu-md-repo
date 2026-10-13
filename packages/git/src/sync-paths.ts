@@ -1,5 +1,6 @@
 import {
   filterPathsByProjectIgnoreGlobs,
+  matchesAnyProjectPathGlob,
   mergeProjectIgnoreGlobs,
   normalizeRepoPath,
 } from '@feishu-md/shared';
@@ -54,4 +55,32 @@ export async function resolveSyncPaths(options: ResolveSyncPathsOptions): Promis
   }
 
   return { allPaths, changedPaths };
+}
+
+export interface ResolveForceUpdateOnlyPathsOptions {
+  git: GitProvider;
+  sha: string;
+  projectIgnoreGlobs?: string[];
+  forceUpdateGlobs: string[];
+}
+
+/**
+ * 立即同步确认 HEAD 未前进时使用。
+ * 只列出命中强制更新规则的已跟踪路径，再对这一小撮做 export-ignore。
+ * 不要改走 resolveSyncPaths：后者会对仓库里每一个已跟踪文件单独起一次 git check-attr。
+ * 返回值不是完整树。调用方不能拿它判断哪些飞书节点该删除。
+ */
+export async function resolveForceUpdateOnlyPaths(
+  options: ResolveForceUpdateOnlyPathsOptions,
+): Promise<string[]> {
+  const globs = options.forceUpdateGlobs.map((glob) => glob.trim()).filter((glob) => glob.length > 0);
+  if (globs.length === 0) return [];
+
+  const projectGlobs = mergeProjectIgnoreGlobs(options.projectIgnoreGlobs);
+  const gitTracked = await options.git.listTrackedPathsAtSha(options.sha);
+  const matched = gitTracked.filter((path) =>
+    matchesAnyProjectPathGlob(normalizeRepoPath(path), globs),
+  );
+  const afterIgnore = filterPathsByProjectIgnoreGlobs(matched, projectGlobs);
+  return options.git.filterPathsByGitExportIgnore(options.sha, afterIgnore);
 }

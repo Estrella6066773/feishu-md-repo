@@ -354,14 +354,14 @@ git commit -m "chore: …"
 
 核心服务在本机回环地址上同时提供 MCP，路径是 `http://127.0.0.1:8787/mcp`。它和面板走同一条队列：可以查看绑定、发起同步、导入评论、查看日志，也可以把飞书文档导出或写回已绑定的仓库文件。先启动 `pnpm dev:service`（或桌面应用），再在 Cursor 里连接。
 
-`.cursor/mcp.json` 不进 Git。本机可写成：
+`.cursor/mcp.json` 不进 Git。Cursor 对 `type: http` 是从云端去连的，`127.0.0.1` 到不了这台电脑。本机用 stdio 桥转发到核心服务：
 
 ```json
 {
   "mcpServers": {
     "feishu-md-app": {
-      "type": "http",
-      "url": "http://127.0.0.1:8787/mcp"
+      "command": "node",
+      "args": ["apps/core-service/mcp-stdio-bridge.mjs"]
     }
   }
 }

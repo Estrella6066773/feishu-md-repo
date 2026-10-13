@@ -237,6 +237,7 @@ export class SyncCoordinator {
         trigger,
         fullResync,
         forceRewriteAll,
+        // 手动且 HEAD 未变时，runSync 会关掉补建，只同步强制更新文件。
         repairMissingRemote: trigger === 'manual' || trigger === 'bot',
         logId,
         shouldAbort,

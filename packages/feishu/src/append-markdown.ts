@@ -3,7 +3,7 @@ import { createLogger } from '@feishu-md/shared';
 import type { FeishuClient } from './client.js';
 import { formatFeishuErrorMessage } from './api-error.js';
 import { applyLegendColorsToBoard, applyMermaidClassColors } from './board-legend-colors.js';
-import { applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
+import { alignImportedConnectorBuses, applyMermaidSubgraphSections, renderMermaidFlowchartBoard } from './board-subgraph-sections.js';
 import { importBoardMermaidDiagram, insertBoardBlock } from './board-service.js';
 import { findDocumentPageBlock, listDocumentBlocks } from './docx-block-service.js';
 import { appendDocumentMarkdown } from './docx-content.js';
@@ -155,7 +155,7 @@ export async function appendMermaidBoardToDocument(
   }
 
   // 仅流程图做 subgraph→分区；思维导图跳过，避免破坏 mind_map 节点。
-  // 直接绘制已经建好分区，这里只补导入路径。
+  // 直接绘制已经写好布局和拐点。这里只补导入失败后的那条路径。
   if (isFlowchart && !drewNatively) {
     await new Promise((resolve) => setTimeout(resolve, 800));
     try {
@@ -165,6 +165,7 @@ export async function appendMermaidBoardToDocument(
         `画板 subgraph 转分区失败，保留 Mermaid 导入结果: ${formatFeishuErrorMessage(sectionError)}`,
         { documentId, whiteboardId },
       );
+      await alignImportedConnectorBuses(client, whiteboardId);
     }
   }
 

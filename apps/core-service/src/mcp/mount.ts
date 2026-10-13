@@ -10,7 +10,8 @@ const mcpLog = createLogger('mcp');
 /**
  * 把 MCP 挂到核心服务的 /mcp。
  * 每个请求新建一对 server 和 transport：这个传输是无会话的，重复使用会串消息 id。
- * 助手要先启动本工具（pnpm dev:service 或桌面应用），Cursor 再连 http://127.0.0.1:8787/mcp。
+ * 助手要先启动本工具（pnpm dev:service 或桌面应用）。
+ * Cursor 云端连不到 127.0.0.1，配置里应走 mcp-stdio-bridge.mjs，由本机进程转发到这里。
  * 返回值表示这次是否真正挂上了路由，供启动日志使用。
  */
 export function mountControlMcp(app: Hono, deps: McpControlDeps): boolean {

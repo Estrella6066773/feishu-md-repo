@@ -1,6 +1,9 @@
+import { Graph, layout as dagreLayout } from '@dagrejs/dagre';
+import type { EdgeLabel, GraphLabel, NodeLabel } from '@dagrejs/dagre';
 import type { FeishuClient } from './client.js';
 import { createLogger, parseMermaidClassStyles, type DiagramNodeStyle } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
+import { planSharedVerticalBuses, type ConnectorElbowSample } from './board-connector-elbows.js';
 import {
   parseMermaidGraph,
   type ParsedMermaidEdge,
@@ -49,11 +52,11 @@ const SECTION_GAP_Y = 120;
 const LAYOUT_ASPECT_WIDTH = 16;
 const LAYOUT_ASPECT_HEIGHT = 9;
 /**
- * 列与列之间只留折线通道。同级平行项的缝是节点之间的空隙，不是「每项占一整行」。
- * 纵向缝取原先的一半：父节点贴着已经压紧的子节点簇中线，下一棵兄弟子树紧挨着上一棵的底边。
+ * 与 Mermaid 流程图默认的 nodeSpacing / rankSpacing 相同。
+ * Dagre 用它们做同层间距和层与层的间距；GitHub 上的流程图就是这组默认值。
  */
-const LANE_GAP_X = 40;
-const LANE_GAP_Y = 24;
+const MERMAID_NODE_SPACING = 50;
+const MERMAID_RANK_SPACING = 50;
 const WHITEBOARD_RETRY_DELAYS_MS = [800, 1200, 2000, 3000, 4000];
 const FEISHU_COORD_LIMIT = 132070;
 const FEISHU_Z_INDEX_LIMIT = 10000;
@@ -152,10 +155,10 @@ async function createBoardNodes(
   client: FeishuClient,
   whiteboardId: string,
   nodes: UnknownRecord[],
-): Promise<void> {
-  if (nodes.length === 0) return;
+): Promise<string[]> {
+  if (nodes.length === 0) return [];
 
-  await withWhiteboardRetry('Create board section nodes', async () => {
+  return withWhiteboardRetry('Create board section nodes', async () => {
     const response = await withRateLimit(() =>
       client.board.v1.whiteboardNode.create({
         path: { whiteboard_id: whiteboardId },
@@ -163,7 +166,208 @@ async function createBoardNodes(
       }),
     );
     assertFeishuResponse(response, 'Create board section nodes');
+    const ids = (response.data as { ids?: string[] } | undefined)?.ids ?? [];
+    return ids.map((id) => String(id));
   });
+}
+
+function readPointList(value: unknown): Array<{ x: number; y: number }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((point) => {
+    const record = point as UnknownRecord;
+    const x = Number(record.x);
+    const y = Number(record.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? [{ x, y }] : [];
+  });
+}
+
+/** 列出的连线端点已经是飞书分配的 id，分组必须用它，不能用提交时的自定义 id。 */
+function readAttachedObjectId(endpoint: unknown, legacy: unknown): string {
+  const attached = (endpoint as UnknownRecord | undefined)?.attached_object as UnknownRecord | undefined;
+  if (typeof attached?.id === 'string' && attached.id) return attached.id;
+  const legacyRecord = legacy as UnknownRecord | undefined;
+  return typeof legacyRecord?.id === 'string' ? legacyRecord.id : '';
+}
+
+function readStartObjectId(connector: UnknownRecord | undefined): string {
+  return readAttachedObjectId(connector?.start, connector?.start_object);
+}
+
+function readEndObjectId(connector: UnknownRecord | undefined): string {
+  return readAttachedObjectId(connector?.end, connector?.end_object);
+}
+
+/**
+ * 连线左上角从所属分区一路加到画板坐标。
+ * 嵌套分区里的子线和跨分区的子线才能放进同一组共用竖线。
+ */
+function absoluteBoardOrigin(
+  node: BoardNodeRecord,
+  byId: Map<string, BoardNodeRecord>,
+): { x: number; y: number } {
+  let x = Number(node.x ?? 0);
+  let y = Number(node.y ?? 0);
+  const seen = new Set<string>();
+  let parentId = node.parent_id;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    x += Number(parent.x ?? 0);
+    y += Number(parent.y ?? 0);
+    parentId = parent.parent_id;
+  }
+  return { x, y };
+}
+
+function absoluteRect(
+  node: BoardNodeRecord,
+  byId: Map<string, BoardNodeRecord>,
+): { x: number; y: number; right: number; bottom: number; centerY: number } {
+  const origin = absoluteBoardOrigin(node, byId);
+  const width = Number(node.width ?? 0);
+  const height = Number(node.height ?? 0);
+  return {
+    x: origin.x,
+    y: origin.y,
+    right: origin.x + width,
+    bottom: origin.y + height,
+    centerY: origin.y + height / 2,
+  };
+}
+
+/**
+ * 用两端图形的右缘和左缘定包围盒，不沿用飞书已经拐出去的折线框。
+ * 这样击魄到三个系统的竖线会贴在击魄右侧，而不会被拉到任务系统那一条干线上。
+ */
+function routeSample(
+  payloadIndex: number,
+  live: BoardNodeRecord,
+  byId: Map<string, BoardNodeRecord>,
+): ConnectorElbowSample | null {
+  const connector = live.connector;
+  const startId = readStartObjectId(connector);
+  const endId = readEndObjectId(connector);
+  const start = startId ? byId.get(startId) : undefined;
+  const end = endId ? byId.get(endId) : undefined;
+  if (!startId || !start || !end) return null;
+
+  const startRect = absoluteRect(start, byId);
+  const endRect = absoluteRect(end, byId);
+  const boxWidth = endRect.x - startRect.right;
+  const boxHeight = Math.abs(endRect.centerY - startRect.centerY);
+  const sourceAbove = startRect.centerY <= endRect.centerY;
+  return {
+    payloadIndex,
+    groupKey: startId,
+    boxX: startRect.right,
+    boxY: Math.min(startRect.centerY, endRect.centerY),
+    boxWidth,
+    boxHeight,
+    turningPoints: boxHeight <= 0.5
+      ? []
+      : [
+          { x: 0, y: sourceAbove ? 0 : boxHeight },
+          { x: 0, y: sourceAbove ? boxHeight : 0 },
+        ],
+  };
+}
+
+/**
+ * 飞书 Mermaid 导入的普通流程图没有走按源码的那一次创建，线上已经是飞书自己拐的。
+ * 这里删掉要改的线，再用两端的真实 id 建回来。不挂 parent_id。
+ * 分区连线若引用已经存在的分区，飞书会报 2890002。按源码绘制的路径不要走这里。
+ *
+ * 联动：applyMermaidSubgraphSections 在没有 subgraph、或分区规划失败时调用。
+ * 击魄到舰只能力系统、任务系统、战役系统会共用击魄右侧的一条竖线；
+ * 任务系统自己的子线在它右侧另起一条，两条平行且不重合。
+ *
+ * 注意：画板节点没有更新接口。PUT 会返回成功，但拐点不变。
+ * 所以这条兜底只能整段删掉再创建；创建失败时把原来的线写回去。
+ */
+export async function alignImportedConnectorBuses(
+  client: FeishuClient,
+  whiteboardId: string,
+): Promise<void> {
+  let listed: BoardNodeRecord[];
+  try {
+    listed = await listBoardNodes(client, whiteboardId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    syncLog.warn('连线拐点读回失败，保留飞书自动折线', { whiteboardId, message });
+    return;
+  }
+
+  const byId = new Map(listed.flatMap((node) => (node.id ? [[node.id, node] as const] : [])));
+  const connectors = listed.filter((node) => node.type === 'connector' && node.id);
+  const samples: ConnectorElbowSample[] = [];
+  connectors.forEach((live, index) => {
+    const sample = routeSample(index, live, byId);
+    if (sample) samples.push(sample);
+  });
+
+  const snaps = planSharedVerticalBuses(samples);
+  if (snaps.size === 0) return;
+
+  const replacements: UnknownRecord[] = [];
+  const restore: UnknownRecord[] = [];
+  const deleteIds: string[] = [];
+  for (const [index, snap] of snaps) {
+    const live = connectors[index];
+    if (!live?.id || !live.connector) continue;
+    const origin = absoluteBoardOrigin(live, byId);
+    deleteIds.push(live.id);
+    replacements.push({
+      id: `bus${replacements.length + 1}`,
+      type: 'connector',
+      x: snap.boxX,
+      y: snap.boxY,
+      width: snap.boxWidth,
+      height: snap.boxHeight,
+      angle: 0,
+      style: live.style,
+      z_index: live.z_index ?? 1,
+      connector: {
+        ...live.connector,
+        shape: 'polyline',
+        specified_coordinate: true,
+        turning_points: snap.turningPoints,
+      },
+    });
+    restore.push({
+      id: `keep${restore.length + 1}`,
+      type: 'connector',
+      x: origin.x,
+      y: origin.y,
+      width: Number(live.width ?? 0),
+      height: Number(live.height ?? 0),
+      angle: 0,
+      style: live.style,
+      z_index: live.z_index ?? 1,
+      connector: live.connector,
+    });
+  }
+
+  if (deleteIds.length === 0) return;
+
+  syncLog.debug('按共用竖线理顺导入流程图', {
+    whiteboardId,
+    snappedCount: deleteIds.length,
+  });
+
+  try {
+    await batchDeleteNodes(client, whiteboardId, deleteIds);
+    try {
+      await createBoardNodes(client, whiteboardId, replacements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      syncLog.warn('导入流程图理线失败，改回原来的折线', { whiteboardId, message });
+      await createBoardNodes(client, whiteboardId, restore);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    syncLog.warn('导入流程图理线中断，画板可能仍是飞书原来的折线', { whiteboardId, message });
+  }
 }
 
 /**
@@ -442,74 +646,91 @@ function defaultConnectorStyle(): UnknownRecord {
 type SnapSide = 'left' | 'right' | 'top' | 'bottom';
 
 /**
- * 按两块形状的中心决定从哪条边出发、落到哪条边。
- * 左右优先：流程图是从左往右排的，父到子应出右边、进左边；回边则相反。
- * 上下只在目标明显在正上或正下、横向几乎没有错开时使用。
- * 沿边的比例朝向对方中心，避免所有线都钉在边的正中。
+ * 线一律左进右出，而且两端都钉在边的正中。
+ * 多根线叠在同一点也保持居中。竖段由 plannedConnectorGeometry 在创建前写好，不沿边错开。
  */
-function connectorFacingSides(
-  start: BlockPlacement,
-  end: BlockPlacement,
-): { from: SnapSide; to: SnapSide; fromAlong: number; toAlong: number } {
-  const startCx = start.x + start.width / 2;
-  const startCy = start.y + start.height / 2;
-  const endCx = end.x + end.width / 2;
-  const endCy = end.y + end.height / 2;
-  const dx = endCx - startCx;
-  const dy = endCy - startCy;
-  const from: SnapSide = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'right' : 'left') : dy >= 0 ? 'bottom' : 'top';
-  const to: SnapSide = from === 'right' ? 'left' : from === 'left' ? 'right' : from === 'bottom' ? 'top' : 'bottom';
-  return {
-    from,
-    to,
-    fromAlong: alongFacingSide(start, end, from),
-    toAlong: alongFacingSide(end, start, to),
-  };
+function connectorFacingSides(): { from: SnapSide; to: SnapSide; fromAlong: number; toAlong: number } {
+  return { from: 'right', to: 'left', fromAlong: 0.5, toAlong: 0.5 };
 }
 
-function alongFacingSide(box: BlockPlacement, other: BlockPlacement, side: SnapSide): number {
-  const span = side === 'left' || side === 'right' ? box.height : box.width;
-  const origin = side === 'left' || side === 'right' ? box.y : box.x;
-  const otherCenter =
-    side === 'left' || side === 'right' ? other.y + other.height / 2 : other.x + other.width / 2;
-  if (span <= 0) return 0.5;
-  return (otherCenter - origin) / span;
+interface ConnectorRouteInput {
+  startObjectId: string;
+  start: BlockPlacement;
+  end: BlockPlacement;
+  /** 有分区时，包围盒要减掉这个原点，变成分区内坐标。拐点仍相对包围盒，不要再减。 */
+  origin?: { x: number; y: number };
 }
 
-function clampAttachment(along: number): number {
-  if (!Number.isFinite(along)) return 0.5;
-  return Math.min(0.85, Math.max(0.15, along));
+/**
+ * 按起点把折线收成共用竖线，返回可直接写入 create 的包围盒和拐点。
+ *
+ * 联动：buildSectionBatch 与 buildPlainFlowchartBatch 在组 payload 之前调用。
+ * 样本用形状的绝对坐标，planSharedVerticalBuses 只移动竖线的横坐标。
+ * 同一起点的线共用一条竖线；竖直范围叠在一起的不同起点再往右错开。
+ *
+ * 注意：飞书没有改节点的接口，拐点必须在这次 create 里写全。
+ * 有分区的线，x/y 要减分区原点；turning_points 相对这条线自己的框，不能减原点。
+ * 高度不超过半像素的线没有竖段，写空拐点，避免飞书再拐一折。
+ */
+function plannedConnectorGeometry(
+  drafts: ConnectorRouteInput[],
+): Array<{ x: number; y: number; width: number; height: number; turningPoints: Array<{ x: number; y: number }> }> {
+  const samples: ConnectorElbowSample[] = drafts.map((draft, index) => {
+    const sourceRight = draft.start.x + draft.start.width;
+    const targetLeft = draft.end.x;
+    const sourceCenter = draft.start.y + draft.start.height / 2;
+    const targetCenter = draft.end.y + draft.end.height / 2;
+    const boxHeight = Math.abs(targetCenter - sourceCenter);
+    const sourceAbove = sourceCenter <= targetCenter;
+    return {
+      payloadIndex: index,
+      groupKey: draft.startObjectId,
+      boxX: sourceRight,
+      boxY: Math.min(sourceCenter, targetCenter),
+      boxWidth: targetLeft - sourceRight,
+      boxHeight,
+      turningPoints:
+        boxHeight <= 0.5
+          ? []
+          : [
+              { x: 0, y: sourceAbove ? 0 : boxHeight },
+              { x: 0, y: sourceAbove ? boxHeight : 0 },
+            ],
+    };
+  });
+  const snaps = planSharedVerticalBuses(samples);
+  return drafts.map((draft, index) => {
+    const sample = samples[index]!;
+    const snap = snaps.get(index);
+    // 规划结果省略「已经落在这条竖线上」的线。省略时仍要用样本自己的拐点，不能收成直线。
+    const placed =
+      snap ??
+      (sample.boxHeight > 0.5
+        ? {
+            boxX: sample.boxX,
+            boxY: sample.boxY,
+            boxWidth: Math.max(0, sample.boxWidth),
+            boxHeight: sample.boxHeight,
+            turningPoints: sample.turningPoints,
+          }
+        : undefined);
+    const origin = draft.origin ?? { x: 0, y: 0 };
+    return {
+      x: clampFeishuCoord((placed?.boxX ?? sample.boxX) - origin.x),
+      y: clampFeishuCoord((placed?.boxY ?? sample.boxY) - origin.y),
+      width: clampFeishuSize(placed?.boxWidth ?? Math.max(0, sample.boxWidth)),
+      height: clampFeishuSize(placed?.boxHeight ?? 0),
+      turningPoints: placed?.turningPoints ?? [],
+    };
+  });
 }
 
 function sidePosition(side: SnapSide, along: number): { x: number; y: number } {
-  const t = clampAttachment(along);
+  const t = along;
   if (side === 'left') return { x: 0, y: t };
   if (side === 'right') return { x: 1, y: t };
   if (side === 'top') return { x: t, y: 0 };
   return { x: t, y: 1 };
-}
-
-/**
- * 同一条边上有多根线时，按朝向顺序均匀错开，避免叠在同一个点上。
- * 只有一根线时保留朝向对方中心的位置。
- */
-function spreadSharedAttachments(alongByKey: Map<string, number[]>): Map<string, number[]> {
-  const spread = new Map<string, number[]>();
-  for (const [key, values] of alongByKey) {
-    if (values.length <= 1) {
-      spread.set(key, values.map((value) => clampAttachment(value)));
-      continue;
-    }
-    const order = values
-      .map((value, index) => ({ value, index }))
-      .sort((left, right) => left.value - right.value || left.index - right.index);
-    const placed = new Array<number>(values.length);
-    order.forEach((item, rank) => {
-      placed[item.index] = (rank + 1) / (values.length + 1);
-    });
-    spread.set(key, placed);
-  }
-  return spread;
 }
 
 /**
@@ -521,9 +742,9 @@ function connectorAttachment(id: string, side: SnapSide, along: number): Unknown
 }
 
 /**
- * 折线不写拐点。specified_coordinate 为 false 时，飞书只负责折线怎么拐，不改这里写死的两端。
+ * 第一次创建就把竖线写进拐点。specified_coordinate 为 true 时，飞书按这里的坐标画，不再自己拐。
  * 同分区连线仍挂 parent_id。飞书只在同一次 create 里认自定义父子，不挂的话线会脱离分区。
- * x/y/宽高保持 0，占位给创建接口；包围盒由飞书按两端重算，端点本身不靠这个框。
+ * 包围盒和拐点都相对这条线的父节点；没有父节点时就是画板坐标。
  */
 function buildGeneratedConnectorPayload(
   id: string,
@@ -535,19 +756,27 @@ function buildGeneratedConnectorPayload(
   endAlong: number,
   sectionId?: string,
   label?: string,
+  geometry?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    turningPoints: Array<{ x: number; y: number }>;
+  },
 ): UnknownRecord {
   const payload: UnknownRecord = {
     id,
     type: 'connector',
-    x: 0,
-    y: 0,
-    width: 0,
-    height: 0,
+    x: geometry?.x ?? 0,
+    y: geometry?.y ?? 0,
+    width: geometry?.width ?? 0,
+    height: geometry?.height ?? 0,
     angle: 0,
     style: defaultConnectorStyle(),
     connector: {
       shape: 'polyline',
-      specified_coordinate: false,
+      specified_coordinate: geometry != null,
+      ...(geometry ? { turning_points: geometry.turningPoints } : {}),
       caption_auto_direction: false,
       start: {
         arrow_style: 'none',
@@ -719,12 +948,15 @@ function planSubgraphSections(
 }
 
 /**
- * 按节点真实宽高从左往右排，同级节点压成一列。
- * 节约空白的方式和紧凑稿一致：平行项只占自己的高度再加一条窄缝，不按全图最高的块空出一整行；
- * 父节点放在这簇子节点的垂直中线，下一棵兄弟子树从上一棵的底边接着排，中间不再垫空行。
- * 列左对齐，列距只留折线通道。某一列里有一块很宽的节点时，窄节点仍贴着该列左边，避免为了居中再拉开箭头。
- * 多父节点只保留源码里先出现的那条，避免一张网被拉成很多列。
- * 回边不占新的格子：深度已经定过的节点不再递归，否则战役图里的环会把调用栈撑爆。这些边仍然会画成连线。
+ * 用 Dagre 的分层排版放置分区里的节点，和 GitHub 上 Mermaid `flowchart LR` 同一套算法。
+ *
+ * 联动：planSubgraphSections 造分区计划时调用；layoutPlanInternalBlocks 把偏移加上分区内边距写成形状坐标。
+ * 连线不走 Dagre 的折点。竖线由 plannedConnectorGeometry 在创建前按共用竖线写好。
+ *
+ * 注意：Dagre 给出的是中心点，这里换成左上角再平移到内容区原点。只送两端都在本分区里的边。
+ * 环和回边由 Dagre 的反馈边拆开后再排层，不要改回「只认第一个父节点、按源码顺序往下堆」的树，
+ * 否则同一层会拆开，共享目标会被拉到较浅的父节点旁边，飞书折线就会绕远。
+ * 节点和边按源码出现顺序送入，Dagre 用这个顺序做层内初始排列，再用重心法减少交叉。
  */
 function computeTreeLayout(
   memberIds: string[],
@@ -732,138 +964,71 @@ function computeTreeLayout(
   edges: Array<{ from: string; to: string }>,
 ): TreeLayoutResult {
   const memberSet = new Set(memberIds);
-  const children = new Map<string, string[]>();
-  const orderIndex = new Map(memberIds.map((id, index) => [id, index]));
   const sizeByMember = new Map<string, { width: number; height: number }>();
+  const graph = new Graph<GraphLabel, NodeLabel, EdgeLabel>({ directed: true });
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setGraph({
+    rankdir: 'LR',
+    nodesep: MERMAID_NODE_SPACING,
+    ranksep: MERMAID_RANK_SPACING,
+    marginx: 0,
+    marginy: 0,
+    ranker: 'network-simplex',
+  });
 
   for (const [index, memberId] of memberIds.entries()) {
-    children.set(memberId, []);
     const shape = memberShapes[index];
-    sizeByMember.set(memberId, {
+    const size = {
       width: Math.max(1, Number(shape?.width ?? 140)),
       height: Math.max(1, Number(shape?.height ?? 56)),
-    });
+    };
+    sizeByMember.set(memberId, size);
+    graph.setNode(memberId, size);
   }
 
-  const parentOf = new Map<string, string>();
+  const seenEdges = new Set<string>();
   for (const edge of edges) {
     if (!memberSet.has(edge.from) || !memberSet.has(edge.to) || edge.from === edge.to) continue;
-    if (parentOf.has(edge.to)) continue;
-    parentOf.set(edge.to, edge.from);
-    const kids = children.get(edge.from)!;
-    if (!kids.includes(edge.to)) kids.push(edge.to);
+    const key = `${edge.from}\0${edge.to}`;
+    if (seenEdges.has(key)) continue;
+    seenEdges.add(key);
+    graph.setEdge(edge.from, edge.to);
   }
 
-  for (const kids of children.values()) {
-    kids.sort((left, right) => (orderIndex.get(left) ?? 0) - (orderIndex.get(right) ?? 0));
-  }
+  dagreLayout(graph);
 
   const depthByMember = new Map<string, number>();
-  const visiting = new Set<string>();
-
-  function assignDepth(nodeId: string, depth: number): void {
-    if (depthByMember.has(nodeId) || visiting.has(nodeId)) return;
-    visiting.add(nodeId);
-    depthByMember.set(nodeId, depth);
-    for (const kid of children.get(nodeId) ?? []) {
-      assignDepth(kid, depth + 1);
-    }
-    visiting.delete(nodeId);
-  }
-
-  const declaredRoots = memberIds.filter((id) => !parentOf.has(id));
-  const depthRoots = declaredRoots.length > 0 ? declaredRoots : memberIds.slice(0, 1);
-  for (const root of depthRoots) assignDepth(root, 0);
-  for (const memberId of memberIds) {
-    if (!depthByMember.has(memberId)) assignDepth(memberId, 0);
-  }
-
-  function forwardChildren(nodeId: string): string[] {
-    const depth = depthByMember.get(nodeId) ?? 0;
-    return (children.get(nodeId) ?? []).filter((kid) => depthByMember.get(kid) === depth + 1);
-  }
-
-  const columnWidth = new Map<number, number>();
-  for (const [memberId, depth] of depthByMember) {
-    const size = sizeByMember.get(memberId)!;
-    columnWidth.set(depth, Math.max(columnWidth.get(depth) ?? 0, size.width));
-  }
-  const columnX = new Map<number, number>();
-  const depths = [...columnWidth.keys()].sort((left, right) => left - right);
-  let cursorX = 0;
-  for (const depth of depths) {
-    columnX.set(depth, cursorX);
-    cursorX += (columnWidth.get(depth) ?? 0) + LANE_GAP_X;
-  }
-
-  const heightMemo = new Map<string, number>();
-  function subtreeHeight(nodeId: string): number {
-    const cached = heightMemo.get(nodeId);
-    if (cached !== undefined) return cached;
-    if (visiting.has(nodeId)) return sizeByMember.get(nodeId)!.height;
-    visiting.add(nodeId);
-    const kids = forwardChildren(nodeId);
-    const own = sizeByMember.get(nodeId)!.height;
-    let band = own;
-    if (kids.length > 0) {
-      const stacked =
-        kids.reduce((sum, kid) => sum + subtreeHeight(kid), 0) + LANE_GAP_Y * (kids.length - 1);
-      band = Math.max(own, stacked);
-    }
-    visiting.delete(nodeId);
-    heightMemo.set(nodeId, band);
-    return band;
-  }
-
   const offsetByMember = new Map<string, { x: number; y: number }>();
-  const placed = new Set<string>();
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  const centers: Array<{ memberId: string; x: number; y: number; rank: number }> = [];
 
-  function place(nodeId: string, top: number): number {
-    if (placed.has(nodeId)) return 0;
-    // 先量高度并写入缓存。若此时已在 visiting 里，subtreeHeight 会把整棵子树收成自身高度，兄弟会叠住。
-    const band = subtreeHeight(nodeId);
-    if (visiting.has(nodeId)) return 0;
-    visiting.add(nodeId);
-    const size = sizeByMember.get(nodeId)!;
-    const depth = depthByMember.get(nodeId) ?? 0;
-    offsetByMember.set(nodeId, {
-      x: columnX.get(depth) ?? 0,
-      y: top + (band - size.height) / 2,
-    });
-    placed.add(nodeId);
-
-    const kids = forwardChildren(nodeId);
-    if (kids.length > 0) {
-      const stacked =
-        kids.reduce((sum, kid) => sum + subtreeHeight(kid), 0) + LANE_GAP_Y * (kids.length - 1);
-      let childTop = top + (band - stacked) / 2;
-      for (const kid of kids) {
-        place(kid, childTop);
-        childTop += subtreeHeight(kid) + LANE_GAP_Y;
-      }
-    }
-
-    visiting.delete(nodeId);
-    return band;
-  }
-
-  const childOfForward = new Set<string>();
   for (const memberId of memberIds) {
-    for (const kid of forwardChildren(memberId)) childOfForward.add(kid);
+    const placed = graph.node(memberId);
+    const size = sizeByMember.get(memberId)!;
+    const centerX = Number(placed?.x ?? size.width / 2);
+    const centerY = Number(placed?.y ?? size.height / 2);
+    const x = centerX - size.width / 2;
+    const y = centerY - size.height / 2;
+    const rank = Number(placed?.rank ?? 0);
+    centers.push({ memberId, x, y, rank });
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
   }
-  const layoutRoots = memberIds.filter((id) => !childOfForward.has(id));
-  let cursorY = 0;
-  for (const [index, root] of layoutRoots.entries()) {
-    if (index > 0) cursorY += LANE_GAP_Y;
-    cursorY += place(root, cursorY);
-  }
+
+  if (!Number.isFinite(minX)) minX = 0;
+  if (!Number.isFinite(minY)) minY = 0;
 
   let contentWidth = 0;
   let contentHeight = 0;
-  for (const [memberId, offset] of offsetByMember) {
-    const size = sizeByMember.get(memberId)!;
-    contentWidth = Math.max(contentWidth, offset.x + size.width);
-    contentHeight = Math.max(contentHeight, offset.y + size.height);
+  for (const center of centers) {
+    const size = sizeByMember.get(center.memberId)!;
+    const x = center.x - minX;
+    const y = center.y - minY;
+    offsetByMember.set(center.memberId, { x, y });
+    depthByMember.set(center.memberId, center.rank);
+    contentWidth = Math.max(contentWidth, x + size.width);
+    contentHeight = Math.max(contentHeight, y + size.height);
   }
 
   return { depthByMember, offsetByMember, contentWidth, contentHeight };
@@ -1255,13 +1420,10 @@ function buildSectionBatch(
     toAlong: number;
     sectionId?: string;
     label?: string;
+    start: BlockPlacement;
+    end: BlockPlacement;
+    origin?: { x: number; y: number };
   }> = [];
-  const alongByKey = new Map<string, number[]>();
-  const rememberAlong = (key: string, along: number) => {
-    const list = alongByKey.get(key) ?? [];
-    list.push(along);
-    alongByKey.set(key, list);
-  };
   for (const edge of edges) {
     const startObjectId = mermaidIdMap.get(edge.from);
     const endObjectId = mermaidIdMap.get(edge.to);
@@ -1282,9 +1444,7 @@ function buildSectionBatch(
       );
     }
 
-    const facing = connectorFacingSides(startPlacement, endPlacement);
-    rememberAlong(`start:${startObjectId}:${facing.from}`, facing.fromAlong);
-    rememberAlong(`end:${endObjectId}:${facing.to}`, facing.toAlong);
+    const facing = connectorFacingSides();
     connectorDrafts.push({
       id: connectorId,
       startObjectId,
@@ -1295,28 +1455,25 @@ function buildSectionBatch(
       toAlong: facing.toAlong,
       sectionId: sameSection ? startSection.sectionId : undefined,
       label: edge.label,
+      start: startPlacement,
+      end: endPlacement,
+      origin: sameSection ? { x: startSection.bounds.x, y: startSection.bounds.y } : undefined,
     });
   }
 
-  const spreadAlong = spreadSharedAttachments(alongByKey);
-  const taken = new Map<string, number>();
-  const takeAlong = (key: string, fallback: number) => {
-    const values = spreadAlong.get(key);
-    const cursor = taken.get(key) ?? 0;
-    taken.set(key, cursor + 1);
-    return values?.[cursor] ?? clampAttachment(fallback);
-  };
-  const connectorPayloads = connectorDrafts.map((draft) =>
+  const geometries = plannedConnectorGeometry(connectorDrafts);
+  const connectorPayloads = connectorDrafts.map((draft, index) =>
     buildGeneratedConnectorPayload(
       draft.id,
       draft.startObjectId,
       draft.endObjectId,
       draft.from,
-      takeAlong(`start:${draft.startObjectId}:${draft.from}`, draft.fromAlong),
+      draft.fromAlong,
       draft.to,
-      takeAlong(`end:${draft.endObjectId}:${draft.to}`, draft.toAlong),
+      draft.toAlong,
       draft.sectionId,
       draft.label,
+      geometries[index],
     ),
   );
 
@@ -1431,13 +1588,135 @@ function syntheticShapesFromGraph(parsed: ReturnType<typeof parseMermaidGraph>):
 }
 
 /**
- * 带 subgraph 的流程图直接画到空画板上，不经过飞书 Mermaid 导入。
+ * 没有 subgraph 的流程图也在本地排好，一次创建形状和已经理顺的连线。
+ * 不套分区框。标题若在文档标题里，不要在画板上再画一圈。
+ *
+ * 联动：flowchartCreateBatch 在分区规划用不上时调用。布局仍是 computeTreeLayout。
+ * 连线不挂 parent_id，坐标就是画板坐标。
+ */
+function buildPlainFlowchartBatch(
+  parsed: ReturnType<typeof parseMermaidGraph>,
+  styleByNodeId: Map<string, DiagramNodeStyle>,
+): UnknownRecord[] {
+  const shapes = syntheticShapesFromGraph(parsed);
+  const memberIds = [...parsed.nodeLabels.keys()];
+  if (memberIds.length === 0) return [];
+
+  const memberShapes = memberIds.map((memberId) => shapes.find((shape) => shape.id === `src:${memberId}`)!);
+  const layout = computeTreeLayout(memberIds, memberShapes, parsed.edges);
+  const placements = new Map<string, BlockPlacement>();
+  const idByMember = new Map<string, string>();
+  const payloads: UnknownRecord[] = [];
+
+  memberIds.forEach((memberId, index) => {
+    const offset = layout.offsetByMember.get(memberId) ?? { x: 0, y: 0 };
+    const shape = memberShapes[index]!;
+    const placement: BlockPlacement = {
+      x: snapCeil(SECTION_PADDING + offset.x),
+      y: snapCeil(SECTION_PADDING + offset.y),
+      width: Number(shape.width ?? 140),
+      height: Number(shape.height ?? 56),
+    };
+    placements.set(memberId, placement);
+    const nodeId = preferMermaidNodeId(memberId, `n${index + 1}`);
+    idByMember.set(memberId, nodeId);
+    payloads.push(
+      buildTopLevelBlockPayload(
+        nodeId,
+        { ...shape, x: placement.x, y: placement.y, width: placement.width, height: placement.height },
+        BLOCK_Z_INDEX_BASE + index,
+        styleByNodeId.get(memberId),
+        parsed.nodeShapes.get(memberId),
+      ),
+    );
+  });
+
+  const drafts: Array<{
+    id: string;
+    startObjectId: string;
+    endObjectId: string;
+    from: SnapSide;
+    to: SnapSide;
+    fromAlong: number;
+    toAlong: number;
+    label?: string;
+    start: BlockPlacement;
+    end: BlockPlacement;
+  }> = [];
+  for (const edge of parsed.edges) {
+    const start = placements.get(edge.from);
+    const end = placements.get(edge.to);
+    const startObjectId = idByMember.get(edge.from);
+    const endObjectId = idByMember.get(edge.to);
+    if (!start || !end || !startObjectId || !endObjectId || edge.from === edge.to) continue;
+    const facing = connectorFacingSides();
+    drafts.push({
+      id: `lnk:${drafts.length + 1}`,
+      startObjectId,
+      endObjectId,
+      from: facing.from,
+      to: facing.to,
+      fromAlong: facing.fromAlong,
+      toAlong: facing.toAlong,
+      label: edge.label,
+      start,
+      end,
+    });
+  }
+
+  const geometries = plannedConnectorGeometry(drafts);
+  drafts.forEach((draft, index) => {
+    payloads.push(
+      buildGeneratedConnectorPayload(
+        draft.id,
+        draft.startObjectId,
+        draft.endObjectId,
+        draft.from,
+        draft.fromAlong,
+        draft.to,
+        draft.toAlong,
+        undefined,
+        draft.label,
+        geometries[index],
+      ),
+    );
+  });
+  return payloads;
+}
+
+/**
+ * 直接绘制会提交的那一批节点。有 subgraph 时套分区；没有时按整图画在画板根上。
+ * renderMermaidFlowchartBoard 与 previewMermaidFlowchartBoard 共用，避免预览和真正创建各写一套。
+ */
+function flowchartCreateBatch(mermaidCode: string): UnknownRecord[] {
+  const parsed = parseMermaidGraph(mermaidCode);
+  if (parsed.nodeLabels.size === 0) return [];
+  const styles = styleByMermaidNodeId(mermaidCode);
+  if (parsed.subgraphs.length > 0) {
+    const synthetic = syntheticShapesFromGraph(parsed);
+    const plans = planSubgraphSections(synthetic, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
+    if (plans.length > 0) {
+      return buildSectionBatch(
+        synthetic,
+        plans,
+        parsed.nodeLabels,
+        parsed.edges,
+        styles,
+        parsed.nodeShapes,
+      ).batch;
+    }
+  }
+  return buildPlainFlowchartBatch(parsed, styles);
+}
+
+/**
+ * 流程图直接画到空画板上，不经过飞书 Mermaid 导入。
  *
  * 联动：docx-content 与 append-markdown 在导入前调用。返回 true 表示画板已写好，
  * 调用方不要再 importBoardMermaidDiagram，否则会把这块画板清掉。
- * 颜色、菱形、`-->|0|` 标签都写在这一次 create 里，和 applyMermaidSubgraphSections 共用 buildSectionBatch。
+ * 颜色、菱形、条件标签和共用竖线都写在这一次 create 里。
  *
- * 注意：没有 subgraph 时返回 false，思维导图和普通小流程图仍走飞书导入。
+ * 注意：没有 subgraph 的图也不再交给飞书导入，否则拐点只能事后删了重建。
  * 飞书要求分区、形状、连线在同一次 create 里才能认 parent_id，所以整图一次提交，不要拆批。
  * 节点很多时这次请求会比较大；失败应抛出，由调用方退回 Mermaid 导入。
  */
@@ -1446,27 +1725,14 @@ export async function renderMermaidFlowchartBoard(
   whiteboardId: string,
   mermaidCode: string,
 ): Promise<boolean> {
-  const parsed = parseMermaidGraph(mermaidCode);
-  if (parsed.subgraphs.length === 0 || parsed.nodeLabels.size === 0) return false;
-
-  const synthetic = syntheticShapesFromGraph(parsed);
-  const plans = planSubgraphSections(synthetic, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
-  if (plans.length === 0) return false;
-
-  const { batch } = buildSectionBatch(
-    synthetic,
-    plans,
-    parsed.nodeLabels,
-    parsed.edges,
-    styleByMermaidNodeId(mermaidCode),
-    parsed.nodeShapes,
-  );
+  const batch = flowchartCreateBatch(mermaidCode);
   if (batch.length === 0) return false;
 
   const existing = await listBoardNodes(client, whiteboardId);
   const existingIds = existing.map((node) => node.id).filter((id): id is string => Boolean(id));
   await batchDeleteNodes(client, whiteboardId, existingIds);
   await createBoardNodes(client, whiteboardId, batch);
+  const parsed = parseMermaidGraph(mermaidCode);
   syncLog.debug('按源码直接绘制流程图', {
     whiteboardId,
     nodeCount: parsed.nodeLabels.size,
@@ -1479,7 +1745,7 @@ export async function renderMermaidFlowchartBoard(
 /**
  * 不请求飞书，把「直接绘制」会提交的节点统计出来。
  * scripts/check-flowchart-roundtrip.ts 用它核对菱形、条件标签和颜色有没有进同一批 payload。
- * 和 renderMermaidFlowchartBoard 共用 syntheticShapesFromGraph 与 buildSectionBatch，改布局时两边一起变。
+ * 和 renderMermaidFlowchartBoard 共用 flowchartCreateBatch，改布局或拐点时两边一起变。
  */
 export function previewMermaidFlowchartBoard(mermaidCode: string): {
   ok: boolean;
@@ -1487,12 +1753,18 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
   shapeCount: number;
   diamondCount: number;
   connectorCount: number;
-  /** 折线且未指定坐标、未写拐点。应与 connectorCount 相同，用来卡住退回直线的改动。 */
+  /** 创建时已写好坐标的折线。应与 connectorCount 相同。 */
   autoPolylineCount: number;
+  /** 从右边正中出去、从左边正中进来。 */
+  rightToLeftCount: number;
   captionCount: number;
   styledCount: number;
   overlapCount: number;
   overlapSample: string[];
+  /** 有竖段的连线，竖段在父节点坐标系里的横坐标。同一起点应相同。 */
+  elbowXs: number[];
+  /** 形状左上角坐标。检查脚本用来核对分层是否还和 Dagre 的结果一致。 */
+  boxes: Array<{ id: string; x: number; y: number; width: number; height: number }>;
 } {
   const empty = {
     ok: false,
@@ -1501,35 +1773,28 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     diamondCount: 0,
     connectorCount: 0,
     autoPolylineCount: 0,
+    rightToLeftCount: 0,
     captionCount: 0,
     styledCount: 0,
     overlapCount: 0,
     overlapSample: [] as string[],
+    elbowXs: [] as number[],
+    boxes: [] as Array<{ id: string; x: number; y: number; width: number; height: number }>,
   };
-  const parsed = parseMermaidGraph(mermaidCode);
-  if (parsed.subgraphs.length === 0 || parsed.nodeLabels.size === 0) return empty;
-
-  const synthetic = syntheticShapesFromGraph(parsed);
-  const plans = planSubgraphSections(synthetic, parsed.subgraphs, parsed.nodeLabels, parsed.edges);
-  if (plans.length === 0) return empty;
-
-  const { batch } = buildSectionBatch(
-    synthetic,
-    plans,
-    parsed.nodeLabels,
-    parsed.edges,
-    styleByMermaidNodeId(mermaidCode),
-    parsed.nodeShapes,
-  );
+  const batch = flowchartCreateBatch(mermaidCode);
+  if (batch.length === 0) return empty;
 
   let sectionCount = 0;
   let shapeCount = 0;
   let diamondCount = 0;
   let connectorCount = 0;
   let autoPolylineCount = 0;
+  let rightToLeftCount = 0;
   let captionCount = 0;
   let styledCount = 0;
+  const elbowXs: number[] = [];
   const shapesByParent = new Map<string, Array<{ id: string; x: number; y: number; width: number; height: number }>>();
+  const boxes: Array<{ id: string; x: number; y: number; width: number; height: number }> = [];
   for (const node of batch) {
     if (node.type === 'section') sectionCount += 1;
     if (node.type === 'composite_shape') {
@@ -1548,6 +1813,7 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
       const group = shapesByParent.get(parentKey) ?? [];
       group.push(box);
       shapesByParent.set(parentKey, group);
+      boxes.push(box);
     }
     if (node.type === 'connector') {
       connectorCount += 1;
@@ -1560,14 +1826,29 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
       const explicitSide = (side: unknown) => side === 'left' || side === 'right' || side === 'top' || side === 'bottom';
       if (
         connector?.shape === 'polyline' &&
-        connector.specified_coordinate === false &&
-        !('turning_points' in connector) &&
+        connector.specified_coordinate === true &&
         explicitSide(startAttached?.snap_to) &&
         explicitSide(endAttached?.snap_to) &&
         typeof startPos?.x === 'number' &&
         typeof startPos?.y === 'number'
       ) {
         autoPolylineCount += 1;
+      }
+      const turningPoints = connector?.turning_points;
+      if (Array.isArray(turningPoints) && turningPoints.length >= 2) {
+        const turnX = Number((turningPoints[0] as UnknownRecord | undefined)?.x);
+        if (Number.isFinite(turnX)) elbowXs.push(Number(node.x ?? 0) + turnX);
+      }
+      const endPos = endAttached?.position as UnknownRecord | undefined;
+      if (
+        startAttached?.snap_to === 'right' &&
+        endAttached?.snap_to === 'left' &&
+        startPos?.x === 1 &&
+        startPos?.y === 0.5 &&
+        endPos?.x === 0 &&
+        endPos?.y === 0.5
+      ) {
+        rightToLeftCount += 1;
       }
     }
   }
@@ -1600,17 +1881,21 @@ export function previewMermaidFlowchartBoard(mermaidCode: string): {
     diamondCount,
     connectorCount,
     autoPolylineCount,
+    rightToLeftCount,
     captionCount,
     styledCount,
     overlapCount,
     overlapSample,
+    elbowXs,
+    boxes,
   };
 }
 
 /**
  * Mermaid 导入后，将 subgraph 重建为 native section：
  * 分区、块、线按整图同一批创建，线端点统一映射到同批 custom id。
- * 连线是折线：不写拐点，折线怎么拐由飞书算；起点和终点的边、沿边位置由本函数按两块形状的相对位置写死。
+ * 连线第一次是折线且不写拐点，折线怎么拐由飞书算；起点钉在右边正中，终点钉在左边正中。
+ * 没有 subgraph 时保留飞书导入结果，再按同一起点共用竖线理一次。
  * 分区内线挂 parent_id 到分区，跨分区线保持全局线。
  * 块的 id 尽量用 Mermaid 节点 id，颜色写在同一批创建里，避免上色时再删掉已经连上的线。
  * `-->|0|` 的标签写进 connector.captions，逆向导出靠它还原条件分支。
@@ -1625,6 +1910,7 @@ export async function applyMermaidSubgraphSections(
     syncLog.debug('Mermaid 无 subgraph，仅转换 group 为 section', { whiteboardId });
     const boardNodes = await listBoardNodes(client, whiteboardId);
     await convertGroupNodesToSections(client, whiteboardId, boardNodes);
+    await alignImportedConnectorBuses(client, whiteboardId);
     return;
   }
 
@@ -1638,6 +1924,7 @@ export async function applyMermaidSubgraphSections(
   });
   if (plans.length === 0) {
     await convertGroupNodesToSections(client, whiteboardId, boardNodes);
+    await alignImportedConnectorBuses(client, whiteboardId);
     return;
   }
 

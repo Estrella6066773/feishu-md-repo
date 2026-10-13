@@ -37,7 +37,11 @@ export class RepositoryPlanner implements SyncPlanner {
     const fullRebuild = context.fullResync === true;
     const forceRewriteAll = context.forceRewriteAll === true;
     const gapFillOnly = false;
-    const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
+    // forceUpdateOnly 时把 incremental 打开且变更集为空：容器/独立文件的 dirty 判断会落空，
+    // 只剩 forceWrite 的路径。这样不会因为「没有变更」反过来同步整库。
+    const forceUpdateOnly = context.forceUpdateOnly === true && !fullRebuild && !forceRewriteAll;
+    const incremental =
+      forceUpdateOnly || (!fullRebuild && context.fromSha != null && changedSet.size > 0);
     const rootTitle = context.bindingName?.trim() || context.bindingId;
 
     const containers = discoverRepositoryContainers(normalizedTree, options.readmeNames);

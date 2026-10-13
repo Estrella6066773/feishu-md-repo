@@ -45,6 +45,9 @@ export class WorkspacePlanner implements SyncPlanner {
     const fullRebuild = context.fullResync === true;
     const forceRewriteAll = context.forceRewriteAll === true;
     const gapFillOnly = false;
+    // 无变更时 changedSet 为空，不能据此把 incremental 判成 false，否则会退回全库。
+    // 立即同步且 HEAD 未变时，调用方传入 forceUpdateOnly，这里只留强制更新文件。
+    const forceUpdateOnly = context.forceUpdateOnly === true && !fullRebuild && !forceRewriteAll;
     const incremental = !fullRebuild && context.fromSha != null && changedSet.size > 0;
 
     const docPaths = normalizedTree.filter((path) =>
@@ -53,18 +56,20 @@ export class WorkspacePlanner implements SyncPlanner {
     const forceUpdatePaths = docPaths.filter((path) =>
       matchesAnyProjectPathGlob(path, forceUpdateGlobs),
     );
-    const pathsToSync = incremental
-      ? mergePaths(
-          await filterIncrementalDocPaths({
-            docPaths,
-            changedSet,
-            mdExtensions,
-            tabularExtensions,
-            readMarkdown: context.readMarkdown,
-          }),
-          forceUpdatePaths,
-        )
-      : docPaths;
+    const pathsToSync = forceUpdateOnly
+      ? forceUpdatePaths
+      : incremental
+        ? mergePaths(
+            await filterIncrementalDocPaths({
+              docPaths,
+              changedSet,
+              mdExtensions,
+              tabularExtensions,
+              readMarkdown: context.readMarkdown,
+            }),
+            forceUpdatePaths,
+          )
+        : docPaths;
 
     const folderSeedPaths = [...pathsToSync];
     if (options.mirrorNonMdFiles) {
