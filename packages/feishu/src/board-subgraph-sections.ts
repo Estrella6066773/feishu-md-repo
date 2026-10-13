@@ -3,7 +3,7 @@ import type { EdgeLabel, GraphLabel, NodeLabel } from '@dagrejs/dagre';
 import type { FeishuClient } from './client.js';
 import { createLogger, parseMermaidClassStyles, type DiagramNodeStyle } from '@feishu-md/shared';
 import { assertFeishuResponse, FeishuApiError, withRateLimit } from './api-error.js';
-import { planSharedVerticalBuses, type ConnectorElbowSample } from './board-connector-elbows.js';
+import { elbowSampleBetween, planSharedVerticalBuses, separateBlocksFromRoutes, type ConnectorElbowSample, type RouteBlock } from './board-connector-elbows.js';
 import {
   parseMermaidGraph,
   type ParsedMermaidEdge,
@@ -675,29 +675,9 @@ interface ConnectorRouteInput {
 function plannedConnectorGeometry(
   drafts: ConnectorRouteInput[],
 ): Array<{ x: number; y: number; width: number; height: number; turningPoints: Array<{ x: number; y: number }> }> {
-  const samples: ConnectorElbowSample[] = drafts.map((draft, index) => {
-    const sourceRight = draft.start.x + draft.start.width;
-    const targetLeft = draft.end.x;
-    const sourceCenter = draft.start.y + draft.start.height / 2;
-    const targetCenter = draft.end.y + draft.end.height / 2;
-    const boxHeight = Math.abs(targetCenter - sourceCenter);
-    const sourceAbove = sourceCenter <= targetCenter;
-    return {
-      payloadIndex: index,
-      groupKey: draft.startObjectId,
-      boxX: sourceRight,
-      boxY: Math.min(sourceCenter, targetCenter),
-      boxWidth: targetLeft - sourceRight,
-      boxHeight,
-      turningPoints:
-        boxHeight <= 0.5
-          ? []
-          : [
-              { x: 0, y: sourceAbove ? 0 : boxHeight },
-              { x: 0, y: sourceAbove ? boxHeight : 0 },
-            ],
-    };
-  });
+  const samples: ConnectorElbowSample[] = drafts.map((draft, index) =>
+    elbowSampleBetween(index, draft.startObjectId, draft.start, draft.end),
+  );
   const snaps = planSharedVerticalBuses(samples);
   return drafts.map((draft, index) => {
     const sample = samples[index]!;
@@ -952,6 +932,7 @@ function planSubgraphSections(
  *
  * 联动：planSubgraphSections 造分区计划时调用；layoutPlanInternalBlocks 把偏移加上分区内边距写成形状坐标。
  * 连线不走 Dagre 的折点。竖线由 plannedConnectorGeometry 在创建前按共用竖线写好。
+ * 排完层之后 separateBlocksFromRoutes 会把挡住线的块挪开，分区尺寸按挪完的结果计算。
  *
  * 注意：Dagre 给出的是中心点，这里换成左上角再平移到内容区原点。只送两端都在本分区里的边。
  * 环和回边由 Dagre 的反馈边拆开后再排层，不要改回「只认第一个父节点、按源码顺序往下堆」的树，
@@ -1027,8 +1008,24 @@ function computeTreeLayout(
     const y = center.y - minY;
     offsetByMember.set(center.memberId, { x, y });
     depthByMember.set(center.memberId, center.rank);
-    contentWidth = Math.max(contentWidth, x + size.width);
-    contentHeight = Math.max(contentHeight, y + size.height);
+  }
+
+  const routed: RouteBlock[] = memberIds.map((memberId) => {
+    const offset = offsetByMember.get(memberId)!;
+    const size = sizeByMember.get(memberId)!;
+    return { id: memberId, x: offset.x, y: offset.y, width: size.width, height: size.height };
+  });
+  separateBlocksFromRoutes(routed, edges);
+  const shiftX = Math.min(0, ...routed.map((block) => block.x));
+  const shiftY = Math.min(0, ...routed.map((block) => block.y));
+  contentWidth = 0;
+  contentHeight = 0;
+  for (const block of routed) {
+    const x = block.x - shiftX;
+    const y = block.y - shiftY;
+    offsetByMember.set(block.id, { x, y });
+    contentWidth = Math.max(contentWidth, x + block.width);
+    contentHeight = Math.max(contentHeight, y + block.height);
   }
 
   return { depthByMember, offsetByMember, contentWidth, contentHeight };
@@ -1221,6 +1218,7 @@ function placePlanSubtree(
 
 function applyReadableLayout(
   plans: SectionBuildPlan[],
+  edges: Array<{ from: string; to: string }>,
 ): Map<string, BlockPlacement> {
   const placementByShapeId = new Map<string, BlockPlacement>();
   if (plans.length === 0) return placementByShapeId;
@@ -1243,7 +1241,122 @@ function applyReadableLayout(
   }
 
   expandParentSections(plans);
+  // 分区内部的让位已经写进偏移。这里再按绝对坐标看跨分区的线，避免线穿过另一分区里的块。
+  clearAbsoluteRouteOverlaps(plans, edges, placementByShapeId);
+  for (let pass = 0; pass < 4; pass += 1) {
+    expandParentSections(plans);
+    if (!separateOverlappingSections(plans)) break;
+  }
+  syncPlacementCoordinates(plans, placementByShapeId);
   return placementByShapeId;
+}
+
+/**
+ * 跨分区连线用的是画板坐标。块若被让开，形状和 placement 要一起改，后面的创建 payload 才读到同一套位置。
+ */
+function clearAbsoluteRouteOverlaps(
+  plans: SectionBuildPlan[],
+  edges: Array<{ from: string; to: string }>,
+  placementByShapeId: Map<string, BlockPlacement>,
+): void {
+  const blocks: Array<RouteBlock & { shape: BoardNodeRecord }> = [];
+  for (const plan of plans) {
+    plan.memberIds.forEach((memberId, index) => {
+      const shape = plan.memberShapes[index];
+      if (!shape) return;
+      blocks.push({
+        id: memberId,
+        x: Number(shape.x ?? 0),
+        y: Number(shape.y ?? 0),
+        width: Number(shape.width ?? 140),
+        height: Number(shape.height ?? 56),
+        shape,
+      });
+    });
+  }
+  if (blocks.length === 0) return;
+  separateBlocksFromRoutes(blocks, edges);
+  for (const block of blocks) {
+    block.shape.x = block.x;
+    block.shape.y = block.y;
+    if (!block.shape.id) continue;
+    const placement = placementByShapeId.get(String(block.shape.id));
+    if (placement) {
+      placement.x = block.x;
+      placement.y = block.y;
+    }
+  }
+}
+
+function syncPlacementCoordinates(
+  plans: SectionBuildPlan[],
+  placementByShapeId: Map<string, BlockPlacement>,
+): void {
+  for (const plan of plans) {
+    for (const shape of plan.memberShapes) {
+      if (!shape.id) continue;
+      const placement = placementByShapeId.get(String(shape.id));
+      if (!placement) continue;
+      placement.x = Number(shape.x ?? 0);
+      placement.y = Number(shape.y ?? 0);
+    }
+  }
+}
+
+/** 分区连同里面的块、子分区一起平移，避免只挪外框、块还留在原地。 */
+function translatePlanTree(
+  plan: SectionBuildPlan,
+  dx: number,
+  dy: number,
+  plans: SectionBuildPlan[],
+): void {
+  if (dx === 0 && dy === 0) return;
+  plan.bounds = { ...plan.bounds, x: plan.bounds.x + dx, y: plan.bounds.y + dy };
+  for (const shape of plan.memberShapes) {
+    shape.x = Number(shape.x ?? 0) + dx;
+    shape.y = Number(shape.y ?? 0) + dy;
+  }
+  for (const child of plans) {
+    if (child.subgraph.parentId === plan.subgraph.id) translatePlanTree(child, dx, dy, plans);
+  }
+}
+
+/**
+ * 块让开之后分区会变大，相邻分区若叠住，就把更靠右或更靠下的那一个推开。
+ * 返回本轮有没有推动。调用方随后再按块的新位置撑开父分区。
+ */
+function separateOverlappingSections(plans: SectionBuildPlan[]): boolean {
+  const groups = [...groupPlansByParentId(plans).values()].sort(
+    (left, right) => (right[0]?.subgraph.depth ?? 0) - (left[0]?.subgraph.depth ?? 0),
+  );
+  let moved = false;
+  for (const siblings of groups) {
+    for (let pass = 0; pass < siblings.length + 2; pass += 1) {
+      let changed = false;
+      const ordered = [...siblings].sort((a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y);
+      for (let left = 0; left < ordered.length && !changed; left += 1) {
+        for (let right = left + 1; right < ordered.length; right += 1) {
+          const a = ordered[left]!;
+          const b = ordered[right]!;
+          const overlapX = Math.min(a.bounds.x + a.bounds.width, b.bounds.x + b.bounds.width) - Math.max(a.bounds.x, b.bounds.x);
+          const overlapY = Math.min(a.bounds.y + a.bounds.height, b.bounds.y + b.bounds.height) - Math.max(a.bounds.y, b.bounds.y);
+          if (overlapX <= 0.5 || overlapY <= 0.5) continue;
+          if (overlapX <= overlapY) {
+            const later = a.bounds.x + a.bounds.width / 2 <= b.bounds.x + b.bounds.width / 2 ? b : a;
+            translatePlanTree(later, overlapX + 16, 0, plans);
+          } else {
+            const lower = a.bounds.y + a.bounds.height / 2 <= b.bounds.y + b.bounds.height / 2 ? b : a;
+            translatePlanTree(lower, 0, overlapY + 16, plans);
+          }
+          changed = true;
+          moved = true;
+          break;
+        }
+      }
+      if (!changed) break;
+    }
+  }
+  return moved;
 }
 
 function expandParentSections(plans: SectionBuildPlan[]): void {
@@ -1290,7 +1403,7 @@ function buildSectionBatch(
   styleByNodeId: Map<string, DiagramNodeStyle>,
   nodeShapes?: Map<string, 'rect' | 'diamond'>,
 ): { batch: UnknownRecord[]; deleteIds: string[] } {
-  const placementByShapeId = applyReadableLayout(plans);
+  const placementByShapeId = applyReadableLayout(plans, edges);
   const shapeIdMap = new Map<string, string>();
   const mermaidIdMap = new Map<string, string>();
   const mermaidSectionMap = new Map<string, SectionBuildPlan>();
@@ -1593,6 +1706,7 @@ function syntheticShapesFromGraph(parsed: ReturnType<typeof parseMermaidGraph>):
  *
  * 联动：flowchartCreateBatch 在分区规划用不上时调用。布局仍是 computeTreeLayout。
  * 连线不挂 parent_id，坐标就是画板坐标。
+ * 对齐到网格之后再让一次位，避免取整把线重新推进块里。
  */
 function buildPlainFlowchartBatch(
   parsed: ReturnType<typeof parseMermaidGraph>,
@@ -1618,6 +1732,28 @@ function buildPlainFlowchartBatch(
       height: Number(shape.height ?? 56),
     };
     placements.set(memberId, placement);
+  });
+
+  const routed: RouteBlock[] = memberIds.map((memberId) => {
+    const placement = placements.get(memberId)!;
+    return {
+      id: memberId,
+      x: placement.x,
+      y: placement.y,
+      width: placement.width,
+      height: placement.height,
+    };
+  });
+  separateBlocksFromRoutes(routed, parsed.edges);
+  for (const block of routed) {
+    const placement = placements.get(block.id)!;
+    placement.x = block.x;
+    placement.y = block.y;
+  }
+
+  memberIds.forEach((memberId, index) => {
+    const placement = placements.get(memberId)!;
+    const shape = memberShapes[index]!;
     const nodeId = preferMermaidNodeId(memberId, `n${index + 1}`);
     idByMember.set(memberId, nodeId);
     payloads.push(

@@ -16,7 +16,8 @@
  *   通道间距对应 libavoid 的 idealNudgingDistance，避免平行线段贴在一起。
  *
  * 注意：完整的 libavoid 会绕开图形，折线可以有很多段。飞书这条线只能改一个垂直拐点，
- * 所以干线放在起点右缘和最近目标左缘之间；空隙不够时仍保证错开，近处的目标允许竖线越过去再折回。
+ * 所以干线放在起点右缘和最近目标左缘之间。空隙不够时仍把竖线错开，近处的目标会被竖线穿过去。
+ * 不想穿块时，先调用 separateBlocksFromRoutes 把块让开，再算竖线。
  * 水平直线没有竖段，不改。样本的 boxX、boxY 必须已经是同一套坐标。
  */
 
@@ -185,4 +186,279 @@ export function planSharedVerticalBuses(
   }
 
   return snaps;
+}
+
+/** 线和块之间至少留出的空隙。和 BUS_MARGIN 同一档，竖线不会贴着块边。 */
+const ROUTE_CLEARANCE = 8;
+/** 块和块分开之后保留的间隙。 */
+const BLOCK_GAP = 16;
+/** 与 board-subgraph-sections 的 LAYOUT_GRID_SIZE 相同。挪完块再对齐，避免差半格又叠上。 */
+const ROUTE_GRID = 8;
+const SEPARATE_PASSES = 8;
+
+export interface RouteBlock {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 用两端的块造一条「右出左进」的折线样本，交给 planSharedVerticalBuses。
+ *
+ * 联动：separateBlocksFromRoutes 与 board-subgraph-sections 的 plannedConnectorGeometry 都走这里，
+ * 避免「让位时按一套拐点、写入时按另一套」。
+ * 高度不超过 AXIS_TOLERANCE 的线没有竖段。
+ */
+export function elbowSampleBetween(
+  payloadIndex: number,
+  groupKey: string,
+  source: { x: number; y: number; width: number; height: number },
+  target: { x: number; y: number; width: number; height: number },
+): ConnectorElbowSample {
+  const sourceRight = source.x + source.width;
+  const targetLeft = target.x;
+  const sourceCenter = source.y + source.height / 2;
+  const targetCenter = target.y + target.height / 2;
+  const boxHeight = Math.abs(targetCenter - sourceCenter);
+  const sourceAbove = sourceCenter <= targetCenter;
+  return {
+    payloadIndex,
+    groupKey,
+    boxX: sourceRight,
+    boxY: Math.min(sourceCenter, targetCenter),
+    boxWidth: targetLeft - sourceRight,
+    boxHeight,
+    turningPoints:
+      boxHeight <= AXIS_TOLERANCE
+        ? []
+        : [
+            { x: 0, y: sourceAbove ? 0 : boxHeight },
+            { x: 0, y: sourceAbove ? boxHeight : 0 },
+          ],
+  };
+}
+
+function routeBusX(sample: ConnectorElbowSample, snap: SnappedElbow | undefined): number {
+  const placed = snap ?? sample;
+  const relative = placed.turningPoints[0]?.x ?? 0;
+  return placed.boxX + relative;
+}
+
+interface AxisSegment {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+function segmentsForEdge(
+  source: RouteBlock,
+  target: RouteBlock,
+  busX: number,
+): AxisSegment[] {
+  const y0 = source.y + source.height / 2;
+  const y1 = target.y + target.height / 2;
+  const x0 = source.x + source.width;
+  const x1 = target.x;
+  if (Math.abs(y0 - y1) <= AXIS_TOLERANCE) {
+    return [{ x0, y0, x1, y1: y0 }];
+  }
+  return [
+    { x0, y0, x1: busX, y1: y0 },
+    { x0: busX, y0, x1: busX, y1 },
+    { x0: busX, y0: y1, x1, y1 },
+  ];
+}
+
+function spanOverlaps(a0: number, a1: number, b0: number, b1: number): boolean {
+  const left = Math.min(a0, a1);
+  const right = Math.max(a0, a1);
+  return right > b0 + AXIS_TOLERANCE && left < b1 - AXIS_TOLERANCE;
+}
+
+/** 轴对齐线段是否进入块。clearance 把块向外扩，用来要求线离开块边。 */
+function segmentHitsBlock(segment: AxisSegment, block: RouteBlock, clearance: number): boolean {
+  const left = block.x - clearance;
+  const right = block.x + block.width + clearance;
+  const top = block.y - clearance;
+  const bottom = block.y + block.height + clearance;
+  const horizontal = Math.abs(segment.y0 - segment.y1) <= AXIS_TOLERANCE;
+  if (horizontal) {
+    return spanOverlaps(segment.x0, segment.x1, left, right)
+      && segment.y0 > top + AXIS_TOLERANCE
+      && segment.y0 < bottom - AXIS_TOLERANCE;
+  }
+  return spanOverlaps(segment.y0, segment.y1, top, bottom)
+    && segment.x0 > left + AXIS_TOLERANCE
+    && segment.x0 < right - AXIS_TOLERANCE;
+}
+
+function mergeDelta(current: number | undefined, next: number): number {
+  if (current == null || Math.abs(current) <= AXIS_TOLERANCE) return next;
+  if (Math.sign(current) === Math.sign(next)) {
+    return Math.sign(next) * Math.max(Math.abs(current), Math.abs(next));
+  }
+  return Math.abs(next) > Math.abs(current) ? next : current;
+}
+
+/** 竖线穿过块时，把块平移到竖线外侧。选移动更短的那一侧。 */
+function shiftOffVertical(block: RouteBlock, busX: number): number {
+  const pushLeft = busX - ROUTE_CLEARANCE - (block.x + block.width);
+  const pushRight = busX + ROUTE_CLEARANCE - block.x;
+  return Math.abs(pushLeft) <= Math.abs(pushRight) ? pushLeft : pushRight;
+}
+
+/** 横线穿过块时，把块平移到横线外侧。距离相同则往下，避免坐标漂到负方向。 */
+function shiftOffHorizontal(block: RouteBlock, lineY: number): number {
+  const pushUp = lineY - ROUTE_CLEARANCE - (block.y + block.height);
+  const pushDown = lineY + ROUTE_CLEARANCE - block.y;
+  return Math.abs(pushUp) < Math.abs(pushDown) ? pushUp : pushDown;
+}
+
+function separateTouchingBlocks(blocks: RouteBlock[]): boolean {
+  let moved = false;
+  for (let pass = 0; pass < blocks.length; pass += 1) {
+    let changed = false;
+    for (let left = 0; left < blocks.length; left += 1) {
+      for (let right = left + 1; right < blocks.length; right += 1) {
+        const a = blocks[left]!;
+        const b = blocks[right]!;
+        const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+        if (overlapX <= AXIS_TOLERANCE || overlapY <= AXIS_TOLERANCE) continue;
+        if (overlapX <= overlapY) {
+          const later = a.x + a.width / 2 <= b.x + b.width / 2 ? b : a;
+          later.x = snapRouteCoord(later.x + overlapX + BLOCK_GAP, 1);
+        } else {
+          const lower = a.y + a.height / 2 <= b.y + b.height / 2 ? b : a;
+          lower.y = snapRouteCoord(lower.y + overlapY + BLOCK_GAP, 1);
+        }
+        changed = true;
+        moved = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return moved;
+}
+
+/** 沿挪动方向对齐到网格。往右、往下用向上取整，往左、往上用向下取整，避免对齐后又退回块里面。 */
+function snapRouteCoord(value: number, direction: number): number {
+  if (direction < 0) return Math.floor(value / ROUTE_GRID + 1e-9) * ROUTE_GRID;
+  return Math.ceil(value / ROUTE_GRID - 1e-9) * ROUTE_GRID;
+}
+
+/**
+ * 统计还有多少条线段进入了块。端点只算真正穿进内部，旁边的块要离开 ROUTE_CLEARANCE。
+ * 检查脚本用来确认 separateBlocksFromRoutes 已经让开。
+ */
+export function routeBlockHitCount(
+  blocks: RouteBlock[],
+  edges: Array<{ from: string; to: string }>,
+): number {
+  const byId = new Map(blocks.map((block) => [block.id, block]));
+  const live = edges.filter((edge) => edge.from !== edge.to && byId.has(edge.from) && byId.has(edge.to));
+  const samples = live.map((edge, index) =>
+    elbowSampleBetween(index, edge.from, byId.get(edge.from)!, byId.get(edge.to)!),
+  );
+  const snaps = planSharedVerticalBuses(samples);
+  let hits = 0;
+  live.forEach((edge, index) => {
+    const source = byId.get(edge.from)!;
+    const target = byId.get(edge.to)!;
+    const sample = samples[index]!;
+    const busX = routeBusX(sample, snaps.get(sample.payloadIndex));
+    for (const segment of segmentsForEdge(source, target, busX)) {
+      const horizontal = Math.abs(segment.y0 - segment.y1) <= AXIS_TOLERANCE;
+      for (const block of blocks) {
+        if (block.id === source.id) continue;
+        if (block.id === target.id) {
+          if (horizontal || !segmentHitsBlock(segment, block, 0)) continue;
+          hits += 1;
+          continue;
+        }
+        if (segmentHitsBlock(segment, block, ROUTE_CLEARANCE)) hits += 1;
+      }
+    }
+  });
+  return hits;
+}
+
+function relaxRouteOverlaps(
+  blocks: RouteBlock[],
+  edges: Array<{ from: string; to: string }>,
+): boolean {
+  const byId = new Map(blocks.map((block) => [block.id, block]));
+  const live = edges.filter((edge) => edge.from !== edge.to && byId.has(edge.from) && byId.has(edge.to));
+  const samples = live.map((edge, index) =>
+    elbowSampleBetween(index, edge.from, byId.get(edge.from)!, byId.get(edge.to)!),
+  );
+  const snaps = planSharedVerticalBuses(samples);
+  const shiftX = new Map<string, number>();
+  const shiftY = new Map<string, number>();
+
+  live.forEach((edge, index) => {
+    const source = byId.get(edge.from)!;
+    const target = byId.get(edge.to)!;
+    const sample = samples[index]!;
+    const busX = routeBusX(sample, snaps.get(sample.payloadIndex));
+    for (const segment of segmentsForEdge(source, target, busX)) {
+      const horizontal = Math.abs(segment.y0 - segment.y1) <= AXIS_TOLERANCE;
+      for (const block of blocks) {
+        if (block.id === source.id) continue;
+        const endpoint = block.id === target.id;
+        if (endpoint) {
+          // 目标从左边进入。横段贴着左缘不算穿过；竖线扎进目标时只沿水平方向把目标推开。
+          if (horizontal) continue;
+          if (!segmentHitsBlock(segment, block, 0)) continue;
+          shiftX.set(block.id, mergeDelta(shiftX.get(block.id), shiftOffVertical(block, segment.x0)));
+          continue;
+        }
+        if (!segmentHitsBlock(segment, block, ROUTE_CLEARANCE)) continue;
+        if (horizontal) {
+          shiftY.set(block.id, mergeDelta(shiftY.get(block.id), shiftOffHorizontal(block, segment.y0)));
+        } else {
+          shiftX.set(block.id, mergeDelta(shiftX.get(block.id), shiftOffVertical(block, segment.x0)));
+        }
+      }
+    }
+  });
+
+  let moved = false;
+  for (const block of blocks) {
+    const dx = shiftX.get(block.id) ?? 0;
+    const dy = shiftY.get(block.id) ?? 0;
+    if (Math.abs(dx) > AXIS_TOLERANCE) {
+      block.x = snapRouteCoord(block.x + dx, dx);
+      moved = true;
+    }
+    if (Math.abs(dy) > AXIS_TOLERANCE) {
+      block.y = snapRouteCoord(block.y + dy, dy);
+      moved = true;
+    }
+  }
+  if (separateTouchingBlocks(blocks)) moved = true;
+  return moved;
+}
+
+/**
+ * 在现有共用竖线之上，把挡住线的块挪开，直到线不再穿过块，块与块也不再叠住。
+ *
+ * 联动：board-subgraph-sections 在 Dagre 排完、写入创建 payload 之前调用。
+ * 调用方随后仍用 planSharedVerticalBuses 写拐点，所以这里不改线的拐点格式，只改块的 x/y。
+ * 竖线位置会跟着块的右缘重新算，等同于线和块一起让开。
+ *
+ * 注意：原地修改 blocks。飞书仍是一次 create，这里不能去改已经画上的节点。
+ * 端点只在线穿进内部时才挪；横线贴着目标左缘不算穿过。
+ * 最多 SEPARATE_PASSES 轮。每一轮都按当前块重算竖线，避免用过期的横坐标继续推。
+ */
+export function separateBlocksFromRoutes(
+  blocks: RouteBlock[],
+  edges: Array<{ from: string; to: string }>,
+): void {
+  for (let pass = 0; pass < SEPARATE_PASSES; pass += 1) {
+    if (!relaxRouteOverlaps(blocks, edges)) return;
+  }
 }
